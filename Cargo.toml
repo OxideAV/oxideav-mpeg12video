@@ -1,18 +1,18 @@
 [package]
 name = "oxideav-mpeg1video"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
+version = "0.0.3"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-mpeg1video"
+authors = ["Mark Karpeles"]
 description = "Pure-Rust MPEG-1 Video (ISO/IEC 11172-2) decoder for oxideav"
 
 readme = "README.md"
-homepage.workspace = true
+homepage = "https://github.com/OxideAV/oxideav-mpeg1video"
 keywords = ["multimedia", "video", "mpeg", "mpeg1", "codec"]
 categories = ["multimedia::encoding", "multimedia::video"]
 
 [dependencies]
-oxideav-core = { workspace = true }
-oxideav-codec = { workspace = true }
+oxideav-core = "0.0"
+oxideav-codec = "0.0"
