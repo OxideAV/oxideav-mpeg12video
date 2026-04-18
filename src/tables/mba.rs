@@ -2,7 +2,7 @@
 //!
 //! Reproduced from libavcodec/mpeg12data.c `ff_mpeg12_mbAddrIncrTable`.
 
-use crate::vlc::VlcEntry;
+use crate::vlc::{VlcEntry, VlcTable};
 
 /// `macroblock_escape`. Adds 33 to the address.
 pub const ESCAPE: u8 = 0xFF;
@@ -20,9 +20,9 @@ const BITS: [u8; 35] = [
     11, 11, 11, 11, 11, 11, 11, 11,
 ];
 
-pub fn table() -> &'static [VlcEntry<u8>] {
+pub fn table() -> &'static VlcTable<u8> {
     use std::sync::OnceLock;
-    static CELL: OnceLock<Vec<VlcEntry<u8>>> = OnceLock::new();
+    static CELL: OnceLock<VlcTable<u8>> = OnceLock::new();
     CELL.get_or_init(|| {
         let mut v = Vec::with_capacity(35);
         for i in 0..33 {
@@ -30,7 +30,6 @@ pub fn table() -> &'static [VlcEntry<u8>] {
         }
         v.push(VlcEntry::new(BITS[33], CODE[33], ESCAPE));
         v.push(VlcEntry::new(BITS[34], CODE[34], STUFFING));
-        v
+        VlcTable::new(v)
     })
-    .as_slice()
 }

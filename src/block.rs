@@ -1,8 +1,16 @@
 //! Block-level decoding: DC + AC coefficient parsing, dequantisation, IDCT.
+//!
+//! Shared between MPEG-1 (ISO/IEC 11172-2) and MPEG-2 (H.262 / ISO/IEC
+//! 13818-2). The `PictureParams` passed in selects between the two dialects
+//! at:
+//!   * DC prediction and dequantisation.
+//!   * AC dequantisation (scaling divisor, mismatch control).
+//!   * Escape coding of run/level pairs.
 
 use oxideav_core::{Error, Result};
 
 use crate::bitreader::BitReader;
+use crate::coding_mode::PictureParams;
 use crate::dct::idct8x8;
 use crate::headers::ZIGZAG;
 use crate::tables::dct_coeffs::{self, DctSym};
@@ -22,16 +30,23 @@ fn extend_dc(value: u32, size: u32) -> i32 {
     }
 }
 
-/// Decode one intra macroblock block. `is_chroma` picks the DC size table.
-/// `prev_dc_pel` carries the running "DC value in pel-space" (i.e. already
-/// multiplied by 8 compared to the DC size differential) for the component
-/// across blocks of the same slice.
+/// Decode one intra block.
+///
+/// `prev_dc` carries running DC prediction state for the current component.
+/// Its semantics depend on `params.codec`:
+///   * MPEG-1: DC is stored in pel-space (already multiplied by 8). Reset
+///     value is 1024.
+///   * MPEG-2: DC is stored in quantised space (`QF[0][0]`). Reset value is
+///     `128 << intra_dc_precision`. The reconstructed pel-space DC is
+///     `prev_dc * intra_dc_mult`.
+#[allow(clippy::too_many_arguments)]
 pub fn decode_intra_block(
     br: &mut BitReader<'_>,
     is_chroma: bool,
-    prev_dc_pel: &mut i32,
+    prev_dc: &mut i32,
     quant_scale: u8,
     intra_quant: &[u8; 64],
+    params: &PictureParams,
     out_samples: &mut [u8],
     dst_stride: usize,
 ) -> Result<()> {
@@ -48,23 +63,30 @@ pub fn decode_intra_block(
         let bits = br.read_u32(dc_size as u32)?;
         extend_dc(bits, dc_size as u32)
     };
-    // Per §2.4.4.1, `dct_dc_*_past` stores the reconstructed DC coefficient
-    // in pel-space (already multiplied by 8). Reset value at slice start is
-    // 1024. The reconstructed DC for this block is:
-    //   dct_recon[0][0] = dct_dc_differential * 8 + dct_dc_past
-    // and then `dct_dc_past = dct_recon[0][0]`.
-    let dc_rec = prev_dc_pel.wrapping_add(dc_diff * 8);
-    *prev_dc_pel = dc_rec;
+
+    // Reconstruct the DC coefficient.
+    //   * MPEG-1: prev_dc holds pel-space DC (×8 applied). Spec §2.4.4.1:
+    //       dct_recon[0][0] = dct_dc_past + dct_dc_differential * 8
+    //   * MPEG-2: prev_dc holds QF[0][0] (quantised DC). Spec §7.2.1 /
+    //       §7.4.1: QF[0][0] = dc_dct_pred + dct_dc_differential
+    //       and F[0][0] = intra_dc_mult * QF[0][0].
+    let mut coeffs = [0i32; 64];
+    let dc_pel = if params.is_mpeg2() {
+        *prev_dc = prev_dc.wrapping_add(dc_diff);
+        *prev_dc * params.intra_dc_mult()
+    } else {
+        let dc_rec = prev_dc.wrapping_add(dc_diff * 8);
+        *prev_dc = dc_rec;
+        dc_rec
+    };
+    coeffs[0] = dc_pel;
 
     // 2. Zig-zag AC coefficients using Table B-14.
     //
     // Per ISO/IEC 11172-2 §2.4.2.9, the AC stream is ALWAYS terminated by an
     // End-Of-Block marker, even when the block holds all 63 AC coefficients.
-    // So we loop unconditionally and only exit on EOB (or on a run overflow,
-    // which is a bitstream error).
-    let mut coeffs = [0i32; 64];
-    coeffs[0] = dc_rec;
-
+    // MPEG-2 inherits the same terminator. The first-pass decoder does not
+    // support `intra_vlc_format=1` (Table B-15) — it's rejected upstream.
     let ac_tbl = dct_coeffs::table();
     let mut k: usize = 1;
     loop {
@@ -79,49 +101,36 @@ pub fn decode_intra_block(
                 }
                 (run as usize, lv)
             }
-            DctSym::Escape => {
-                let run = br.read_u32(6)? as usize;
-                // Short form: 8-bit signed level.
-                let first = br.read_u32(8)? as i32;
-                let level = if first == 0 {
-                    // Long-escape form (MPEG-1): another 8 bits give an
-                    // unsigned positive level ∈ 128..=255.
-                    let l = br.read_u32(8)? as i32;
-                    if l < 128 {
-                        return Err(Error::invalid("dct escape: long form level < 128"));
-                    }
-                    l
-                } else if first == 128 {
-                    // Long-escape form negative: following 8 bits form
-                    // level ∈ -256..=-129.
-                    let l = br.read_u32(8)? as i32;
-                    if l > 128 {
-                        return Err(Error::invalid("dct escape: long form neg level > 128"));
-                    }
-                    l - 256
-                } else if first >= 128 {
-                    first - 256
-                } else {
-                    first
-                };
-                (run, level)
-            }
+            DctSym::Escape => decode_escape_run_level(br, params)?,
         };
         k += run;
         if k >= 64 {
             return Err(Error::invalid("intra block: AC run past end"));
         }
-        // Intra dequantisation per §2.4.4.1:
-        //   coeff' = (2 * level * quantizer_scale * W[i]) / 16
-        // followed by "mismatch control" (make odd) and saturation to ±2047.
+        // Intra dequantisation:
+        //   MPEG-1 §2.4.4.1:  rec = (2 * level * quant * W) / 16
+        //   MPEG-2 §7.4.2.3:  rec = (level * quant * W) / 16
         let qf = intra_quant[ZIGZAG[k]] as i32;
-        let mut rec = (2 * level * quant_scale as i32 * qf) / 16;
-        if rec & 1 == 0 && rec != 0 {
-            rec = if rec > 0 { rec - 1 } else { rec + 1 };
+        let mut rec = if params.is_mpeg2() {
+            (level * quant_scale as i32 * qf) / 16
+        } else {
+            (2 * level * quant_scale as i32 * qf) / 16
+        };
+        if !params.is_mpeg2() {
+            // MPEG-1 per-coefficient "make odd" mismatch.
+            if rec & 1 == 0 && rec != 0 {
+                rec = if rec > 0 { rec - 1 } else { rec + 1 };
+            }
         }
         rec = rec.clamp(-2048, 2047);
         coeffs[ZIGZAG[k]] = rec;
         k += 1;
+    }
+
+    // MPEG-2 §7.4.4 mismatch control: XOR all 64 reconstructed coefficients.
+    // If the LSB of the XOR sum is zero, flip the LSB of coeff[63].
+    if params.is_mpeg2() {
+        apply_mpeg2_mismatch(&mut coeffs);
     }
 
     // 3. IDCT.
@@ -153,13 +162,15 @@ pub fn decode_intra_block(
 /// the first-coefficient interpretation of Table B-14 (codeword `1s` means
 /// `(run=0, level=±1)`, not EOB).
 ///
-/// `prediction` is the motion-compensated prediction samples for this 8x8
+/// `prediction` is the motion-compensated prediction samples for this 8×8
 /// block; `prediction_stride` gives its row stride. The output is written
 /// to `out_samples` as `clamp(prediction + idct(residual), 0, 255)`.
+#[allow(clippy::too_many_arguments)]
 pub fn decode_non_intra_block(
     br: &mut BitReader<'_>,
     quant_scale: u8,
     non_intra_quant: &[u8; 64],
+    params: &PictureParams,
     prediction: &[u8],
     prediction_stride: usize,
     out_samples: &mut [u8],
@@ -198,46 +209,35 @@ pub fn decode_non_intra_block(
                 }
                 (run as usize, lv)
             }
-            DctSym::Escape => {
-                let run = br.read_u32(6)? as usize;
-                let first_byte = br.read_u32(8)? as i32;
-                let level = if first_byte == 0 {
-                    let l = br.read_u32(8)? as i32;
-                    if l < 128 {
-                        return Err(Error::invalid("dct escape: long form level < 128"));
-                    }
-                    l
-                } else if first_byte == 128 {
-                    let l = br.read_u32(8)? as i32;
-                    if l > 128 {
-                        return Err(Error::invalid("dct escape: long form neg level > 128"));
-                    }
-                    l - 256
-                } else if first_byte >= 128 {
-                    first_byte - 256
-                } else {
-                    first_byte
-                };
-                (run, level)
-            }
+            DctSym::Escape => decode_escape_run_level(br, params)?,
         };
         first = false;
         k += run;
         if k >= 64 {
             return Err(Error::invalid("non-intra block: AC run past end"));
         }
-        // Non-intra dequantisation per §2.4.4.2:
-        //   rec = ((2 * level + sign(level)) * quantizer_scale * W[i]) / 16
-        // followed by mismatch control and ±2047 saturation.
+        // Non-intra dequantisation:
+        //   MPEG-1 §2.4.4.2:  rec = ((2*level + sign(level)) * quant * W) / 16
+        //   MPEG-2 §7.4.2.3:  rec = ((2*level + sign(level)) * quant * W) / 32
         let qf = non_intra_quant[ZIGZAG[k]] as i32;
         let add = if level > 0 { 1 } else { -1 };
-        let mut rec = ((2 * level + add) * quant_scale as i32 * qf) / 16;
-        if rec & 1 == 0 && rec != 0 {
-            rec = if rec > 0 { rec - 1 } else { rec + 1 };
+        let mut rec = if params.is_mpeg2() {
+            ((2 * level + add) * quant_scale as i32 * qf) / 32
+        } else {
+            ((2 * level + add) * quant_scale as i32 * qf) / 16
+        };
+        if !params.is_mpeg2() {
+            if rec & 1 == 0 && rec != 0 {
+                rec = if rec > 0 { rec - 1 } else { rec + 1 };
+            }
         }
         rec = rec.clamp(-2048, 2047);
         coeffs[ZIGZAG[k]] = rec;
         k += 1;
+    }
+
+    if params.is_mpeg2() {
+        apply_mpeg2_mismatch(&mut coeffs);
     }
 
     // IDCT residual.
@@ -271,5 +271,65 @@ pub fn copy_prediction(
     for j in 0..size {
         out_samples[j * dst_stride..j * dst_stride + size]
             .copy_from_slice(&prediction[j * prediction_stride..j * prediction_stride + size]);
+    }
+}
+
+/// Decode an escape run/level pair. The 6-bit escape prefix has already been
+/// consumed; this reads run + level and returns them.
+///
+///   * MPEG-1 §2.4.3.7: `run(6) + 8-bit signed`. `0x00` introduces a long
+///     form with an unsigned 8-bit level ∈ 128..=255; `0x80` introduces a
+///     long-form negative with 8-bit level ∈ -256..=-129.
+///   * MPEG-2 §7.2.2.3: `run(6) + 12-bit signed level`. `0` and `-2048` are
+///     forbidden values.
+fn decode_escape_run_level(br: &mut BitReader<'_>, params: &PictureParams) -> Result<(usize, i32)> {
+    let run = br.read_u32(6)? as usize;
+    if params.is_mpeg2() {
+        let bits = br.read_u32(12)? as i32;
+        // Sign-extend 12-bit two's-complement.
+        let level = if bits & 0x800 != 0 { bits - 0x1000 } else { bits };
+        if level == 0 || level == -2048 {
+            return Err(Error::invalid("mpeg2 escape: forbidden level (0 or -2048)"));
+        }
+        Ok((run, level))
+    } else {
+        let first = br.read_u32(8)? as i32;
+        let level = if first == 0 {
+            let l = br.read_u32(8)? as i32;
+            if l < 128 {
+                return Err(Error::invalid("dct escape: long form level < 128"));
+            }
+            l
+        } else if first == 128 {
+            let l = br.read_u32(8)? as i32;
+            if l > 128 {
+                return Err(Error::invalid("dct escape: long form neg level > 128"));
+            }
+            l - 256
+        } else if first >= 128 {
+            first - 256
+        } else {
+            first
+        };
+        Ok((run, level))
+    }
+}
+
+/// MPEG-2 mismatch control (§7.4.4): after reconstructing the 8×8 block, XOR
+/// every coefficient LSB; if the result is even, flip the LSB of `coeff[63]`.
+fn apply_mpeg2_mismatch(coeffs: &mut [i32; 64]) {
+    let mut sum: i32 = 0;
+    for &c in coeffs.iter() {
+        sum ^= c;
+    }
+    if sum & 1 == 0 {
+        // Toggle LSB of last coefficient, keeping saturation in range.
+        coeffs[63] ^= 1;
+        if coeffs[63] == -2049 {
+            coeffs[63] = -2048;
+        }
+        if coeffs[63] == 2048 {
+            coeffs[63] = 2047;
+        }
     }
 }

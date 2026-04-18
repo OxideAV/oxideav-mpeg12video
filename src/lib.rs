@@ -1,4 +1,5 @@
-//! Pure-Rust MPEG-1 video (ISO/IEC 11172-2) decoder and encoder.
+//! Pure-Rust MPEG-1 (ISO/IEC 11172-2) and MPEG-2 (ISO/IEC 13818-2 / H.262)
+//! video decoder and encoder.
 //!
 //! Current status:
 //! * Milestone 1 — sequence / GOP / picture header parsing: done.
@@ -22,6 +23,14 @@
 //!   intra fallback. Bitstream carries picture_coding_type=3 for B-frames
 //!   with forward_f_code and backward_f_code = 1. GOP layout is configurable
 //!   via [`encoder::make_encoder_with_gop`] (default: IPP, no B-frames).
+//! * Milestone 8 — MPEG-2 video decoder: sequence_extension +
+//!   picture_coding_extension parsing, per-direction-per-axis f_codes,
+//!   MPEG-2 intra / non-intra dequantisation, MPEG-2 global-XOR mismatch,
+//!   MPEG-2 escape (6-bit run + 12-bit signed level). Progressive Main
+//!   Profile @ Main Level 4:2:0 only; field pictures, 4:2:2/4:4:4,
+//!   intra_vlc_format=1, alternate_scan, non-linear q_scale, dual-prime
+//!   and 16×8 MVs are rejected.
+//! * Milestone 9 — MPEG-2 I-frame encoder (I-only, progressive 4:2:0).
 //!
 //! This crate intentionally has no runtime dependencies beyond `oxideav-core`
 //! and `oxideav-codec`.
@@ -31,12 +40,14 @@
 pub mod bitreader;
 pub mod bitwriter;
 pub mod block;
+pub mod coding_mode;
 pub mod dct;
 pub mod decoder;
 pub mod encoder;
 pub mod headers;
 pub mod mb;
 pub mod motion;
+pub mod mpeg2_ext;
 pub mod picture;
 pub mod start_codes;
 pub mod tables;
@@ -46,8 +57,10 @@ use oxideav_codec::CodecRegistry;
 use oxideav_core::{CodecCapabilities, CodecId};
 
 pub const CODEC_ID_STR: &str = "mpeg1video";
+pub const CODEC_ID_MPEG2_STR: &str = "mpeg2video";
 
 pub fn register(reg: &mut CodecRegistry) {
+    // MPEG-1 video.
     let caps = CodecCapabilities::video("mpeg1video_sw")
         .with_lossy(true)
         .with_intra_only(false)
@@ -58,4 +71,16 @@ pub fn register(reg: &mut CodecRegistry) {
     // `encoder::make_encoder_with_gop`.
     let enc_caps = caps.with_intra_only(false);
     reg.register_encoder_impl(id, enc_caps, encoder::make_encoder);
+
+    // MPEG-2 video (H.262). First-pass milestone: decoder supports I/P/B
+    // pictures in progressive 4:2:0 Main Profile; encoder produces I-only
+    // bitstreams.
+    let caps_m2 = CodecCapabilities::video("mpeg2video_sw")
+        .with_lossy(true)
+        .with_intra_only(false)
+        .with_max_size(1920, 1152);
+    let id_m2 = CodecId::new(CODEC_ID_MPEG2_STR);
+    reg.register_decoder_impl(id_m2.clone(), caps_m2.clone(), decoder::make_decoder_mpeg2);
+    let enc_caps_m2 = caps_m2.with_intra_only(true);
+    reg.register_encoder_impl(id_m2, enc_caps_m2, encoder::make_encoder_mpeg2);
 }

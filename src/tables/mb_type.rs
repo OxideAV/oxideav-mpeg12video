@@ -1,6 +1,8 @@
 //! Tables B-2 / B-3 / B-4 — macroblock_type VLC per picture type.
 
-use crate::vlc::VlcEntry;
+use std::sync::OnceLock;
+
+use crate::vlc::{VlcEntry, VlcTable};
 
 /// Decoded `macroblock_type` flags.
 #[derive(Clone, Copy, Debug, Default)]
@@ -27,7 +29,7 @@ impl MbTypeFlags {
 /// Table B-2 — macroblock_type in I-pictures.
 /// 1     → Intra
 /// 01    → Intra, quant
-pub const I_TABLE: &[VlcEntry<MbTypeFlags>] = &[
+const I_TABLE_ENTRIES: &[VlcEntry<MbTypeFlags>] = &[
     VlcEntry::new(1, 0b1, MbTypeFlags::new(false, false, false, false, true)),
     VlcEntry::new(2, 0b01, MbTypeFlags::new(true, false, false, false, true)),
 ];
@@ -41,7 +43,7 @@ pub const I_TABLE: &[VlcEntry<MbTypeFlags>] = &[
 ///   0001 0   → MC, Coded, Quant          (fwd + pattern + quant)
 ///   0000 1   → No MC, Coded, Quant       (pattern + quant)
 ///   0000 01  → Intra, Quant
-pub const P_TABLE: &[VlcEntry<MbTypeFlags>] = &[
+const P_TABLE_ENTRIES: &[VlcEntry<MbTypeFlags>] = &[
     VlcEntry::new(1, 0b1, MbTypeFlags::new(false, true, false, true, false)),
     VlcEntry::new(2, 0b01, MbTypeFlags::new(false, false, false, true, false)),
     VlcEntry::new(3, 0b001, MbTypeFlags::new(false, true, false, false, false)),
@@ -80,7 +82,7 @@ pub const P_TABLE: &[VlcEntry<MbTypeFlags>] = &[
 ///   000010  → Backward, Coded, Quant
 ///   000011  → Forward, Coded, Quant
 /// ```
-pub const B_TABLE: &[VlcEntry<MbTypeFlags>] = &[
+const B_TABLE_ENTRIES: &[VlcEntry<MbTypeFlags>] = &[
     // 10 → interpolated (fwd + bwd), no pattern
     VlcEntry::new(2, 0b10, MbTypeFlags::new(false, true, true, false, false)),
     // 11 → interpolated, coded
@@ -124,3 +126,18 @@ pub const B_TABLE: &[VlcEntry<MbTypeFlags>] = &[
         MbTypeFlags::new(true, true, false, true, false),
     ),
 ];
+
+pub fn i_table() -> &'static VlcTable<MbTypeFlags> {
+    static CELL: OnceLock<VlcTable<MbTypeFlags>> = OnceLock::new();
+    CELL.get_or_init(|| VlcTable::from_slice(I_TABLE_ENTRIES))
+}
+
+pub fn p_table() -> &'static VlcTable<MbTypeFlags> {
+    static CELL: OnceLock<VlcTable<MbTypeFlags>> = OnceLock::new();
+    CELL.get_or_init(|| VlcTable::from_slice(P_TABLE_ENTRIES))
+}
+
+pub fn b_table() -> &'static VlcTable<MbTypeFlags> {
+    static CELL: OnceLock<VlcTable<MbTypeFlags>> = OnceLock::new();
+    CELL.get_or_init(|| VlcTable::from_slice(B_TABLE_ENTRIES))
+}

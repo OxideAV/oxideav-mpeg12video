@@ -4,7 +4,7 @@
 //! `{code, bits}` entries indexed by cbp value (0..=63). CBP 0 is not
 //! representable (a MB with pattern=0 would just have `pattern` flag off).
 
-use crate::vlc::VlcEntry;
+use crate::vlc::{VlcEntry, VlcTable};
 
 const CODE: [u32; 64] = [
     0x1, 0xb, 0x9, 0xd, 0xd, 0x17, 0x13, 0x1f, 0xc, 0x16, 0x12, 0x1e, 0x13, 0x1b, 0x17, 0x13, 0xb,
@@ -18,14 +18,15 @@ const BITS: [u8; 64] = [
     4, 7, 7, 8, 6, 8, 8, 9, 5, 8, 8, 8, 5, 8, 8, 9, 5, 8, 8, 8, 5, 8, 8, 9, 5, 8, 8, 9, 3, 5, 5, 6,
 ];
 
-pub fn table() -> &'static [VlcEntry<u8>] {
+pub fn table() -> &'static VlcTable<u8> {
     use std::sync::OnceLock;
-    static CELL: OnceLock<Vec<VlcEntry<u8>>> = OnceLock::new();
+    static CELL: OnceLock<VlcTable<u8>> = OnceLock::new();
     CELL.get_or_init(|| {
-        (0..64)
-            .filter(|&i| BITS[i] > 0)
-            .map(|i| VlcEntry::new(BITS[i], CODE[i], i as u8))
-            .collect()
+        VlcTable::new(
+            (0..64)
+                .filter(|&i| BITS[i] > 0)
+                .map(|i| VlcEntry::new(BITS[i], CODE[i], i as u8))
+                .collect(),
+        )
     })
-    .as_slice()
 }

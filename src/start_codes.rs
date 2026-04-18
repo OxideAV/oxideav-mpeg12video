@@ -1,6 +1,7 @@
-//! Start-code constants and scanning helpers for MPEG-1 video.
+//! Start-code constants and scanning helpers for MPEG-1 / MPEG-2 video.
 //!
-//! ISO/IEC 11172-2 start codes are byte-aligned sequences of `0x000001XX`,
+//! ISO/IEC 11172-2 (MPEG-1) and ISO/IEC 13818-2 (MPEG-2, a.k.a. H.262) share
+//! the same start-code structure: byte-aligned sequences of `0x000001XX`,
 //! optionally preceded by any number of 0x00 stuffing bytes. The last byte
 //! identifies the layer / marker.
 
@@ -13,6 +14,17 @@ pub const SEQUENCE_ERROR_CODE: u8 = 0xB4;
 pub const EXTENSION_START_CODE: u8 = 0xB5;
 pub const SEQUENCE_END_CODE: u8 = 0xB7;
 pub const GROUP_START_CODE: u8 = 0xB8;
+
+// MPEG-2 extension_start_code_identifier values (4 bits, H.262 §6.2.2.2).
+pub const EXT_ID_SEQUENCE: u8 = 0x1;
+pub const EXT_ID_SEQUENCE_DISPLAY: u8 = 0x2;
+pub const EXT_ID_QUANT_MATRIX: u8 = 0x3;
+pub const EXT_ID_COPYRIGHT: u8 = 0x4;
+pub const EXT_ID_SEQUENCE_SCALABLE: u8 = 0x5;
+pub const EXT_ID_PICTURE_DISPLAY: u8 = 0x7;
+pub const EXT_ID_PICTURE_CODING: u8 = 0x8;
+pub const EXT_ID_PICTURE_SPATIAL_SCALABLE: u8 = 0x9;
+pub const EXT_ID_PICTURE_TEMPORAL_SCALABLE: u8 = 0xA;
 
 pub fn is_slice(code: u8) -> bool {
     (SLICE_START_MIN..=SLICE_START_MAX).contains(&code)

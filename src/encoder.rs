@@ -41,10 +41,16 @@ use oxideav_core::{
 };
 
 use crate::bitwriter::BitWriter;
+use crate::coding_mode::Codec;
 use crate::dct::{fdct8x8, idct8x8};
 use crate::headers::{DEFAULT_INTRA_QUANT, DEFAULT_NON_INTRA_QUANT, ZIGZAG};
+use crate::mpeg2_ext::{
+    write_picture_coding_extension, write_sequence_extension, Mpeg2PictureCodingExt,
+    Mpeg2SequenceExt,
+};
 use crate::start_codes::{
-    GROUP_START_CODE, PICTURE_START_CODE, SEQUENCE_END_CODE, SEQUENCE_HEADER_CODE,
+    EXTENSION_START_CODE, GROUP_START_CODE, PICTURE_START_CODE, SEQUENCE_END_CODE,
+    SEQUENCE_HEADER_CODE,
 };
 use crate::tables::dct_coeffs::{self, DctSym};
 use crate::tables::dct_dc;
@@ -81,6 +87,35 @@ pub fn make_encoder(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
     make_encoder_with_gop(params, DEFAULT_GOP_SIZE, DEFAULT_NUM_B_FRAMES)
 }
 
+/// MPEG-2 encoder factory used by `register()`. First-pass milestone: I-only
+/// (B-frames disabled, GOP = 1), progressive, 4:2:0, Main Profile @ Main
+/// Level. `intra_vlc_format` / `alternate_scan` / non-linear `q_scale_type`
+/// are never emitted.
+pub fn make_encoder_mpeg2(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
+    make_encoder_mpeg2_with_gop(params, 1, 0)
+}
+
+/// MPEG-2 encoder factory that allows GOP customisation. Currently rejects
+/// `num_b_frames > 0` — P/B encoding for MPEG-2 is a later milestone.
+pub fn make_encoder_mpeg2_with_gop(
+    params: &CodecParameters,
+    gop_size: u32,
+    num_b_frames: u32,
+) -> Result<Box<dyn Encoder>> {
+    if num_b_frames != 0 {
+        return Err(Error::unsupported(
+            "MPEG-2 encoder: B-frames not supported in this milestone",
+        ));
+    }
+    if gop_size != 1 {
+        return Err(Error::unsupported(
+            "MPEG-2 encoder: only I-only GOPs (gop_size = 1) supported in this milestone",
+        ));
+    }
+    let enc = build_encoder(params, gop_size, num_b_frames, Codec::Mpeg2)?;
+    Ok(Box::new(enc))
+}
+
 /// Encoder factory allowing callers to override the GOP size and B-frame
 /// spacing. `num_b_frames` is the number of B-frames between two
 /// consecutive anchor (I/P) frames: `IBBP` corresponds to `num_b_frames = 2`.
@@ -91,36 +126,58 @@ pub fn make_encoder_with_gop(
     gop_size: u32,
     num_b_frames: u32,
 ) -> Result<Box<dyn Encoder>> {
+    let enc = build_encoder(params, gop_size, num_b_frames, Codec::Mpeg1)?;
+    Ok(Box::new(enc))
+}
+
+fn build_encoder(
+    params: &CodecParameters,
+    gop_size: u32,
+    num_b_frames: u32,
+    codec: Codec,
+) -> Result<Mpeg1VideoEncoder> {
+    let label = match codec {
+        Codec::Mpeg1 => "MPEG-1",
+        Codec::Mpeg2 => "MPEG-2",
+    };
     let width = params
         .width
-        .ok_or_else(|| Error::invalid("MPEG-1 encoder: missing width"))?;
+        .ok_or_else(|| Error::invalid(format!("{label} encoder: missing width")))?;
     let height = params
         .height
-        .ok_or_else(|| Error::invalid("MPEG-1 encoder: missing height"))?;
+        .ok_or_else(|| Error::invalid(format!("{label} encoder: missing height")))?;
     if width == 0 || height == 0 {
-        return Err(Error::invalid("MPEG-1 encoder: zero-sized frame"));
+        return Err(Error::invalid(format!("{label} encoder: zero-sized frame")));
     }
     if width > 4095 || height > 4095 {
-        return Err(Error::invalid("MPEG-1 encoder: dimensions exceed 12-bit"));
+        return Err(Error::invalid(format!(
+            "{label} encoder: dimensions exceed 12-bit"
+        )));
     }
     if gop_size == 0 {
-        return Err(Error::invalid("MPEG-1 encoder: gop_size must be ≥ 1"));
+        return Err(Error::invalid(format!(
+            "{label} encoder: gop_size must be ≥ 1"
+        )));
     }
     let pix = params.pixel_format.unwrap_or(PixelFormat::Yuv420P);
     if pix != PixelFormat::Yuv420P {
         return Err(Error::unsupported(format!(
-            "MPEG-1 encoder: only Yuv420P supported (got {:?})",
+            "{label} encoder: only Yuv420P supported (got {:?})",
             pix
         )));
     }
     let frame_rate = params.frame_rate.unwrap_or(Rational::new(25, 1));
     let frame_rate_code = frame_rate_code_for(frame_rate)
-        .ok_or_else(|| Error::invalid("MPEG-1 encoder: unsupported frame rate"))?;
+        .ok_or_else(|| Error::invalid(format!("{label} encoder: unsupported frame rate")))?;
     let bit_rate = params.bit_rate.unwrap_or(1_500_000);
 
+    let codec_id_str = match codec {
+        Codec::Mpeg1 => super::CODEC_ID_STR,
+        Codec::Mpeg2 => super::CODEC_ID_MPEG2_STR,
+    };
     let mut output_params = params.clone();
     output_params.media_type = MediaType::Video;
-    output_params.codec_id = CodecId::new(super::CODEC_ID_STR);
+    output_params.codec_id = CodecId::new(codec_id_str);
     output_params.width = Some(width);
     output_params.height = Some(height);
     output_params.pixel_format = Some(PixelFormat::Yuv420P);
@@ -129,7 +186,8 @@ pub fn make_encoder_with_gop(
 
     let time_base = TimeBase::new(frame_rate.den, frame_rate.num);
 
-    Ok(Box::new(Mpeg1VideoEncoder {
+    Ok(Mpeg1VideoEncoder {
+        codec,
         output_params,
         width,
         height,
@@ -156,7 +214,7 @@ pub fn make_encoder_with_gop(
         b_queue: VecDeque::new(),
         eof: false,
         finalised: false,
-    }))
+    })
 }
 
 /// Map an `(num, den)` frame rate to MPEG-1 `frame_rate_code` (Table 2-D.4).
@@ -188,6 +246,11 @@ struct QueuedFrame {
 }
 
 struct Mpeg1VideoEncoder {
+    /// MPEG-1 or MPEG-2 bitstream. For MPEG-2 the encoder emits
+    /// sequence_extension + picture_coding_extension, uses the MPEG-2 intra
+    /// dequant and mismatch formulas, and writes escape run/level pairs in
+    /// the MPEG-2 12-bit form.
+    codec: Codec,
     output_params: CodecParameters,
     width: u32,
     height: u32,
@@ -428,6 +491,11 @@ fn encode_anchor_picture(
             enc.frame_rate_code,
             enc.bit_rate,
         );
+        if enc.codec == Codec::Mpeg2 {
+            write_start_code(&mut bw, EXTENSION_START_CODE);
+            write_sequence_extension(&mut bw, &Mpeg2SequenceExt::default());
+            bw.align_to_byte();
+        }
         write_start_code(&mut bw, GROUP_START_CODE);
         write_gop_header(&mut bw);
     }
@@ -438,6 +506,28 @@ fn encode_anchor_picture(
         write_picture_header_i(&mut bw, temporal_reference);
     } else {
         write_picture_header_p(&mut bw, temporal_reference);
+    }
+    if enc.codec == Codec::Mpeg2 {
+        write_start_code(&mut bw, EXTENSION_START_CODE);
+        let mut ext = Mpeg2PictureCodingExt::default();
+        // For I-only output the f_codes are unused; spec requires them to
+        // be set to 15 ("forbidden") — our parser tolerates any value since
+        // the decoder only consults them when the MB actually has an MV.
+        ext.f_code = [[15, 15], [15, 15]];
+        ext.intra_dc_precision = 0;
+        ext.picture_structure = 0b11;
+        ext.top_field_first = true;
+        ext.frame_pred_frame_dct = true;
+        ext.concealment_motion_vectors = false;
+        ext.q_scale_type = false;
+        ext.intra_vlc_format = false;
+        ext.alternate_scan = false;
+        ext.repeat_first_field = false;
+        ext.chroma_420_type = true;
+        ext.progressive_frame = true;
+        ext.composite_display_flag = false;
+        write_picture_coding_extension(&mut bw, &ext);
+        bw.align_to_byte();
     }
 
     // Allocate the reconstructed picture for this frame so we can use it as
@@ -692,6 +782,7 @@ fn encode_mb_intra(
             y_stride,
             x0 + bx,
             y0 + by,
+            enc.codec,
         )?;
     }
     // Cb
@@ -711,6 +802,7 @@ fn encode_mb_intra(
         c_stride,
         cx0,
         cy0,
+        enc.codec,
     )?;
     // Cr
     encode_block_intra(
@@ -729,6 +821,7 @@ fn encode_mb_intra(
         c_stride,
         cx0,
         cy0,
+        enc.codec,
     )?;
     Ok(())
 }
@@ -750,6 +843,7 @@ fn encode_block_intra(
     recon_stride: usize,
     rx0: usize,
     ry0: usize,
+    codec: Codec,
 ) -> Result<()> {
     // 1. Pull samples (with edge replication).
     let mut samples = [0.0f32; 64];
@@ -770,7 +864,15 @@ fn encode_block_intra(
     let dc_diff = dc_q - *prev_dc_q;
     *prev_dc_q = dc_q;
 
-    // 4. Quantise AC coefficients.
+    // 4. Quantise AC coefficients. For intra dequant:
+    //    * MPEG-1 spec:  rec = (2 * level * q * W) / 16  →  level ≈ coef * 8 / (q*W)
+    //    * MPEG-2 spec:  rec = (level * q * W) / 16      →  level ≈ coef * 16 / (q*W)
+    //
+    // MPEG-2 uses twice the quantised level for the same coefficient value at
+    // the same quant scale. The bit-cost hit is partly offset by the larger
+    // useful range (escape is a longer code).
+    let mpeg2 = codec == Codec::Mpeg2;
+    let quant_mul: f32 = if mpeg2 { 16.0 } else { 8.0 };
     let mut levels = [0i32; 64];
     for k in 1..64 {
         let nat = ZIGZAG[k];
@@ -780,21 +882,25 @@ fn encode_block_intra(
         let v = if denom == 0.0 {
             0.0
         } else {
-            coef * 8.0 / denom
+            coef * quant_mul / denom
         };
         let lv = if v >= 0.0 {
             (v + 0.5) as i32
         } else {
             -(((-v) + 0.5) as i32)
         };
-        levels[k] = lv.clamp(-255, 255);
+        // MPEG-1: Table B-14 covers |level| ≤ 255 directly (and escape
+        //   carries up to ±255 without a long form — actually ±255 max).
+        // MPEG-2: 12-bit signed escape carries ±2047 (sans 0 and -2048).
+        let limit = if mpeg2 { 2047 } else { 255 };
+        levels[k] = lv.clamp(-limit, limit);
     }
 
     // 5. Encode DC differential.
     encode_dc_diff(bw, dc_diff, is_chroma)?;
 
     // 6. Encode AC run/level pairs.
-    encode_ac_coeffs(bw, &levels)?;
+    encode_ac_coeffs(bw, &levels, codec)?;
 
     // 7. Reconstruct (decoder-equivalent dequant + IDCT) into the reference
     //    plane so subsequent P-frames can use it. We also use this to
@@ -808,12 +914,35 @@ fn encode_block_intra(
         }
         let nat = ZIGZAG[k];
         let qf = intra_q[nat] as i32;
-        let mut rec = (2 * lv * q * qf) / 16;
-        if rec & 1 == 0 && rec != 0 {
-            rec = if rec > 0 { rec - 1 } else { rec + 1 };
+        let mut rec = if mpeg2 {
+            (lv * q * qf) / 16
+        } else {
+            (2 * lv * q * qf) / 16
+        };
+        if !mpeg2 {
+            if rec & 1 == 0 && rec != 0 {
+                rec = if rec > 0 { rec - 1 } else { rec + 1 };
+            }
         }
         rec = rec.clamp(-2048, 2047);
         coeffs[nat] = rec;
+    }
+    if mpeg2 {
+        // H.262 §7.4.4 mismatch: XOR all 64 coefficient LSBs; if the sum is
+        // even, flip LSB of coeff[63].
+        let mut sum: i32 = 0;
+        for &c in coeffs.iter() {
+            sum ^= c;
+        }
+        if sum & 1 == 0 {
+            coeffs[63] ^= 1;
+            if coeffs[63] == 2048 {
+                coeffs[63] = 2047;
+            }
+            if coeffs[63] == -2049 {
+                coeffs[63] = -2048;
+            }
+        }
     }
     let mut fblock = [0.0f32; 64];
     for i in 0..64 {
@@ -1076,7 +1205,7 @@ fn write_mb_type(bw: &mut BitWriter, kind: MbTypeCode) -> Result<()> {
         MbTypeCode::Intra => (5, 0b00011),
     };
     // Sanity: lookup the equivalent VLC entry to make sure the table agrees.
-    let _ = mb_type::P_TABLE;
+    let _ = mb_type::p_table();
     bw.write_bits(code, bits);
     Ok(())
 }
@@ -1489,7 +1618,7 @@ fn encode_one_mv_component(bw: &mut BitWriter, predictor: &mut i32, target: i32)
 
 fn lookup_motion_code(abs: u8) -> Option<VlcEntry<u8>> {
     let tbl = mv_tbl::table();
-    tbl.iter().find(|e| e.value == abs).copied()
+    tbl.entries.iter().find(|e| e.value == abs).copied()
 }
 
 // ---------------------------------------------------------------------------
@@ -1780,8 +1909,10 @@ fn encode_p_mb_inter_residual_with_levels(
 /// Encode a non-intra block's AC coefficients. The first nonzero coefficient
 /// uses the "first-coeff" table interpretation (1s = ±1 level instead of EOB);
 /// subsequent ones use the regular Table B-14. The block must contain at least
-/// one nonzero level (caller's responsibility).
+/// one nonzero level (caller's responsibility). Only MPEG-1 P/B encoders call
+/// this fn in the first-pass milestone.
 fn encode_non_intra_block(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> {
+    let codec = Codec::Mpeg1;
     let mut first = true;
     let mut run: u32 = 0;
     for k in 0..64 {
@@ -1816,7 +1947,7 @@ fn encode_non_intra_block(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> 
                 let sign = if lv < 0 { 1 } else { 0 };
                 bw.write_bits(sign, 1);
             } else {
-                emit_escape(bw, run, lv)?;
+                emit_escape(bw, run, lv, codec)?;
             }
             first = false;
             run = 0;
@@ -1829,7 +1960,7 @@ fn encode_non_intra_block(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> 
             let sign = if lv < 0 { 1 } else { 0 };
             bw.write_bits(sign, 1);
         } else {
-            emit_escape(bw, run, lv)?;
+            emit_escape(bw, run, lv, codec)?;
         }
         run = 0;
     }
@@ -1839,21 +1970,33 @@ fn encode_non_intra_block(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> 
     Ok(())
 }
 
-fn emit_escape(bw: &mut BitWriter, run: u32, lv: i32) -> Result<()> {
+fn emit_escape(bw: &mut BitWriter, run: u32, lv: i32, codec: Codec) -> Result<()> {
     let escape_entry = find_escape_entry();
     bw.write_bits(escape_entry.code, escape_entry.bits as u32);
     bw.write_bits(run, 6);
-    if (1..=127).contains(&lv) || (-127..=-1).contains(&lv) {
-        let v = lv & 0xFF;
-        bw.write_bits(v as u32, 8);
-    } else if (128..=255).contains(&lv) {
-        bw.write_bits(0, 8);
-        bw.write_bits(lv as u32, 8);
-    } else if (-255..=-128).contains(&lv) {
-        bw.write_bits(0x80, 8);
-        bw.write_bits((lv + 256) as u32 & 0xFF, 8);
-    } else {
-        return Err(Error::invalid("AC level out of MPEG-1 range"));
+    match codec {
+        Codec::Mpeg1 => {
+            if (1..=127).contains(&lv) || (-127..=-1).contains(&lv) {
+                let v = lv & 0xFF;
+                bw.write_bits(v as u32, 8);
+            } else if (128..=255).contains(&lv) {
+                bw.write_bits(0, 8);
+                bw.write_bits(lv as u32, 8);
+            } else if (-255..=-128).contains(&lv) {
+                bw.write_bits(0x80, 8);
+                bw.write_bits((lv + 256) as u32 & 0xFF, 8);
+            } else {
+                return Err(Error::invalid("AC level out of MPEG-1 range"));
+            }
+        }
+        Codec::Mpeg2 => {
+            if lv == 0 || lv == -2048 || lv > 2047 || lv < -2047 {
+                return Err(Error::invalid("AC level out of MPEG-2 escape range"));
+            }
+            // 12-bit two's-complement.
+            let bits = (lv & 0xFFF) as u32;
+            bw.write_bits(bits, 12);
+        }
     }
     Ok(())
 }
@@ -1904,7 +2047,7 @@ fn encode_signed_field(value: i32, size: u32) -> u32 {
     }
 }
 
-fn encode_ac_coeffs(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> {
+fn encode_ac_coeffs(bw: &mut BitWriter, levels: &[i32; 64], codec: Codec) -> Result<()> {
     let mut run: u32 = 0;
     for k in 1..64 {
         let lv = levels[k];
@@ -1918,7 +2061,7 @@ fn encode_ac_coeffs(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> {
             let sign = if lv < 0 { 1 } else { 0 };
             bw.write_bits(sign, 1);
         } else {
-            emit_escape(bw, run, lv)?;
+            emit_escape(bw, run, lv, codec)?;
         }
         run = 0;
     }
@@ -1927,8 +2070,11 @@ fn encode_ac_coeffs(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> {
     Ok(())
 }
 
-fn lookup_value<T: Copy + PartialEq>(tbl: &[VlcEntry<T>], needle: T) -> Option<VlcEntry<T>> {
-    tbl.iter().find(|e| e.value == needle).copied()
+fn lookup_value<T: Copy + PartialEq>(
+    tbl: &crate::vlc::VlcTable<T>,
+    needle: T,
+) -> Option<VlcEntry<T>> {
+    tbl.entries.iter().find(|e| e.value == needle).copied()
 }
 
 fn lookup_run_level(run: u32, level_abs: u32) -> Option<VlcEntry<DctSym>> {
@@ -1936,7 +2082,7 @@ fn lookup_run_level(run: u32, level_abs: u32) -> Option<VlcEntry<DctSym>> {
         return None;
     }
     let tbl = dct_coeffs::table();
-    for e in tbl {
+    for e in tbl.entries.iter() {
         if let DctSym::RunLevel {
             run: r,
             level_abs: lv,
@@ -1952,6 +2098,7 @@ fn lookup_run_level(run: u32, level_abs: u32) -> Option<VlcEntry<DctSym>> {
 
 fn find_escape_entry() -> VlcEntry<DctSym> {
     *dct_coeffs::table()
+        .entries
         .iter()
         .find(|e| matches!(e.value, DctSym::Escape))
         .expect("escape entry must exist")
@@ -1959,6 +2106,7 @@ fn find_escape_entry() -> VlcEntry<DctSym> {
 
 fn find_eob_entry() -> VlcEntry<DctSym> {
     *dct_coeffs::table()
+        .entries
         .iter()
         .find(|e| matches!(e.value, DctSym::Eob))
         .expect("EOB entry must exist")

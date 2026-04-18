@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use oxideav_core::{CodecId, CodecParameters, Error, Frame, Packet, TimeBase};
-use oxideav_mpeg1video::{
+use oxideav_mpeg12video::{
     bitreader::BitReader,
     decoder::{codec_parameters_from_sequence_header, make_decoder},
     headers::{parse_sequence_header, PictureType},
@@ -66,7 +66,7 @@ fn parse_first_picture_header_tiny() {
     assert_eq!(code, PICTURE_START_CODE);
     let mut br = BitReader::new(&data[pos + 4..]);
     let ph =
-        oxideav_mpeg1video::headers::parse_picture_header(&mut br).expect("parse picture header");
+        oxideav_mpeg12video::headers::parse_picture_header(&mut br).expect("parse picture header");
     // First picture in an MPEG-1 sequence is always an I-picture.
     assert_eq!(ph.picture_type, PictureType::I);
 }
@@ -78,7 +78,7 @@ fn decode_first_i_frame_tiny() {
     let Some(data) = read_fixture("/tmp/ref-mpeg1-tiny.m1v") else {
         return;
     };
-    let params = CodecParameters::video(CodecId::new(oxideav_mpeg1video::CODEC_ID_STR));
+    let params = CodecParameters::video(CodecId::new(oxideav_mpeg12video::CODEC_ID_STR));
     let mut decoder = make_decoder(&params).expect("build decoder");
     let packet = Packet::new(0, TimeBase::new(1, 90_000), data);
     if let Err(e) = decoder.send_packet(&packet) {
@@ -128,7 +128,7 @@ fn decode_first_i_frame_tiny() {
 
 fn decode_all_frames(path: &str) -> Option<Vec<oxideav_core::VideoFrame>> {
     let data = read_fixture(path)?;
-    let params = CodecParameters::video(CodecId::new(oxideav_mpeg1video::CODEC_ID_STR));
+    let params = CodecParameters::video(CodecId::new(oxideav_mpeg12video::CODEC_ID_STR));
     let mut decoder = make_decoder(&params).expect("build decoder");
     let packet = Packet::new(0, TimeBase::new(1, 90_000), data).with_pts(0);
     if let Err(e) = decoder.send_packet(&packet) {
@@ -210,7 +210,7 @@ fn decode_gop_clip_b_frames_ordered() {
     for (pos, code) in start_codes::iter_start_codes(&data) {
         if code == PICTURE_START_CODE {
             let mut br = BitReader::new(&data[pos + 4..]);
-            if let Ok(ph) = oxideav_mpeg1video::headers::parse_picture_header(&mut br) {
+            if let Ok(ph) = oxideav_mpeg12video::headers::parse_picture_header(&mut br) {
                 tr_decode_order.push(ph.temporal_reference);
             }
         }

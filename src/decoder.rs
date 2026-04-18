@@ -1,5 +1,5 @@
-//! MPEG-1 video decoder driving the layered parse (sequence → GOP → picture
-//! → slice → MB → block).
+//! MPEG-1 / MPEG-2 video decoder driving the layered parse (sequence → GOP
+//! → picture → slice → MB → block).
 
 use std::collections::VecDeque;
 
@@ -9,19 +9,28 @@ use oxideav_core::{
 };
 
 use crate::bitreader::BitReader;
+use crate::coding_mode::{Codec, PictureParams};
 use crate::headers::{
     frame_rate_for_code, parse_gop_header, parse_picture_header, parse_sequence_header, GopHeader,
     PictureHeader, PictureType, SequenceHeader,
 };
 use crate::mb::decode_slice;
+use crate::mpeg2_ext::{parse_extension, ParsedExt};
 use crate::picture::{PictureBuffer, ReferenceManager};
 use crate::start_codes::{
     self, EXTENSION_START_CODE, GROUP_START_CODE, SEQUENCE_END_CODE, SEQUENCE_ERROR_CODE,
     SEQUENCE_HEADER_CODE, USER_DATA_START_CODE,
 };
 
-/// Factory for the registry.
+/// Factory for the registry — MPEG-1.
 pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
+    Ok(Box::new(Mpeg1VideoDecoder::new(params.codec_id.clone())))
+}
+
+/// Factory for the registry — MPEG-2. The decoder implementation is shared;
+/// the codec_id on the constructed decoder drives which extensions are
+/// accepted.
+pub fn make_decoder_mpeg2(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
     Ok(Box::new(Mpeg1VideoDecoder::new(params.codec_id.clone())))
 }
 
@@ -112,7 +121,34 @@ impl Mpeg1VideoDecoder {
                     self.seq_header = Some(sh);
                     sequence_was_just_parsed = true;
                 }
-                EXTENSION_START_CODE | USER_DATA_START_CODE => {}
+                EXTENSION_START_CODE => {
+                    let mut ebr = BitReader::new(payload);
+                    let parsed = parse_extension(&mut ebr)?;
+                    match parsed {
+                        ParsedExt::Sequence(ext) => {
+                            if let Some(sh) = self.seq_header.as_mut() {
+                                sh.mpeg2_seq = Some(ext);
+                            }
+                        }
+                        ParsedExt::PictureCoding(ext) => {
+                            if let Some(ph) = pic_header.as_mut() {
+                                ph.mpeg2_pic = Some(ext);
+                            }
+                        }
+                        ParsedExt::QuantMatrix(qm) => {
+                            if let Some(sh) = self.seq_header.as_mut() {
+                                if let Some(m) = qm.intra {
+                                    sh.intra_quantiser = m;
+                                }
+                                if let Some(m) = qm.non_intra {
+                                    sh.non_intra_quantiser = m;
+                                }
+                            }
+                        }
+                        ParsedExt::Other(_) => {}
+                    }
+                }
+                USER_DATA_START_CODE => {}
                 GROUP_START_CODE => {
                     let mut br = BitReader::new(payload);
                     let gop = parse_gop_header(&mut br)?;
@@ -158,6 +194,7 @@ impl Mpeg1VideoDecoder {
                     let Some(pic) = picture.as_mut() else {
                         return Err(Error::invalid("slice: no picture buffer"));
                     };
+                    let params = build_picture_params(&self.codec_id, seq, ph)?;
                     let mut br = BitReader::new(payload);
                     // References:
                     //   P-frame forward ref   = most-recent I/P anchor   = next_ref
@@ -168,7 +205,7 @@ impl Mpeg1VideoDecoder {
                         PictureType::B => (self.refs.forward(), self.refs.backward()),
                         _ => (None, None),
                     };
-                    decode_slice(&mut br, c, seq, ph, pic, fwd_ref, bwd_ref)?;
+                    decode_slice(&mut br, c, seq, ph, &params, pic, fwd_ref, bwd_ref)?;
                 }
                 _ => {}
             }
@@ -313,7 +350,12 @@ fn find_picture_end(buf: &[u8]) -> Option<usize> {
 
 /// Build a `CodecParameters` from a sequence header (used by demuxers).
 pub fn codec_parameters_from_sequence_header(sh: &SequenceHeader) -> CodecParameters {
-    let mut params = CodecParameters::video(CodecId::new("mpeg1video"));
+    let id = if sh.mpeg2_seq.is_some() {
+        CodecId::new("mpeg2video")
+    } else {
+        CodecId::new("mpeg1video")
+    };
+    let mut params = CodecParameters::video(id);
     params.width = Some(sh.horizontal_size);
     params.height = Some(sh.vertical_size);
     if let Some((n, d)) = frame_rate_for_code(sh.frame_rate_code) {
@@ -323,4 +365,80 @@ pub fn codec_parameters_from_sequence_header(sh: &SequenceHeader) -> CodecParame
         params.bit_rate = Some(sh.bit_rate as u64 * 400);
     }
     params
+}
+
+/// Construct a [`PictureParams`] for a decoded picture, applying the subset
+/// guards for the first-pass MPEG-2 decoder.
+fn build_picture_params(
+    codec_id: &CodecId,
+    seq: &SequenceHeader,
+    ph: &PictureHeader,
+) -> Result<PictureParams> {
+    let is_mpeg2_codec = codec_id.as_str() == "mpeg2video";
+    match (is_mpeg2_codec, &seq.mpeg2_seq, &ph.mpeg2_pic) {
+        (true, Some(seq_ext), Some(pic_ext)) => {
+            if !seq_ext.progressive_sequence {
+                return Err(Error::unsupported(
+                    "mpeg2video: interlaced sequence not supported",
+                ));
+            }
+            if seq_ext.chroma_format != 0b01 {
+                return Err(Error::unsupported(
+                    "mpeg2video: only 4:2:0 chroma format supported",
+                ));
+            }
+            if pic_ext.picture_structure != 0b11 {
+                return Err(Error::unsupported(
+                    "mpeg2video: field pictures not supported",
+                ));
+            }
+            if !pic_ext.progressive_frame {
+                return Err(Error::unsupported(
+                    "mpeg2video: interlaced frame not supported",
+                ));
+            }
+            if pic_ext.alternate_scan {
+                return Err(Error::unsupported(
+                    "mpeg2video: alternate_scan not supported",
+                ));
+            }
+            if pic_ext.intra_vlc_format {
+                return Err(Error::unsupported(
+                    "mpeg2video: intra_vlc_format=1 (Table B-15) not supported",
+                ));
+            }
+            if pic_ext.q_scale_type {
+                return Err(Error::unsupported(
+                    "mpeg2video: non-linear q_scale not supported",
+                ));
+            }
+            if !pic_ext.frame_pred_frame_dct {
+                return Err(Error::unsupported(
+                    "mpeg2video: field-DCT / field-MC not supported",
+                ));
+            }
+            if pic_ext.concealment_motion_vectors {
+                return Err(Error::unsupported(
+                    "mpeg2video: concealment MVs not supported",
+                ));
+            }
+            Ok(PictureParams {
+                codec: Codec::Mpeg2,
+                intra_dc_precision: pic_ext.intra_dc_precision,
+                alternate_scan: false,
+                intra_vlc_format: false,
+                q_scale_type: false,
+                f_code: pic_ext.f_code,
+                full_pel_fwd: false,
+                full_pel_bwd: false,
+            })
+        }
+        (true, None, _) => Err(Error::invalid(
+            "mpeg2video: missing sequence_extension after sequence header",
+        )),
+        (true, _, None) => Err(Error::invalid(
+            "mpeg2video: missing picture_coding_extension after picture header",
+        )),
+        (false, _, _) => Ok(PictureParams::mpeg1_from(ph)),
+    }
 }

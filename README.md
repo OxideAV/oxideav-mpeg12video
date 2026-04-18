@@ -1,9 +1,10 @@
-# oxideav-mpeg1video
+# oxideav-mpeg12video
 
-Pure-Rust **MPEG-1 Video** (ISO/IEC 11172-2) decoder and encoder — I / P / B
-pictures, forward + backward half-pel motion compensation, interpolated
-(bidirectionally-averaged) prediction, 4:2:0 chroma, and a display-order
-reorder buffer on the encoder side. Zero C dependencies.
+Pure-Rust **MPEG-1 Video** (ISO/IEC 11172-2) and **MPEG-2 Video** (H.262 /
+ISO/IEC 13818-2) decoder and encoder — I / P / B pictures, forward +
+backward half-pel motion compensation, interpolated (bidirectionally-
+averaged) prediction, 4:2:0 chroma, and a display-order reorder buffer on
+the encoder side. Zero C dependencies.
 
 Part of the [oxideav](https://github.com/OxideAV/oxideav-workspace)
 framework but usable standalone.
@@ -14,22 +15,27 @@ framework but usable standalone.
 [dependencies]
 oxideav-core = "0.0"
 oxideav-codec = "0.0"
-oxideav-mpeg1video = "0.0"
+oxideav-mpeg12video = "0.0"
 ```
 
 ## Decoder
 
 Feed packets from any demuxer (or a raw elementary stream) and pull
-`VideoFrame`s back. Output pixel format is always `Yuv420P`.
+`VideoFrame`s back. Output pixel format is always `Yuv420P`. Use codec id
+`"mpeg1video"` for MPEG-1 bitstreams and `"mpeg2video"` for MPEG-2 — a
+single `register()` call wires both up.
 
 ```rust
 use oxideav_codec::CodecRegistry;
 use oxideav_core::{CodecId, CodecParameters, Frame, Packet, TimeBase};
 
 let mut codecs = CodecRegistry::new();
-oxideav_mpeg1video::register(&mut codecs);
+oxideav_mpeg12video::register(&mut codecs);
 
+// MPEG-1:
 let params = CodecParameters::video(CodecId::new("mpeg1video"));
+// MPEG-2:
+// let params = CodecParameters::video(CodecId::new("mpeg2video"));
 let mut dec = codecs.make_decoder(&params)?;
 
 let pkt = Packet::new(0, TimeBase::new(1, 24), es_bytes).with_pts(0);
@@ -53,29 +59,41 @@ Decoder coverage:
 
 - Sequence header, GOP header, picture header, slice / macroblock / block
   layers.
+- MPEG-2 `sequence_extension` and `picture_coding_extension` parsing
+  (progressive Main Profile @ Main Level 4:2:0). Unsupported features
+  (interlaced, 4:2:2/4:4:4, `alternate_scan`, `intra_vlc_format=1`,
+  non-linear `q_scale_type`, field / dual-prime / 16×8 MVs, concealment
+  MVs, scalable extensions) are rejected with a clear `Error::Unsupported`
+  rather than mis-decoded.
 - Picture types I, P, B (D-pictures are rejected — obsolete, MPEG-1 only).
 - Forward + backward motion compensation with half-pel bilinear
   interpolation; interpolated (averaged) B-frame prediction.
 - Skipped-MB motion-vector inheritance (previous-MB MV for P, last fwd/bwd
   for B).
 - Intra / non-intra DCT block decode, custom quantiser matrices from the
-  sequence header.
+  sequence header (and from MPEG-2 `quant_matrix_extension`). MPEG-2
+  dequantisation + global-XOR mismatch + 12-bit signed escape form.
 - Display-order reordering driven by `temporal_reference` + the
   most-recent GOP anchor. B-pictures are emitted in place; I/P pictures
   are emitted one anchor late so trailing B-pictures can reference them.
-- 4:2:0 chroma, 12-bit max dimensions (4095 x 4095).
+- 4:2:0 chroma, 12-bit max dimensions (4095 × 4095 for MPEG-1; MP@ML
+  1920 × 1152 capability hint for MPEG-2).
 
 ## Encoder
 
-The encoder accepts frames in display order and emits an MPEG-1 elementary
-stream (sequence header, GOP header, picture headers, one slice per MB
-row). The default GOP is `IPP` — no B-frames — to keep cumulative drift
-in the f32 IDCT chain bounded on long sequences. Use
+The encoder accepts frames in display order and emits an MPEG-1 or MPEG-2
+elementary stream (sequence header, GOP header, picture headers, one slice
+per MB row). The MPEG-1 default GOP is `IPP` — no B-frames — to keep
+cumulative drift in the f32 IDCT chain bounded on long sequences. Use
 `make_encoder_with_gop` for arbitrary `I B*N P B*N P ...` layouts.
+
+The MPEG-2 encoder currently produces **I-only** bitstreams (progressive
+Main Profile @ Main Level 4:2:0). MPEG-2 P/B encoding is a later
+milestone.
 
 ```rust
 use oxideav_core::{CodecId, CodecParameters, Frame, PixelFormat, Rational};
-use oxideav_mpeg1video::encoder::make_encoder_with_gop;
+use oxideav_mpeg12video::encoder::make_encoder_with_gop;
 
 let mut params = CodecParameters::video(CodecId::new("mpeg1video"));
 params.width = Some(320);
@@ -97,31 +115,41 @@ while let Ok(pkt) = enc.receive_packet() {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+For MPEG-2 I-only encoding, use `make_encoder_mpeg2` with codec id
+`"mpeg2video"`.
+
 Encoder coverage:
 
 - Sequence + GOP + picture header write, one slice per macroblock row.
 - Input frames must be `Yuv420P` at the configured size; other formats
   are rejected with `Error::unsupported`.
 - Frame rates: MPEG-1 Table 2-D.4 codes 1 through 8 (23.976 / 24 / 25 /
-  29.97 / 30 / 50 / 59.94 / 60).
+  29.97 / 30 / 50 / 59.94 / 60). MPEG-2 reuses the same table.
 - I-pictures: forward DCT, intra quantisation, DC differential + AC
-  run/level VLC.
-- P-pictures: integer-pel block-matching motion estimation at +/- 8 with
-  half-pel refinement, MV differential via Table B-10, MB types
+  run/level VLC. MPEG-2 emits a `sequence_extension` after each sequence
+  header and a `picture_coding_extension` after each picture header; uses
+  the MPEG-2 intra dequant formula (`(level * q * W) / 16`) and global
+  mismatch, and writes escape run/level pairs as `run(6) + signed 12-bit
+  level`.
+- P-pictures (MPEG-1 only): integer-pel block-matching motion estimation
+  at ±8 with half-pel refinement, MV differential via Table B-10, MB types
   skip / forward / forward+pattern / intra fallback, CBP via Table B-9,
   non-intra quant + Table B-14 VLC.
-- B-pictures: per-MB decision between forward / backward / interpolated
-  (fwd + bwd averaged) MC and intra fallback; display-order reorder buffer
-  emits each anchor before its preceding B-pictures. `forward_f_code` and
-  `backward_f_code` are both 1 (+/- 16 half-pel MV range).
+- B-pictures (MPEG-1 only): per-MB decision between forward / backward /
+  interpolated (fwd + bwd averaged) MC and intra fallback; display-order
+  reorder buffer emits each anchor before its preceding B-pictures.
+  `forward_f_code` and `backward_f_code` are both 1 (±16 half-pel MV
+  range).
 - Reconstructed references are kept in-encoder so decoder output is
   drift-free with respect to what the encoder predicted from.
 - Closed-GOP semantics: B-frames that would straddle a GOP boundary are
   promoted to P-frames.
 
-## Codec ID
+## Codec IDs
 
-`"mpeg1video"`. Accepted / produced pixel format: `Yuv420P`.
+`"mpeg1video"` (MPEG-1 Video, ISO/IEC 11172-2). `"mpeg2video"` (MPEG-2
+Video / H.262, ISO/IEC 13818-2). Accepted / produced pixel format for both
+is `Yuv420P`.
 
 ## License
 

@@ -4,6 +4,7 @@ use oxideav_core::{Error, Result};
 
 use crate::bitreader::BitReader;
 use crate::block::{copy_prediction, decode_intra_block, decode_non_intra_block};
+use crate::coding_mode::{PictureParams, AXIS_H, AXIS_V, DIR_BWD, DIR_FWD};
 use crate::headers::{PictureHeader, PictureType, SequenceHeader};
 use crate::motion::{self, MvPredictor};
 use crate::picture::PictureBuffer;
@@ -23,9 +24,9 @@ pub struct SliceState {
 }
 
 impl SliceState {
-    pub fn new() -> Self {
+    pub fn new(dc_reset: i32) -> Self {
         Self {
-            dc_pred: [1024, 1024, 1024],
+            dc_pred: [dc_reset; 3],
             fwd: MvPredictor::default(),
             bwd: MvPredictor::default(),
             last_had_forward: false,
@@ -36,7 +37,7 @@ impl SliceState {
 
 impl Default for SliceState {
     fn default() -> Self {
-        Self::new()
+        Self::new(1024)
     }
 }
 
@@ -47,6 +48,7 @@ pub fn decode_slice(
     slice_start_code: u8,
     seq: &SequenceHeader,
     pic_hdr: &PictureHeader,
+    params: &PictureParams,
     pic: &mut PictureBuffer,
     fwd_ref: Option<&PictureBuffer>,
     bwd_ref: Option<&PictureBuffer>,
@@ -63,7 +65,7 @@ pub fn decode_slice(
         br.read_u32(8)?;
     }
 
-    let mut state = SliceState::new();
+    let mut state = SliceState::new(params.intra_dc_reset_value());
 
     let mb_row = slice_start_code as i32 - 1;
     if mb_row < 0 || (mb_row as usize) >= pic.mb_height {
@@ -151,9 +153,9 @@ pub fn decode_slice(
 
         // macroblock_type per picture.
         let mb_type_flags = match picture_type {
-            PictureType::I => vlc::decode(br, mb_type::I_TABLE)?,
-            PictureType::P => vlc::decode(br, mb_type::P_TABLE)?,
-            PictureType::B => vlc::decode(br, mb_type::B_TABLE)?,
+            PictureType::I => vlc::decode(br, mb_type::i_table())?,
+            PictureType::P => vlc::decode(br, mb_type::p_table())?,
+            PictureType::B => vlc::decode(br, mb_type::b_table())?,
             PictureType::D => {
                 return Err(Error::unsupported("D-picture not supported"));
             }
@@ -172,14 +174,14 @@ pub fn decode_slice(
         if mb_type_flags.motion_forward {
             let mx = motion::decode_motion_component(
                 br,
-                pic_hdr.forward_f_code,
-                pic_hdr.full_pel_forward_vector,
+                params.f_code[DIR_FWD][AXIS_H],
+                params.full_pel_fwd,
                 &mut state.fwd.x,
             )?;
             let my = motion::decode_motion_component(
                 br,
-                pic_hdr.forward_f_code,
-                pic_hdr.full_pel_forward_vector,
+                params.f_code[DIR_FWD][AXIS_V],
+                params.full_pel_fwd,
                 &mut state.fwd.y,
             )?;
             fwd_mv = Some((mx, my));
@@ -191,14 +193,14 @@ pub fn decode_slice(
         if mb_type_flags.motion_backward {
             let mx = motion::decode_motion_component(
                 br,
-                pic_hdr.backward_f_code,
-                pic_hdr.full_pel_backward_vector,
+                params.f_code[DIR_BWD][AXIS_H],
+                params.full_pel_bwd,
                 &mut state.bwd.x,
             )?;
             let my = motion::decode_motion_component(
                 br,
-                pic_hdr.backward_f_code,
-                pic_hdr.full_pel_backward_vector,
+                params.f_code[DIR_BWD][AXIS_V],
+                params.full_pel_bwd,
                 &mut state.bwd.y,
             )?;
             bwd_mv = Some((mx, my));
@@ -210,10 +212,12 @@ pub fn decode_slice(
             state.last_had_backward = bwd_mv.is_some();
         }
 
-        // Per §2.4.4.1: DC predictors reset whenever a non-intra MB is
-        // seen (so the next intra MB starts from 1024 again).
+        // Per §2.4.4.1 / H.262 §7.2.1: DC predictors reset whenever a
+        // non-intra MB is seen (so the next intra MB starts from the reset
+        // value again).
         if !mb_type_flags.intra {
-            state.dc_pred = [1024, 1024, 1024];
+            let r = params.intra_dc_reset_value();
+            state.dc_pred = [r, r, r];
         }
 
         // Parse coded_block_pattern if this MB has pattern bit set.
@@ -227,13 +231,14 @@ pub fn decode_slice(
 
         if mb_type_flags.intra {
             // Pure intra MB.
-            decode_mb_intra(br, seq, &mut state, pic, mb_x, mb_y, quant_scale)?;
+            decode_mb_intra(br, seq, params, &mut state, pic, mb_x, mb_y, quant_scale)?;
         } else {
             // Non-intra MB: apply motion compensation and optional
             // residual add.
             decode_mb_inter(
                 br,
                 seq,
+                params,
                 &mut state,
                 pic,
                 fwd_ref,
@@ -283,9 +288,11 @@ pub fn decode_slice(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_mb_intra(
     br: &mut BitReader<'_>,
     seq: &SequenceHeader,
+    params: &PictureParams,
     state: &mut SliceState,
     pic: &mut PictureBuffer,
     mb_x: usize,
@@ -306,6 +313,7 @@ fn decode_mb_intra(
             &mut state.dc_pred[comp_idx],
             quant_scale,
             &seq.intra_quantiser,
+            params,
             sub,
             stride_ptr,
         )?;
@@ -317,6 +325,7 @@ fn decode_mb_intra(
 fn decode_mb_inter(
     br: &mut BitReader<'_>,
     seq: &SequenceHeader,
+    params: &PictureParams,
     _state: &mut SliceState,
     pic: &mut PictureBuffer,
     fwd_ref: Option<&PictureBuffer>,
@@ -376,6 +385,7 @@ fn decode_mb_inter(
                 br,
                 quant_scale,
                 &seq.non_intra_quantiser,
+                params,
                 pred_slice,
                 pred_stride,
                 sub,

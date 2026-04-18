@@ -18,7 +18,7 @@ use oxideav_core::{
     frame::VideoPlane, CodecId, CodecParameters, Error, Frame, Packet, PixelFormat, Rational,
     TimeBase, VideoFrame,
 };
-use oxideav_mpeg1video::{
+use oxideav_mpeg12video::{
     decoder::make_decoder,
     encoder::{make_encoder, DEFAULT_QUANT_SCALE},
     CODEC_ID_STR,

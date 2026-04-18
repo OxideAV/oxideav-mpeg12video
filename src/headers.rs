@@ -1,10 +1,14 @@
-//! Sequence, GOP, picture and slice headers per ISO/IEC 11172-2 §2.4.2.
+//! Sequence, GOP, picture and slice headers per ISO/IEC 11172-2 §2.4.2
+//! and H.262 §6.2.2.
 
 use oxideav_core::{Error, Result};
 
 use crate::bitreader::BitReader;
+use crate::mpeg2_ext::{Mpeg2PictureCodingExt, Mpeg2SequenceExt};
 
-/// Decoded sequence header fields.
+/// Decoded sequence header fields. The `mpeg2_seq` field is populated by the
+/// decoder when an MPEG-2 `sequence_extension` follows the MPEG-1-compatible
+/// body.
 #[derive(Clone, Debug)]
 pub struct SequenceHeader {
     pub horizontal_size: u32,
@@ -16,6 +20,8 @@ pub struct SequenceHeader {
     pub constrained_parameters_flag: bool,
     pub intra_quantiser: [u8; 64],
     pub non_intra_quantiser: [u8; 64],
+    /// MPEG-2 only. `None` for MPEG-1 streams.
+    pub mpeg2_seq: Option<Mpeg2SequenceExt>,
 }
 
 /// Default intra quant matrix from Table 2-D.15 / Annex A.
@@ -74,6 +80,7 @@ pub fn parse_sequence_header(br: &mut BitReader<'_>) -> Result<SequenceHeader> {
         constrained_parameters_flag,
         intra_quantiser: intra,
         non_intra_quantiser: non_intra,
+        mpeg2_seq: None,
     })
 }
 
@@ -128,6 +135,9 @@ pub struct PictureHeader {
     /// For B pictures.
     pub full_pel_backward_vector: bool,
     pub backward_f_code: u8,
+    /// MPEG-2 only. Populated when a `picture_coding_extension` follows this
+    /// picture header. `None` for MPEG-1 pictures.
+    pub mpeg2_pic: Option<Mpeg2PictureCodingExt>,
 }
 
 pub fn parse_picture_header(br: &mut BitReader<'_>) -> Result<PictureHeader> {
@@ -174,6 +184,7 @@ pub fn parse_picture_header(br: &mut BitReader<'_>) -> Result<PictureHeader> {
         forward_f_code: f_fwd,
         full_pel_backward_vector: fp_bwd,
         backward_f_code: f_bwd,
+        mpeg2_pic: None,
     })
 }
 

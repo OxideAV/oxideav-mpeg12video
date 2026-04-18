@@ -1,18 +1,29 @@
 [package]
-name = "oxideav-mpeg1video"
+name = "oxideav-mpeg12video"
 version = "0.0.3"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
-repository = "https://github.com/OxideAV/oxideav-mpeg1video"
+repository = "https://github.com/OxideAV/oxideav-mpeg12video"
 authors = ["Mark Karpeles"]
-description = "Pure-Rust MPEG-1 Video (ISO/IEC 11172-2) decoder and encoder for oxideav"
+description = "Pure-Rust MPEG-1 (ISO/IEC 11172-2) and MPEG-2 (H.262 / ISO/IEC 13818-2) video decoder and encoder for oxideav"
 
 readme = "README.md"
-homepage = "https://github.com/OxideAV/oxideav-mpeg1video"
-keywords = ["multimedia", "video", "mpeg", "mpeg1", "codec"]
+homepage = "https://github.com/OxideAV/oxideav-mpeg12video"
+keywords = ["multimedia", "video", "mpeg", "mpeg2", "codec"]
 categories = ["multimedia::encoding", "multimedia::video"]
 
 [dependencies]
 oxideav-core = "0.0"
 oxideav-codec = "0.0"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "dct_bench"
+harness = false
+
+[[bench]]
+name = "frame_bench"
+harness = false

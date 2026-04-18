@@ -10,7 +10,7 @@
 //! "first coefficient of a non-intra block" case (where `1s` = run=0,
 //! level=±1 instead of EOB) — that dispatch is handled at the block level.
 
-use crate::vlc::VlcEntry;
+use crate::vlc::{VlcEntry, VlcTable};
 
 #[derive(Clone, Copy, Debug)]
 pub enum DctSym {
@@ -160,9 +160,9 @@ const MPEG1_VLC: [(u32, u8); 113] = [
     (0x2, 2), // EOB
 ];
 
-pub fn table() -> &'static [VlcEntry<DctSym>] {
+pub fn table() -> &'static VlcTable<DctSym> {
     use std::sync::OnceLock;
-    static CELL: OnceLock<Vec<VlcEntry<DctSym>>> = OnceLock::new();
+    static CELL: OnceLock<VlcTable<DctSym>> = OnceLock::new();
     CELL.get_or_init(|| {
         let mut v = Vec::with_capacity(113);
         for i in 0..111 {
@@ -182,9 +182,8 @@ pub fn table() -> &'static [VlcEntry<DctSym>] {
         // EOB.
         let (code, bits) = MPEG1_VLC[112];
         v.push(VlcEntry::new(bits, code, DctSym::Eob));
-        v
+        VlcTable::new(v)
     })
-    .as_slice()
 }
 
 /// Same table but the first entry (code `1`, 2 bits — normally the `11s`
@@ -206,11 +205,10 @@ mod tests_counts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vlc::VlcEntry;
 
-    fn check_no_collision<T: Copy>(t: &[VlcEntry<T>], name: &str) {
-        for (i, e) in t.iter().enumerate() {
-            for (j, f) in t.iter().enumerate() {
+    fn check_no_collision<T: Copy>(t: &VlcTable<T>, name: &str) {
+        for (i, e) in t.entries.iter().enumerate() {
+            for (j, f) in t.entries.iter().enumerate() {
                 if i >= j {
                     continue;
                 }
@@ -239,8 +237,9 @@ mod tests {
 
     #[test]
     fn dct_table_spot_checks() {
+        let t = table();
         // Entry 0: code 0x3 (2 bits) → (run=0, level=1)
-        let e0 = &table()[0];
+        let e0 = &t.entries[0];
         assert_eq!(e0.code, 0x3);
         assert_eq!(e0.bits, 2);
         if let DctSym::RunLevel { run, level_abs } = e0.value {
@@ -250,7 +249,7 @@ mod tests {
             panic!("entry 0 should be RunLevel");
         }
         // Entry 40: code 0x3 (3 bits) → (run=1, level=1)
-        let e40 = &table()[40];
+        let e40 = &t.entries[40];
         assert_eq!(e40.code, 0x3);
         assert_eq!(e40.bits, 3);
         if let DctSym::RunLevel { run, level_abs } = e40.value {
@@ -258,13 +257,13 @@ mod tests {
             assert_eq!(level_abs, 1);
         }
         // EOB is at index 112.
-        assert!(matches!(table()[112].value, DctSym::Eob));
-        assert_eq!(table()[112].code, 0x2);
-        assert_eq!(table()[112].bits, 2);
+        assert!(matches!(t.entries[112].value, DctSym::Eob));
+        assert_eq!(t.entries[112].code, 0x2);
+        assert_eq!(t.entries[112].bits, 2);
         // Escape at index 111.
-        assert!(matches!(table()[111].value, DctSym::Escape));
-        assert_eq!(table()[111].code, 0x1);
-        assert_eq!(table()[111].bits, 6);
+        assert!(matches!(t.entries[111].value, DctSym::Escape));
+        assert_eq!(t.entries[111].code, 0x1);
+        assert_eq!(t.entries[111].bits, 6);
     }
 
     #[test]
@@ -277,9 +276,9 @@ mod tests {
     }
 }
 
-pub fn first_coeff_table() -> &'static [VlcEntry<DctSym>] {
+pub fn first_coeff_table() -> &'static VlcTable<DctSym> {
     use std::sync::OnceLock;
-    static CELL: OnceLock<Vec<VlcEntry<DctSym>>> = OnceLock::new();
+    static CELL: OnceLock<VlcTable<DctSym>> = OnceLock::new();
     CELL.get_or_init(|| {
         let mut v = Vec::with_capacity(113);
         for i in 0..111 {
@@ -316,7 +315,6 @@ pub fn first_coeff_table() -> &'static [VlcEntry<DctSym>] {
         // EOB is NOT a valid first coefficient — omit it entirely. Any
         // attempt to decode it will fail the VLC match and propagate an
         // error, which is correct for malformed streams.
-        v
+        VlcTable::new(v)
     })
-    .as_slice()
 }
