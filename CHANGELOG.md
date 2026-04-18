@@ -1,0 +1,28 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.0.4](https://github.com/OxideAV/oxideav-mpeg12video/releases/tag/v0.0.4) - 2026-04-18
+
+### Other
+
+- bump version to 0.0.4
+- satisfy cargo fmt + clippy
+- add MPEG-2 (H.262) support, rename crate, optimize VLC
+- update README + crate description to reflect I/P/B encoder
+- add B-frame encoder (FWD/BWD/BI + reorder buffer)
+- make crate standalone (pin deps, add CI + release-plz + LICENSE)
+- add Decoder::reset overrides for video decoders
+- move repo to OxideAV/oxideav-workspace
+- add publish metadata (readme/homepage/keywords/categories)
+- complete P-frame encode with half-pel ME refinement
+- add P-frame encoder (forward MC + residual)
+- add I-frame encoder
+- full I+P+B frame decode with display-order reordering
+- fix I-frame decode — always read EOB after intra AC loop
+- scaffold MPEG-1 video decoder (ISO/IEC 11172-2) — headers + VLC tables
