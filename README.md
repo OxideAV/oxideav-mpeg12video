@@ -151,6 +151,42 @@ Encoder coverage:
 Video / H.262, ISO/IEC 13818-2). Accepted / produced pixel format for both
 is `Yuv420P`.
 
+## Performance
+
+The decoder pipeline has two hot paths that got focused attention:
+
+- **VLC decode** — every table (AC coefficients, DC size, motion code,
+  MBA, CBP, MB type) is wrapped in a [`VlcTable`] that pre-computes the
+  longest codeword and builds a 512-entry 9-bit prefix LUT at first use.
+  Any codeword ≤ 9 bits is resolved in a single array lookup; only the
+  rare longer codes fall through to the linear scan. Because the hot AC
+  coefficient table has 113 entries with codewords up to 17 bits, the
+  caching + LUT together cut AC decode cost dramatically on typical
+  content.
+- **Motion compensation** — `mc_block` checks whether the source window
+  (including the half-pel partner sample) sits fully inside the reference
+  plane. Interior MBs take an unclipped fast path that uses
+  `slice::copy_from_slice` for the integer case and works on sliced
+  reference rows for the half-pel cases. Border MBs still take the
+  original clamped path.
+
+Measured on release builds with `cargo bench -p oxideav-mpeg12video`
+(256×256 synthetic content, 3 frames for the MPEG-1 IPPP bench):
+
+| Bench                                | Before  | After   | Δ      |
+|--------------------------------------|---------|---------|--------|
+| MPEG-2 I-frame decode                | 400 µs  | 241 µs  | −40 %  |
+| MPEG-1 IPPP 3-frame decode           | 801 µs  | 752 µs  | −6.3 % |
+| MPEG-2 I-frame encode                | 570 µs  | 574 µs  | ~flat  |
+| IDCT, 1000 8×8 blocks                | 51.5 µs | 51.4 µs | flat   |
+
+The IDCT kernel remains the textbook separable O(N²) cosine-table
+multiply. A fast separable IDCT (LLM / Chen-Wang) is a likely next
+speedup target for the decoder.
+
+Benchmarks live in `benches/dct_bench.rs` (IDCT / FDCT micro-benches) and
+`benches/frame_bench.rs` (full encode + decode round-trips).
+
 ## License
 
 MIT - see [LICENSE](LICENSE).
