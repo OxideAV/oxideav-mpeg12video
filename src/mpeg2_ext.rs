@@ -4,17 +4,13 @@
 //! carry a 4-bit `extension_start_code_identifier` selecting which extension
 //! follows. The first-pass decoder understands:
 //!
-//!   * `sequence_extension` (id = 0x1)         — profile, level, progressive,
-//!                                                chroma format, size / VBV /
-//!                                                bit-rate extensions, frame-
-//!                                                rate extension.
-//!   * `picture_coding_extension` (id = 0x8)   — per-direction-per-axis
-//!                                                f_codes, intra_dc_precision,
-//!                                                picture_structure, various
-//!                                                per-frame decoding flags.
-//!   * `quant_matrix_extension` (id = 0x3)     — optional non-default intra
-//!                                                and non-intra quant
-//!                                                matrices.
+//! * `sequence_extension` (id = 0x1) — profile, level, progressive, chroma
+//!   format, size / VBV / bit-rate extensions, frame-rate extension.
+//! * `picture_coding_extension` (id = 0x8) — per-direction-per-axis f_codes,
+//!   intra_dc_precision, picture_structure, various per-frame decoding
+//!   flags.
+//! * `quant_matrix_extension` (id = 0x3) — optional non-default intra and
+//!   non-intra quant matrices.
 //!
 //! All other extension IDs (sequence_display, copyright, picture_display,
 //! scalable_*) are parsed only insofar as required to locate the next start

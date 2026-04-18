@@ -26,7 +26,8 @@ fn mk_sample_block(seed: u32) -> [f32; 64] {
     let mut b = [0.0f32; 64];
     for j in 0..8 {
         for i in 0..8 {
-            let noise = ((seed.wrapping_mul(17 + i as u32).wrapping_add(j as u32 * 13)) % 16) as f32;
+            let noise =
+                ((seed.wrapping_mul(17 + i as u32).wrapping_add(j as u32 * 13)) % 16) as f32;
             b[j * 8 + i] = 64.0 + (i + j) as f32 * 10.0 + noise;
         }
     }
@@ -35,7 +36,9 @@ fn mk_sample_block(seed: u32) -> [f32; 64] {
 
 fn bench_idct(c: &mut Criterion) {
     let n = 1000usize;
-    let blocks: Vec<[f32; 64]> = (0..n).map(|i| mk_dequant_block(i as u32 * 2654435761)).collect();
+    let blocks: Vec<[f32; 64]> = (0..n)
+        .map(|i| mk_dequant_block(i as u32 * 2654435761))
+        .collect();
     let mut group = c.benchmark_group("idct");
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function(BenchmarkId::new("batch", n), |b| {
@@ -52,7 +55,9 @@ fn bench_idct(c: &mut Criterion) {
 
 fn bench_fdct(c: &mut Criterion) {
     let n = 1000usize;
-    let blocks: Vec<[f32; 64]> = (0..n).map(|i| mk_sample_block(i as u32 * 2654435761)).collect();
+    let blocks: Vec<[f32; 64]> = (0..n)
+        .map(|i| mk_sample_block(i as u32 * 2654435761))
+        .collect();
     let mut group = c.benchmark_group("fdct");
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function(BenchmarkId::new("batch", n), |b| {

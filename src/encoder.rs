@@ -509,23 +509,24 @@ fn encode_anchor_picture(
     }
     if enc.codec == Codec::Mpeg2 {
         write_start_code(&mut bw, EXTENSION_START_CODE);
-        let mut ext = Mpeg2PictureCodingExt::default();
         // For I-only output the f_codes are unused; spec requires them to
         // be set to 15 ("forbidden") — our parser tolerates any value since
         // the decoder only consults them when the MB actually has an MV.
-        ext.f_code = [[15, 15], [15, 15]];
-        ext.intra_dc_precision = 0;
-        ext.picture_structure = 0b11;
-        ext.top_field_first = true;
-        ext.frame_pred_frame_dct = true;
-        ext.concealment_motion_vectors = false;
-        ext.q_scale_type = false;
-        ext.intra_vlc_format = false;
-        ext.alternate_scan = false;
-        ext.repeat_first_field = false;
-        ext.chroma_420_type = true;
-        ext.progressive_frame = true;
-        ext.composite_display_flag = false;
+        let ext = Mpeg2PictureCodingExt {
+            f_code: [[15, 15], [15, 15]],
+            intra_dc_precision: 0,
+            picture_structure: 0b11,
+            top_field_first: true,
+            frame_pred_frame_dct: true,
+            concealment_motion_vectors: false,
+            q_scale_type: false,
+            intra_vlc_format: false,
+            alternate_scan: false,
+            repeat_first_field: false,
+            chroma_420_type: true,
+            progressive_frame: true,
+            composite_display_flag: false,
+        };
         write_picture_coding_extension(&mut bw, &ext);
         bw.align_to_byte();
     }
@@ -919,10 +920,8 @@ fn encode_block_intra(
         } else {
             (2 * lv * q * qf) / 16
         };
-        if !mpeg2 {
-            if rec & 1 == 0 && rec != 0 {
-                rec = if rec > 0 { rec - 1 } else { rec + 1 };
-            }
+        if !mpeg2 && rec & 1 == 0 && rec != 0 {
+            rec = if rec > 0 { rec - 1 } else { rec + 1 };
         }
         rec = rec.clamp(-2048, 2047);
         coeffs[nat] = rec;
@@ -1990,7 +1989,7 @@ fn emit_escape(bw: &mut BitWriter, run: u32, lv: i32, codec: Codec) -> Result<()
             }
         }
         Codec::Mpeg2 => {
-            if lv == 0 || lv == -2048 || lv > 2047 || lv < -2047 {
+            if lv == 0 || lv == -2048 || !(-2047..=2047).contains(&lv) {
                 return Err(Error::invalid("AC level out of MPEG-2 escape range"));
             }
             // 12-bit two's-complement.

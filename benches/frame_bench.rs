@@ -51,8 +51,14 @@ fn synth_frame() -> VideoFrame {
         time_base: TimeBase::new(1, 25),
         planes: vec![
             VideoPlane { stride: w, data: y },
-            VideoPlane { stride: cw, data: cb },
-            VideoPlane { stride: cw, data: cr },
+            VideoPlane {
+                stride: cw,
+                data: cb,
+            },
+            VideoPlane {
+                stride: cw,
+                data: cr,
+            },
         ],
     }
 }
@@ -157,20 +163,22 @@ fn encode_mpeg1_gop(frames: &[VideoFrame]) -> Vec<u8> {
 fn bench_decode_mpeg1_ippp(c: &mut Criterion) {
     // A 3-frame IPP GOP exercises inter decode (motion compensation) in
     // addition to intra decode.
-    let frames: Vec<VideoFrame> = (0..3).map(|i| {
-        let mut f = synth_frame();
-        // Nudge each frame so motion estimation has something to work on.
-        let shift = (i * 2) as usize;
-        let w = W as usize;
-        let h = H as usize;
-        for row in 0..h {
-            for col in 0..w {
-                let orig = f.planes[0].data[row * w + col];
-                f.planes[0].data[row * w + col] = orig.wrapping_add(shift as u8);
+    let frames: Vec<VideoFrame> = (0..3)
+        .map(|i| {
+            let mut f = synth_frame();
+            // Nudge each frame so motion estimation has something to work on.
+            let shift = (i * 2) as usize;
+            let w = W as usize;
+            let h = H as usize;
+            for row in 0..h {
+                for col in 0..w {
+                    let orig = f.planes[0].data[row * w + col];
+                    f.planes[0].data[row * w + col] = orig.wrapping_add(shift as u8);
+                }
             }
-        }
-        f
-    }).collect();
+            f
+        })
+        .collect();
     let bytes = encode_mpeg1_gop(&frames);
     let mut group = c.benchmark_group("decode");
     group.throughput(Throughput::Elements(3));

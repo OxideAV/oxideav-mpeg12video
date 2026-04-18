@@ -62,10 +62,7 @@ fn synth_frame(idx: u32) -> VideoFrame {
         pts: Some(idx as i64),
         time_base: TimeBase::new(1, 25),
         planes: vec![
-            VideoPlane {
-                stride: w,
-                data: y,
-            },
+            VideoPlane { stride: w, data: y },
             VideoPlane {
                 stride: cw,
                 data: cb,
@@ -88,7 +85,8 @@ fn encode_frames(frames: &[VideoFrame]) -> Vec<u8> {
     let mut enc = make_encoder_mpeg2(&params).expect("build mpeg2 encoder");
     let mut data = Vec::new();
     for f in frames {
-        enc.send_frame(&Frame::Video(f.clone())).expect("send_frame");
+        enc.send_frame(&Frame::Video(f.clone()))
+            .expect("send_frame");
         loop {
             match enc.receive_packet() {
                 Ok(p) => data.extend_from_slice(&p.data),
@@ -185,9 +183,7 @@ fn mpeg2_iframe_round_trip_3_frames() {
     let n_pic = count_start_code(&bytes, 0x00);
     let n_ext = count_start_code(&bytes, 0xB5);
     let n_gop = count_start_code(&bytes, 0xB8);
-    eprintln!(
-        "start-code census: seq={n_seq} gop={n_gop} pic={n_pic} ext(B5)={n_ext}"
-    );
+    eprintln!("start-code census: seq={n_seq} gop={n_gop} pic={n_pic} ext(B5)={n_ext}");
     assert_eq!(n_seq, 3, "expected one sequence header per I-frame");
     assert_eq!(n_pic, 3, "expected one picture header per I-frame");
     // 1 sequence_extension + 1 picture_coding_extension per I-frame = 2 * 3.

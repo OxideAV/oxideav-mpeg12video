@@ -226,10 +226,8 @@ pub fn decode_non_intra_block(
         } else {
             ((2 * level + add) * quant_scale as i32 * qf) / 16
         };
-        if !params.is_mpeg2() {
-            if rec & 1 == 0 && rec != 0 {
-                rec = if rec > 0 { rec - 1 } else { rec + 1 };
-            }
+        if !params.is_mpeg2() && rec & 1 == 0 && rec != 0 {
+            rec = if rec > 0 { rec - 1 } else { rec + 1 };
         }
         rec = rec.clamp(-2048, 2047);
         coeffs[ZIGZAG[k]] = rec;
@@ -287,7 +285,11 @@ fn decode_escape_run_level(br: &mut BitReader<'_>, params: &PictureParams) -> Re
     if params.is_mpeg2() {
         let bits = br.read_u32(12)? as i32;
         // Sign-extend 12-bit two's-complement.
-        let level = if bits & 0x800 != 0 { bits - 0x1000 } else { bits };
+        let level = if bits & 0x800 != 0 {
+            bits - 0x1000
+        } else {
+            bits
+        };
         if level == 0 || level == -2048 {
             return Err(Error::invalid("mpeg2 escape: forbidden level (0 or -2048)"));
         }

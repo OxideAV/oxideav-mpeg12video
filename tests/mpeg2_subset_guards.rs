@@ -145,7 +145,11 @@ fn rejects_alternate_scan() {
     // For I-only default: tff=1, fpfdct=1, conceal=0, qst=0, ivlc=0,
     //   altscan=0, rff=0, c420=1 → 0b1100_0001 = 0xC1
     // For the altered variant: altscan=1 → 0b1100_0101 = 0xC5
-    assert_eq!(bytes[ext_start + 3], 0xC1, "unexpected pic-coding-ext byte3");
+    assert_eq!(
+        bytes[ext_start + 3],
+        0xC1,
+        "unexpected pic-coding-ext byte3"
+    );
     bytes[ext_start + 3] = 0xC5; // set alternate_scan=1
     let msg = decode_expect_unsupported(&bytes);
     assert!(
@@ -162,15 +166,15 @@ fn rejects_intra_vlc_format() {
     assert_eq!(bytes[ext_start + 3], 0xC1);
     // intra_vlc_format is bit 5 from MSB in byte 3 (bit index 2 from LSB).
     bytes[ext_start + 3] = 0xC5 | 0x04; // set intra_vlc_format=1 + alternate_scan=1 → we want
-    // Actually let's isolate: set intra_vlc_format=1 only (bit 2 from LSB of byte3).
+                                        // Actually let's isolate: set intra_vlc_format=1 only (bit 2 from LSB of byte3).
     bytes[ext_start + 3] = 0xC1 | 0x04; // 0b1100_0101 with bit2 set → 0b1100_0101 = 0xC5
-    // Wait that hits alternate_scan too. Let me reconsider the bit layout.
-    //
-    // byte 3 bits (MSB→LSB): tff, fpfdct, conceal, qst, ivlc, altscan, rff, c420
-    //                         7    6      5        4    3     2        1    0
-    // Default: 1100_0001 = 0xC1.
-    //   bit 3 (= 0x08) is intra_vlc_format
-    //   bit 2 (= 0x04) is alternate_scan
+                                        // Wait that hits alternate_scan too. Let me reconsider the bit layout.
+                                        //
+                                        // byte 3 bits (MSB→LSB): tff, fpfdct, conceal, qst, ivlc, altscan, rff, c420
+                                        //                         7    6      5        4    3     2        1    0
+                                        // Default: 1100_0001 = 0xC1.
+                                        //   bit 3 (= 0x08) is intra_vlc_format
+                                        //   bit 2 (= 0x04) is alternate_scan
     bytes[ext_start + 3] = 0xC1 | 0x08; // set intra_vlc_format=1
     let msg = decode_expect_unsupported(&bytes);
     assert!(
