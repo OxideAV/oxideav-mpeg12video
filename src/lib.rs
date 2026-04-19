@@ -52,7 +52,7 @@ pub mod tables;
 pub mod vlc;
 
 use oxideav_codec::CodecRegistry;
-use oxideav_core::{CodecCapabilities, CodecId};
+use oxideav_core::{CodecCapabilities, CodecId, CodecTag};
 
 pub const CODEC_ID_STR: &str = "mpeg1video";
 pub const CODEC_ID_MPEG2_STR: &str = "mpeg2video";
@@ -68,7 +68,12 @@ pub fn register(reg: &mut CodecRegistry) {
     // Encoder produces I + P pictures by default; B-frames are available via
     // `encoder::make_encoder_with_gop`.
     let enc_caps = caps.with_intra_only(false);
-    reg.register_encoder_impl(id, enc_caps, encoder::make_encoder);
+    reg.register_encoder_impl(id.clone(), enc_caps, encoder::make_encoder);
+
+    // AVI FourCCs — MPEG-1. `MPG1` canonical, `MPEG` legacy. Both land here.
+    for fcc in &[b"MPG1", b"MPEG"] {
+        reg.claim_tag(id.clone(), CodecTag::fourcc(fcc), 10, None);
+    }
 
     // MPEG-2 video (H.262). First-pass milestone: decoder supports I/P/B
     // pictures in progressive 4:2:0 Main Profile; encoder produces I-only
@@ -80,5 +85,14 @@ pub fn register(reg: &mut CodecRegistry) {
     let id_m2 = CodecId::new(CODEC_ID_MPEG2_STR);
     reg.register_decoder_impl(id_m2.clone(), caps_m2.clone(), decoder::make_decoder_mpeg2);
     let enc_caps_m2 = caps_m2.with_intra_only(true);
-    reg.register_encoder_impl(id_m2, enc_caps_m2, encoder::make_encoder_mpeg2);
+    reg.register_encoder_impl(id_m2.clone(), enc_caps_m2, encoder::make_encoder_mpeg2);
+
+    // AVI FourCCs — MPEG-2 (H.262). `MPG2` / `MP2V` / `EM2V` canonical; `HDV1`..`HDV9`
+    // are Sony/Canon HDV camcorder variants (1080i / 720p at specific bitrates).
+    for fcc in &[
+        b"MPG2", b"MP2V", b"EM2V", b"HDV1", b"HDV2", b"HDV3", b"HDV4", b"HDV5", b"HDV6", b"HDV7",
+        b"HDV8", b"HDV9",
+    ] {
+        reg.claim_tag(id_m2.clone(), CodecTag::fourcc(fcc), 10, None);
+    }
 }
