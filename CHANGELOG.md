@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.8...v0.0.9) - 2026-04-26
+
+### Other
+
+- adopt slim VideoFrame shape
+- pin release-plz to patch-only bumps
+
 ## [0.0.8](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.7...v0.0.8) - 2026-04-25
 
 ### Other
