@@ -546,11 +546,13 @@ fn encode_anchor_picture(
         );
         if enc.codec == Codec::Mpeg2 {
             write_start_code(&mut bw, EXTENSION_START_CODE);
-            let mut seq_ext = Mpeg2SequenceExt::default();
             // Override chroma_format to match the input pixel format.
-            seq_ext.chroma_format = chroma_format.to_code();
             // All our MPEG-2 output is progressive at the sequence level.
-            seq_ext.progressive_sequence = true;
+            let seq_ext = Mpeg2SequenceExt {
+                chroma_format: chroma_format.to_code(),
+                progressive_sequence: true,
+                ..Mpeg2SequenceExt::default()
+            };
             write_sequence_extension(&mut bw, &seq_ext);
             bw.align_to_byte();
         }
@@ -1670,8 +1672,8 @@ fn build_mc_prediction_into(
     let c_h_shift = chroma_format.chroma_h_shift();
     let c_v_shift = chroma_format.chroma_v_shift();
     // Chroma block origin in chroma samples.
-    let c_px = (mb_col * 16 >> c_h_shift) as i32;
-    let c_py = (mb_row * 16 >> c_v_shift) as i32;
+    let c_px = ((mb_col * 16) >> c_h_shift) as i32;
+    let c_py = ((mb_row * 16) >> c_v_shift) as i32;
     let mv_cx = crate::motion::scale_mv_h_to_chroma(mv_x, chroma_format);
     let mv_cy = crate::motion::scale_mv_v_to_chroma(mv_y, chroma_format);
     let rc_h = (enc.ref_cb.len() / enc.ref_c_stride) as i32;
@@ -1834,6 +1836,7 @@ fn lookup_motion_code(abs: u8) -> Option<VlcEntry<u8>> {
 /// Quantise one 8x8 block of inter residual. `src` is the current samples,
 /// `pred` is the motion-compensated prediction. Returns 64 zigzag-ordered
 /// quantised levels.
+#[allow(clippy::too_many_arguments)]
 fn quantise_inter_block(
     src: &[u8],
     src_stride: usize,
@@ -2007,6 +2010,7 @@ fn quantise_p_mb_residual(
 
 /// Reconstruct one 8x8 inter block: dequant levels → IDCT → add prediction → clamp.
 /// Writes results into `recon` at position `(dst_x0, dst_y0)` with stride `recon_stride`.
+#[allow(clippy::too_many_arguments)]
 fn reconstruct_inter_block_into(
     levels: &[i32; 64],
     pred: &[u8],
