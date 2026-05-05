@@ -183,6 +183,32 @@ fn accepts_alternate_scan_for_dc_only_stream() {
     }
 }
 
+/// Field pictures (`picture_structure ∈ {01, 10}`) are still rejected at
+/// the build_picture_params guard. Patch byte 2 of picture_coding_extension
+/// to switch picture_structure from `11` (frame) to `01` (top field).
+///
+/// Byte layout (bits MSB→LSB, see `write_picture_coding_extension`):
+///   byte 2 = `[f_code(1,1) low 4 bits][intra_dc_precision 2][picture_structure 2]`
+/// Default = `1111 00 11` = 0xF3 (f_code=0xF, idc=0, ps=11).
+/// We want                  `1111 00 01` = 0xF1 (ps=01, top field).
+#[test]
+fn rejects_field_picture_structure() {
+    let frame = tiny_frame();
+    let mut bytes = encode_one_mpeg2(&frame);
+    let ext_start = picture_coding_ext_start(&bytes);
+    assert_eq!(
+        bytes[ext_start + 2],
+        0xF3,
+        "unexpected pic-coding-ext byte2"
+    );
+    bytes[ext_start + 2] = 0xF1;
+    let msg = decode_expect_unsupported(&bytes);
+    assert!(
+        msg.contains("field pictures"),
+        "expected field-picture rejection, got: {msg}"
+    );
+}
+
 #[test]
 fn rejects_intra_vlc_format() {
     let frame = tiny_frame();

@@ -26,11 +26,15 @@
 //! * Milestone 8 — MPEG-2 video decoder: sequence_extension +
 //!   picture_coding_extension parsing, per-direction-per-axis f_codes,
 //!   MPEG-2 intra / non-intra dequantisation, MPEG-2 global-XOR mismatch,
-//!   MPEG-2 escape (6-bit run + 12-bit signed level). Progressive Main
-//!   Profile @ Main Level 4:2:0 only; field pictures, 4:2:2/4:4:4,
-//!   intra_vlc_format=1, alternate_scan, non-linear q_scale, dual-prime
-//!   and 16×8 MVs are rejected.
+//!   MPEG-2 escape (6-bit run + 12-bit signed level). `alternate_scan`
+//!   and non-linear `q_scale_type` are honoured per picture.
 //! * Milestone 9 — MPEG-2 I-frame encoder (I-only, progressive 4:2:0).
+//! * Milestone 10 — MPEG-2 decoder broadcast-class coverage:
+//!   4:2:2 / 4:4:4 chroma, interlaced frame pictures with field-DCT and
+//!   field motion (frame_motion_type ∈ {Frame, Field, DualPrime}),
+//!   concealment motion vectors. Field pictures
+//!   (picture_structure ∈ {TopField, BottomField}) and intra_vlc_format=1
+//!   remain rejected.
 //!
 //! This crate intentionally has no runtime dependencies beyond `oxideav-core`
 //! and `oxideav-codec`.

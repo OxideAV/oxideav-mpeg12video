@@ -343,8 +343,9 @@ fn apply_mpeg2_mismatch(coeffs: &mut [i32; 64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coding_mode::{Codec, PictureParams};
+    use crate::coding_mode::{Codec, PictureParams, PictureStructure};
     use crate::headers::{ALT_SCAN, DEFAULT_INTRA_QUANT, ZIGZAG};
+    use crate::picture::ChromaFormat;
     use oxideav_core::bits::BitWriter;
 
     fn make_params(alternate_scan: bool) -> PictureParams {
@@ -357,6 +358,12 @@ mod tests {
             f_code: [[15, 15], [15, 15]],
             full_pel_fwd: false,
             full_pel_bwd: false,
+            chroma_format: ChromaFormat::Yuv420,
+            picture_structure: PictureStructure::Frame,
+            frame_pred_frame_dct: true,
+            concealment_motion_vectors: false,
+            progressive_frame: true,
+            top_field_first: true,
         }
     }
 

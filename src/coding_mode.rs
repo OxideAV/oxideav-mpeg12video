@@ -19,12 +19,36 @@
 //! [`Codec`] discriminant selects between the two bitstream dialects.
 
 use crate::headers::PictureHeader;
+use crate::picture::ChromaFormat;
 
 /// Which video-coding dialect this picture belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Codec {
     Mpeg1,
     Mpeg2,
+}
+
+/// MPEG-2 `picture_structure` (H.262 §6.3.10, 2-bit field). For frame
+/// pictures (the most common case), [`PictureStructure::Frame`] is used and
+/// the picture is decoded as a single 16-row macroblock grid. Field pictures
+/// (top / bottom) require pairing two coded pictures into one displayed
+/// frame and are deferred in this milestone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PictureStructure {
+    TopField,
+    BottomField,
+    Frame,
+}
+
+impl PictureStructure {
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0b01 => Some(Self::TopField),
+            0b10 => Some(Self::BottomField),
+            0b11 => Some(Self::Frame),
+            _ => None,
+        }
+    }
 }
 
 /// Direction + axis index helpers for [`PictureParams::f_code`].
@@ -70,6 +94,28 @@ pub struct PictureParams {
     pub f_code: [[u8; 2]; 2],
     pub full_pel_fwd: bool,
     pub full_pel_bwd: bool,
+    /// MPEG-2 `chroma_format` from `sequence_extension`. MPEG-1 is always
+    /// [`ChromaFormat::Yuv420`].
+    pub chroma_format: ChromaFormat,
+    /// MPEG-2 `picture_structure` (H.262 §6.3.10). MPEG-1 is always
+    /// [`PictureStructure::Frame`].
+    pub picture_structure: PictureStructure,
+    /// MPEG-2 `frame_pred_frame_dct`. When `true` the macroblock layer omits
+    /// the `frame_motion_type` / `field_motion_type` and `dct_type` bits and
+    /// the picture is encoded as a single frame (no field DCT, no field MC).
+    /// MPEG-1 implicitly behaves as if `true`.
+    pub frame_pred_frame_dct: bool,
+    /// MPEG-2 `concealment_motion_vectors`. When `true`, intra macroblocks
+    /// in I and P pictures carry an extra set of motion vectors so a decoder
+    /// can replace blocks lost to channel errors. The decoder consumes (and
+    /// discards) these vectors so the bitstream stays in sync.
+    pub concealment_motion_vectors: bool,
+    /// MPEG-2 `progressive_frame`. False for interlaced frames; only meaningful
+    /// inside a frame picture (`picture_structure = Frame`).
+    pub progressive_frame: bool,
+    /// MPEG-2 `top_field_first`. Carries display-order parity for interlaced
+    /// frame pictures.
+    pub top_field_first: bool,
 }
 
 impl PictureParams {
@@ -135,6 +181,12 @@ impl PictureParams {
             f_code: [[fwd, fwd], [bwd, bwd]],
             full_pel_fwd: ph.full_pel_forward_vector,
             full_pel_bwd: ph.full_pel_backward_vector,
+            chroma_format: ChromaFormat::Yuv420,
+            picture_structure: PictureStructure::Frame,
+            frame_pred_frame_dct: true,
+            concealment_motion_vectors: false,
+            progressive_frame: true,
+            top_field_first: true,
         }
     }
 }
@@ -154,6 +206,12 @@ mod tests {
             f_code: [[1, 1], [1, 1]],
             full_pel_fwd: false,
             full_pel_bwd: false,
+            chroma_format: ChromaFormat::Yuv420,
+            picture_structure: PictureStructure::Frame,
+            frame_pred_frame_dct: true,
+            concealment_motion_vectors: false,
+            progressive_frame: true,
+            top_field_first: true,
         };
         assert_eq!(p.intra_dc_reset_value(), 1024);
         p.codec = Codec::Mpeg2;
@@ -179,6 +237,12 @@ mod tests {
             f_code: [[1, 1], [1, 1]],
             full_pel_fwd: false,
             full_pel_bwd: false,
+            chroma_format: ChromaFormat::Yuv420,
+            picture_structure: PictureStructure::Frame,
+            frame_pred_frame_dct: true,
+            concealment_motion_vectors: false,
+            progressive_frame: true,
+            top_field_first: true,
         };
         for code in 1u8..=31 {
             assert_eq!(p1.quantiser_scale(code), code, "MPEG-1 code {code}");
@@ -218,6 +282,12 @@ mod tests {
             f_code: [[1, 1], [1, 1]],
             full_pel_fwd: false,
             full_pel_bwd: false,
+            chroma_format: ChromaFormat::Yuv420,
+            picture_structure: PictureStructure::Frame,
+            frame_pred_frame_dct: true,
+            concealment_motion_vectors: false,
+            progressive_frame: true,
+            top_field_first: true,
         };
         assert_eq!(p.intra_dc_mult(), 8);
         p.intra_dc_precision = 1;

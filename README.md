@@ -59,13 +59,8 @@ Decoder coverage:
 
 - Sequence header, GOP header, picture header, slice / macroblock / block
   layers.
-- MPEG-2 `sequence_extension` and `picture_coding_extension` parsing
-  (progressive Main Profile @ Main Level 4:2:0). `alternate_scan`
-  (H.262 Figure 7-3) and the non-linear `q_scale_type = 1` quantiser-scale
-  table (H.262 Table 7-6) are honoured per picture. Unsupported features
-  (interlaced, 4:2:2/4:4:4, `intra_vlc_format=1`, field / dual-prime /
-  16×8 MVs, concealment MVs, scalable extensions) are rejected with a
-  clear `Error::Unsupported` rather than mis-decoded.
+- MPEG-2 `sequence_extension` + `picture_coding_extension` +
+  `quant_matrix_extension` parsing.
 - Picture types I, P, B (D-pictures are rejected — obsolete, MPEG-1 only).
 - Forward + backward motion compensation with half-pel bilinear
   interpolation; interpolated (averaged) B-frame prediction.
@@ -77,8 +72,34 @@ Decoder coverage:
 - Display-order reordering driven by `temporal_reference` + the
   most-recent GOP anchor. B-pictures are emitted in place; I/P pictures
   are emitted one anchor late so trailing B-pictures can reference them.
-- 4:2:0 chroma, 12-bit max dimensions (4095 × 4095 for MPEG-1; MP@ML
-  1920 × 1152 capability hint for MPEG-2).
+- 12-bit max dimensions (4095 × 4095 for MPEG-1; MP@ML 1920 × 1152 capability
+  hint for MPEG-2).
+
+MPEG-2 (H.262) decoder feature matrix:
+
+- Chroma formats: 4:2:0 (Main), 4:2:2 (High-422 / IMX), 4:4:4 (High-444).
+- Frame pictures (`picture_structure = 11`) only; field pictures are
+  rejected.
+- Interlaced frame pictures (`progressive_frame = 0`) including
+  `frame_pred_frame_dct = 0` with per-MB `dct_type` (frame DCT vs field
+  DCT, H.262 §6.3.17.1).
+- Frame motion vectors and field motion vectors in frame pictures
+  (`frame_motion_type ∈ {Frame, Field}`).
+- Dual-prime motion vectors (P-pictures, `frame_motion_type = DualPrime`,
+  H.262 §6.3.17.2 / §7.6.3.6) — single transmitted MV plus a
+  parity-pair `dmvector` averaged into the prediction.
+- Concealment motion vectors — consumed and discarded so the bitstream
+  parser stays in sync (the decoder doesn't perform error concealment).
+- `alternate_scan` (H.262 Figure 7-3) and the non-linear `q_scale_type = 1`
+  quantiser-scale table (H.262 Table 7-6).
+- Output `VideoFrame` carries chroma planes sized to the format
+  (`Y_w × Y_h`, `Y_w/2 × Y_h` for 4:2:2, `Y_w × Y_h` for 4:4:4).
+
+Still rejected with a clear `Error::Unsupported`:
+
+- Field pictures (`picture_structure ∈ {01, 10}`).
+- `intra_vlc_format = 1` (Table B-15 alternate intra AC VLC).
+- Scalable extensions (spatial / temporal / SNR).
 
 ## Encoder
 

@@ -26,6 +26,7 @@
 
 use oxideav_core::Result;
 
+use crate::picture::ChromaFormat;
 use crate::tables::motion;
 use crate::vlc;
 use oxideav_core::bits::BitReader;
@@ -43,6 +44,66 @@ impl MvPredictor {
         self.x = 0;
         self.y = 0;
     }
+}
+
+/// Decode one MPEG-2 motion-vector component per H.262 §7.6.3.1.
+///
+/// Differences from the MPEG-1 path:
+///   * `f_code` is per-direction-per-axis (range 1..=9 per H.262 §6.3.17).
+///   * No `full_pel` — vectors are always in half-pel units.
+///   * Modulo wrap range is `range = 16 << r_size`. The maximum f_code = 15
+///     means "vector axis unused" (e.g. I-pictures); decoder may treat it
+///     as identity.
+///
+/// Returns the reconstructed vector value in half-pel units. `predictor` is
+/// the running predictor for this vector component and direction, updated
+/// in place to the reconstructed vector value.
+pub fn decode_motion_component_mpeg2(
+    br: &mut BitReader<'_>,
+    f_code: u8,
+    predictor: &mut i32,
+) -> Result<i32> {
+    debug_assert!(
+        (1..=15).contains(&f_code),
+        "MPEG-2 motion: f_code = {f_code} out of range"
+    );
+    let r_size = (f_code - 1) as u32;
+    let f = 1i32 << r_size;
+    let motion_code_abs = vlc::decode(br, motion::table())? as i32;
+    let motion_code = if motion_code_abs == 0 {
+        0
+    } else {
+        let sign = br.read_u32(1)?;
+        if sign == 1 {
+            -motion_code_abs
+        } else {
+            motion_code_abs
+        }
+    };
+    let complement_r = if f == 1 || motion_code == 0 {
+        0i32
+    } else {
+        br.read_u32(r_size)? as i32
+    };
+    // §7.6.3.1 reconstruction (same shape as MPEG-1 but with the modulo
+    // wrap base equal to `range = 16 * f`).
+    let little = if motion_code == 0 {
+        0
+    } else {
+        (motion_code.abs() - 1) * f + complement_r + 1
+    };
+    let delta = if motion_code < 0 { -little } else { little };
+    let high = (16 * f) - 1; // Table 7-7
+    let low = -16 * f;
+    let range = 32 * f;
+    let mut new_vec = *predictor + delta;
+    if new_vec < low {
+        new_vec += range;
+    } else if new_vec > high {
+        new_vec -= range;
+    }
+    *predictor = new_vec;
+    Ok(new_vec)
 }
 
 /// Decode one motion-vector component from the bitstream per §2.4.3.4.
@@ -107,6 +168,25 @@ pub fn decode_motion_component(
     // full_pel vectors are transmitted in whole-pel units; scale to the
     // half-pel unit used by the MC stages.
     Ok(if full_pel { new_vec * 2 } else { new_vec })
+}
+
+/// Decode the `dmvector[]` 1-or-3-bit field used by dual-prime
+/// motion compensation per H.262 §6.3.17.2 / §7.6.3.6.
+///
+/// The encoded stream is one of:
+///   * `0`  — dmv = 0
+///   * `10` — dmv = +1
+///   * `11` — dmv = -1
+///
+/// Returned as an i32 in `{-1, 0, +1}`.
+pub fn decode_dmvector(br: &mut BitReader<'_>) -> Result<i32> {
+    if br.read_u32(1)? == 0 {
+        Ok(0)
+    } else if br.read_u32(1)? == 0 {
+        Ok(1)
+    } else {
+        Ok(-1)
+    }
 }
 
 /// Copy a `w × h` rectangle from `ref_plane` into `dst`, starting at pixel
@@ -339,6 +419,31 @@ fn split_half(v: i32) -> (i32, bool) {
 ///   right_half_for_c = (recon_right_for / 2) - 2*right_for_c
 /// Equivalently: chroma_mv_half = luma_mv_half / 2 (integer division
 /// toward -infinity), giving a value in half-chroma-pel units.
+/// Scale a luma motion vector horizontal component to its chroma half-pel
+/// equivalent for an arbitrary [`ChromaFormat`].
+///
+/// 4:2:0 / 4:2:2 chroma is horizontally subsampled by 2 → divide by 2 with
+/// floor (the 4:2:0 path retained from the previous code base). 4:4:4 chroma
+/// has the same horizontal grid as luma → return the value unchanged.
+pub fn scale_mv_h_to_chroma(luma_mv_half: i32, fmt: ChromaFormat) -> i32 {
+    match fmt {
+        ChromaFormat::Yuv420 | ChromaFormat::Yuv422 => luma_mv_half.div_euclid(2),
+        ChromaFormat::Yuv444 => luma_mv_half,
+    }
+}
+
+/// Scale a luma motion vector vertical component to its chroma half-pel
+/// equivalent for an arbitrary [`ChromaFormat`].
+///
+/// 4:2:0 chroma is vertically subsampled by 2 → divide by 2 with floor.
+/// 4:2:2 / 4:4:4 chroma has full vertical resolution → pass through.
+pub fn scale_mv_v_to_chroma(luma_mv_half: i32, fmt: ChromaFormat) -> i32 {
+    match fmt {
+        ChromaFormat::Yuv420 => luma_mv_half.div_euclid(2),
+        ChromaFormat::Yuv422 | ChromaFormat::Yuv444 => luma_mv_half,
+    }
+}
+
 pub fn scale_mv_to_chroma(luma_mv_half: i32) -> i32 {
     // For 4:2:0, chroma sits at half the resolution. MPEG-1 spec defines
     //   right_for_c    = (right_for     / 2)

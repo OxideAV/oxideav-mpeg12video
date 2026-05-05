@@ -8,14 +8,14 @@ use oxideav_core::{
     CodecId, CodecParameters, Error, Frame, Packet, Rational, Result, TimeBase, VideoFrame,
 };
 
-use crate::coding_mode::{Codec, PictureParams};
+use crate::coding_mode::{Codec, PictureParams, PictureStructure};
 use crate::headers::{
     frame_rate_for_code, parse_gop_header, parse_picture_header, parse_sequence_header, GopHeader,
     PictureHeader, PictureType, SequenceHeader,
 };
 use crate::mb::decode_slice;
 use crate::mpeg2_ext::{parse_extension, ParsedExt};
-use crate::picture::{PictureBuffer, ReferenceManager};
+use crate::picture::{ChromaFormat, PictureBuffer, ReferenceManager};
 use crate::start_codes::{
     self, EXTENSION_START_CODE, GROUP_START_CODE, SEQUENCE_END_CODE, SEQUENCE_ERROR_CODE,
     SEQUENCE_HEADER_CODE, USER_DATA_START_CODE,
@@ -168,19 +168,17 @@ impl Mpeg1VideoDecoder {
                 start_codes::PICTURE_START_CODE => {
                     let mut br = BitReader::new(payload);
                     let ph = parse_picture_header(&mut br)?;
-                    let Some(seq) = self.seq_header.as_ref() else {
+                    if self.seq_header.is_none() {
                         return Err(Error::invalid("picture before sequence header"));
                     };
                     if ph.temporal_reference > self.gop_max_tr {
                         self.gop_max_tr = ph.temporal_reference;
                     }
                     pic_header = Some(ph.clone());
-                    picture = Some(PictureBuffer::new(
-                        seq.horizontal_size as usize,
-                        seq.vertical_size as usize,
-                        ph.picture_type,
-                        ph.temporal_reference,
-                    ));
+                    // Defer the picture-buffer allocation until the first
+                    // slice — by then any picture_coding_extension has been
+                    // parsed and we know the chroma format.
+                    picture = None;
                 }
                 SEQUENCE_END_CODE => break,
                 SEQUENCE_ERROR_CODE => continue,
@@ -191,10 +189,17 @@ impl Mpeg1VideoDecoder {
                     let Some(ph) = pic_header.as_ref() else {
                         return Err(Error::invalid("slice before picture header"));
                     };
-                    let Some(pic) = picture.as_mut() else {
-                        return Err(Error::invalid("slice: no picture buffer"));
-                    };
                     let params = build_picture_params(&self.codec_id, seq, ph)?;
+                    if picture.is_none() {
+                        picture = Some(PictureBuffer::new_with_format(
+                            seq.horizontal_size as usize,
+                            seq.vertical_size as usize,
+                            ph.picture_type,
+                            ph.temporal_reference,
+                            params.chroma_format,
+                        ));
+                    }
+                    let pic = picture.as_mut().expect("just allocated above");
                     let mut br = BitReader::new(payload);
                     // References:
                     //   P-frame forward ref   = most-recent I/P anchor   = next_ref
@@ -368,7 +373,25 @@ pub fn codec_parameters_from_sequence_header(sh: &SequenceHeader) -> CodecParame
 }
 
 /// Construct a [`PictureParams`] for a decoded picture, applying the subset
-/// guards for the first-pass MPEG-2 decoder.
+/// guards for the MPEG-2 decoder.
+///
+/// Currently supported MPEG-2 features:
+///   * Progressive *or* interlaced sequence + frame-coded pictures.
+///   * 4:2:0, 4:2:2 and 4:4:4 chroma formats.
+///   * Frame-DCT and field-DCT (`dct_type` per macroblock when
+///     `frame_pred_frame_dct = false`).
+///   * Frame motion vectors and field motion vectors in frame pictures
+///     (`frame_motion_type ∈ {Frame, Field}`).
+///   * Concealment motion vectors (consumed and discarded — they are
+///     standby vectors only used during error concealment).
+///   * Dual-prime motion compensation (`frame_motion_type = DualPrime`).
+///   * `alternate_scan`, `q_scale_type` per picture.
+///
+/// Still rejected:
+///   * Field pictures (`picture_structure ∈ {TopField, BottomField}`)
+///     — the buffer model is frame-only for now.
+///   * `intra_vlc_format = 1` (Table B-15).
+///   * Scalable extensions, copyright extension payloads.
 fn build_picture_params(
     codec_id: &CodecId,
     seq: &SequenceHeader,
@@ -377,39 +400,28 @@ fn build_picture_params(
     let is_mpeg2_codec = codec_id.as_str() == "mpeg2video";
     match (is_mpeg2_codec, &seq.mpeg2_seq, &ph.mpeg2_pic) {
         (true, Some(seq_ext), Some(pic_ext)) => {
-            if !seq_ext.progressive_sequence {
+            let chroma_format =
+                ChromaFormat::from_code(seq_ext.chroma_format).ok_or_else(|| {
+                    Error::invalid(format!(
+                        "mpeg2video: invalid chroma_format = {}",
+                        seq_ext.chroma_format
+                    ))
+                })?;
+            let picture_structure = PictureStructure::from_code(pic_ext.picture_structure)
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "mpeg2video: invalid picture_structure = {}",
+                        pic_ext.picture_structure
+                    ))
+                })?;
+            if picture_structure != PictureStructure::Frame {
                 return Err(Error::unsupported(
-                    "mpeg2video: interlaced sequence not supported",
-                ));
-            }
-            if seq_ext.chroma_format != 0b01 {
-                return Err(Error::unsupported(
-                    "mpeg2video: only 4:2:0 chroma format supported",
-                ));
-            }
-            if pic_ext.picture_structure != 0b11 {
-                return Err(Error::unsupported(
-                    "mpeg2video: field pictures not supported",
-                ));
-            }
-            if !pic_ext.progressive_frame {
-                return Err(Error::unsupported(
-                    "mpeg2video: interlaced frame not supported",
+                    "mpeg2video: field pictures (picture_structure != frame) not supported",
                 ));
             }
             if pic_ext.intra_vlc_format {
                 return Err(Error::unsupported(
                     "mpeg2video: intra_vlc_format=1 (Table B-15) not supported",
-                ));
-            }
-            if !pic_ext.frame_pred_frame_dct {
-                return Err(Error::unsupported(
-                    "mpeg2video: field-DCT / field-MC not supported",
-                ));
-            }
-            if pic_ext.concealment_motion_vectors {
-                return Err(Error::unsupported(
-                    "mpeg2video: concealment MVs not supported",
                 ));
             }
             Ok(PictureParams {
@@ -421,6 +433,12 @@ fn build_picture_params(
                 f_code: pic_ext.f_code,
                 full_pel_fwd: false,
                 full_pel_bwd: false,
+                chroma_format,
+                picture_structure,
+                frame_pred_frame_dct: pic_ext.frame_pred_frame_dct,
+                concealment_motion_vectors: pic_ext.concealment_motion_vectors,
+                progressive_frame: pic_ext.progressive_frame,
+                top_field_first: pic_ext.top_field_first,
             })
         }
         (true, None, _) => Err(Error::invalid(
