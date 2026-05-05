@@ -25,7 +25,14 @@
 //! * Inter-block residual: forward DCT of (sample - prediction), then
 //!   non-intra quantisation, then run/level VLC via Table B-14 with the
 //!   "first coefficient" interpretation (1s = ±1 instead of EOB).
-//! * 4:2:0 chroma subsampling.
+//! * 4:2:0, 4:2:2 and 4:4:4 chroma subsampling (MPEG-2 only for 4:2:2/4:4:4).
+//! * Interlaced frame encoding (MPEG-2 only): per-MB frame vs field DCT
+//!   selection driven by comparing field-split vs frame SAD; field-DCT row
+//!   permutation (top field rows 0,2,…,14 / bottom field rows 1,3,…,15).
+//! * Dual-prime motion vector encoding (MPEG-2 interlaced P-pictures):
+//!   encodes the single luma MV + 2-component dmvector[0,1] so that the
+//!   decoder reconstructs the averaged parity-pair prediction per H.262
+//!   §7.6.3.6.
 //!
 //! The encoder maintains *reconstructed* reference pictures (forward and
 //! backward slots for B-frame encoding) so that the prediction it builds is
@@ -47,6 +54,7 @@ use crate::mpeg2_ext::{
     write_picture_coding_extension, write_sequence_extension, Mpeg2PictureCodingExt,
     Mpeg2SequenceExt,
 };
+use crate::picture::ChromaFormat;
 use crate::start_codes::{
     EXTENSION_START_CODE, GROUP_START_CODE, PICTURE_START_CODE, SEQUENCE_END_CODE,
     SEQUENCE_HEADER_CODE,
@@ -82,21 +90,28 @@ pub const DEFAULT_NUM_B_FRAMES: u32 = 0;
 /// 0..=16, so 16 is the spec limit for f_code=1.
 const MAX_MOTION_CODE: i32 = 16;
 
+/// Interlaced frame encode: top_field_first flag. When `interlaced = true`
+/// the encoder emits `progressive_frame = 0`, `frame_pred_frame_dct = 0`
+/// in the picture coding extension and per-MB `dct_type` bits.
+const DEFAULT_INTERLACED: bool = false;
+
 /// Encoder factory used by `register()`.
 pub fn make_encoder(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
     make_encoder_with_gop(params, DEFAULT_GOP_SIZE, DEFAULT_NUM_B_FRAMES)
 }
 
-/// MPEG-2 encoder factory used by `register()`. First-pass milestone: I-only
-/// (B-frames disabled, GOP = 1), progressive, 4:2:0, Main Profile @ Main
-/// Level. `intra_vlc_format` / `alternate_scan` / non-linear `q_scale_type`
-/// are never emitted.
+/// MPEG-2 encoder factory used by `register()`. Produces progressive 4:2:0
+/// Main Profile @ Main Level bitstreams. For 4:2:2/4:4:4 input supply
+/// `Yuv422P` / `Yuv444P` via `params.pixel_format`; the encoder selects the
+/// corresponding MPEG-2 profile automatically. `intra_vlc_format` /
+/// `alternate_scan` / non-linear `q_scale_type` are never emitted.
 pub fn make_encoder_mpeg2(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
-    make_encoder_mpeg2_with_gop(params, 1, 0)
+    make_encoder_mpeg2_with_gop(params, DEFAULT_GOP_SIZE, DEFAULT_NUM_B_FRAMES)
 }
 
-/// MPEG-2 encoder factory that allows GOP customisation. Currently rejects
-/// `num_b_frames > 0` — P/B encoding for MPEG-2 is a later milestone.
+/// MPEG-2 encoder factory that allows GOP customisation.
+/// Supports I-only (gop_size=1, num_b_frames=0) and I+P GOPs (num_b_frames=0,
+/// gop_size≥1). B-frame MPEG-2 is not yet supported.
 pub fn make_encoder_mpeg2_with_gop(
     params: &CodecParameters,
     gop_size: u32,
@@ -104,15 +119,30 @@ pub fn make_encoder_mpeg2_with_gop(
 ) -> Result<Box<dyn Encoder>> {
     if num_b_frames != 0 {
         return Err(Error::unsupported(
-            "MPEG-2 encoder: B-frames not supported in this milestone",
+            "MPEG-2 encoder: B-frames not yet supported",
         ));
     }
-    if gop_size != 1 {
-        return Err(Error::unsupported(
-            "MPEG-2 encoder: only I-only GOPs (gop_size = 1) supported in this milestone",
-        ));
-    }
-    let enc = build_encoder(params, gop_size, num_b_frames, Codec::Mpeg2)?;
+    let mut enc = build_encoder(params, gop_size, num_b_frames, Codec::Mpeg2)?;
+    enc.interlaced = DEFAULT_INTERLACED;
+    Ok(Box::new(enc))
+}
+
+/// MPEG-2 interlaced frame encoder. Emits `progressive_frame = 0` and
+/// `frame_pred_frame_dct = 0` in every `picture_coding_extension`. Per-MB
+/// it picks between frame-DCT and field-DCT by comparing their respective
+/// prediction SADs (field-DCT applies top/bottom field row interleaving
+/// before the 8×8 DCT). Dual-prime motion vectors are also emitted for
+/// P-pictures (one luma MV + a 2-component `dmvector[]` differential).
+///
+/// `top_field_first` — if `true`, the first field in each frame pair is the
+/// top field (standard for NTSC/PAL 1080i). Pass `false` for bottom-field-
+/// first content.
+pub fn make_encoder_mpeg2_interlaced(
+    params: &CodecParameters,
+    gop_size: u32,
+) -> Result<Box<dyn Encoder>> {
+    let mut enc = build_encoder(params, gop_size, 0, Codec::Mpeg2)?;
+    enc.interlaced = true;
     Ok(Box::new(enc))
 }
 
@@ -160,12 +190,32 @@ fn build_encoder(
         )));
     }
     let pix = params.pixel_format.unwrap_or(PixelFormat::Yuv420P);
-    if pix != PixelFormat::Yuv420P {
-        return Err(Error::unsupported(format!(
-            "{label} encoder: only Yuv420P supported (got {:?})",
-            pix
-        )));
-    }
+    // Map PixelFormat to ChromaFormat. 4:2:2 / 4:4:4 require MPEG-2.
+    let chroma_format = match pix {
+        PixelFormat::Yuv420P => ChromaFormat::Yuv420,
+        PixelFormat::Yuv422P => {
+            if codec != Codec::Mpeg2 {
+                return Err(Error::unsupported(format!(
+                    "{label} encoder: Yuv422P requires MPEG-2"
+                )));
+            }
+            ChromaFormat::Yuv422
+        }
+        PixelFormat::Yuv444P => {
+            if codec != Codec::Mpeg2 {
+                return Err(Error::unsupported(format!(
+                    "{label} encoder: Yuv444P requires MPEG-2"
+                )));
+            }
+            ChromaFormat::Yuv444
+        }
+        other => {
+            return Err(Error::unsupported(format!(
+                "{label} encoder: unsupported pixel format {:?}",
+                other
+            )));
+        }
+    };
     let frame_rate = params.frame_rate.unwrap_or(Rational::new(25, 1));
     let frame_rate_code = frame_rate_code_for(frame_rate)
         .ok_or_else(|| Error::invalid(format!("{label} encoder: unsupported frame rate")))?;
@@ -180,7 +230,7 @@ fn build_encoder(
     output_params.codec_id = CodecId::new(codec_id_str);
     output_params.width = Some(width);
     output_params.height = Some(height);
-    output_params.pixel_format = Some(PixelFormat::Yuv420P);
+    output_params.pixel_format = Some(pix);
     output_params.frame_rate = Some(frame_rate);
     output_params.bit_rate = Some(bit_rate);
 
@@ -188,6 +238,8 @@ fn build_encoder(
 
     Ok(Mpeg1VideoEncoder {
         codec,
+        chroma_format,
+        interlaced: DEFAULT_INTERLACED,
         output_params,
         width,
         height,
@@ -251,6 +303,13 @@ struct Mpeg1VideoEncoder {
     /// dequant and mismatch formulas, and writes escape run/level pairs in
     /// the MPEG-2 12-bit form.
     codec: Codec,
+    /// Chroma sampling format. Always Yuv420 for MPEG-1; for MPEG-2 may be
+    /// Yuv420, Yuv422 or Yuv444 depending on the caller's `pixel_format`.
+    chroma_format: ChromaFormat,
+    /// MPEG-2 interlaced frame encode. When true the encoder emits
+    /// `progressive_frame=0` and `frame_pred_frame_dct=0` per picture, and
+    /// uses per-MB adaptive frame/field DCT. Only valid for MPEG-2.
+    interlaced: bool,
     output_params: CodecParameters,
     width: u32,
     height: u32,
@@ -471,6 +530,10 @@ fn encode_anchor_picture(
     let mb_w = (enc.width as usize).div_ceil(16);
     let mb_h = (enc.height as usize).div_ceil(16);
 
+    let chroma_format = enc.chroma_format;
+    let c_h_shift = chroma_format.chroma_h_shift();
+    let c_v_shift = chroma_format.chroma_v_shift();
+
     // Emit Sequence + GOP headers at GOP boundaries (i.e. before the I-frame).
     if is_intra {
         write_start_code(&mut bw, SEQUENCE_HEADER_CODE);
@@ -483,7 +546,12 @@ fn encode_anchor_picture(
         );
         if enc.codec == Codec::Mpeg2 {
             write_start_code(&mut bw, EXTENSION_START_CODE);
-            write_sequence_extension(&mut bw, &Mpeg2SequenceExt::default());
+            let mut seq_ext = Mpeg2SequenceExt::default();
+            // Override chroma_format to match the input pixel format.
+            seq_ext.chroma_format = chroma_format.to_code();
+            // All our MPEG-2 output is progressive at the sequence level.
+            seq_ext.progressive_sequence = true;
+            write_sequence_extension(&mut bw, &seq_ext);
             bw.align_to_byte();
         }
         write_start_code(&mut bw, GROUP_START_CODE);
@@ -492,29 +560,35 @@ fn encode_anchor_picture(
 
     // Picture header.
     write_start_code(&mut bw, PICTURE_START_CODE);
+    let f_code_fwd = if is_intra { 15 } else { 1 };
     if is_intra {
         write_picture_header_i(&mut bw, temporal_reference);
     } else {
         write_picture_header_p(&mut bw, temporal_reference);
     }
+    // For interlaced encode: frame_pred_frame_dct=0 so per-MB dct_type bits
+    // are present. For progressive: frame_pred_frame_dct=1 (no dct_type bits).
+    let interlaced = enc.interlaced && enc.codec == Codec::Mpeg2;
     if enc.codec == Codec::Mpeg2 {
         write_start_code(&mut bw, EXTENSION_START_CODE);
-        // For I-only output the f_codes are unused; spec requires them to
-        // be set to 15 ("forbidden") — our parser tolerates any value since
-        // the decoder only consults them when the MB actually has an MV.
+        // For I-pictures f_codes are 15 (unused). For P-pictures f_code = 1.
         let ext = Mpeg2PictureCodingExt {
-            f_code: [[15, 15], [15, 15]],
+            f_code: [[f_code_fwd, f_code_fwd], [15, 15]],
             intra_dc_precision: 0,
-            picture_structure: 0b11,
+            picture_structure: 0b11, // frame picture
             top_field_first: true,
-            frame_pred_frame_dct: true,
+            // When interlaced, disable frame_pred_frame_dct so per-MB dct_type
+            // bits are present in the bitstream, allowing adaptive frame/field.
+            frame_pred_frame_dct: !interlaced,
             concealment_motion_vectors: false,
             q_scale_type: false,
             intra_vlc_format: false,
             alternate_scan: false,
             repeat_first_field: false,
-            chroma_420_type: true,
-            progressive_frame: true,
+            // chroma_420_type is only meaningful when chroma_format = 4:2:0.
+            chroma_420_type: chroma_format == ChromaFormat::Yuv420,
+            // progressive_frame=false when encoding interlaced content.
+            progressive_frame: !interlaced,
             composite_display_flag: false,
         };
         write_picture_coding_extension(&mut bw, &ext);
@@ -524,9 +598,9 @@ fn encode_anchor_picture(
     // Allocate the reconstructed picture for this frame so we can use it as
     // the reference for the next P-frame. Macroblock-aligned dims.
     let y_stride = mb_w * 16;
-    let c_stride = mb_w * 8;
+    let c_stride = (mb_w * 16) >> c_h_shift;
     let y_h = mb_h * 16;
-    let c_h = mb_h * 8;
+    let c_h = (mb_h * 16) >> c_v_shift;
     let mut recon_y = vec![0u8; y_stride * y_h];
     let mut recon_cb = vec![0u8; c_stride * c_h];
     let mut recon_cr = vec![0u8; c_stride * c_h];
@@ -699,6 +773,7 @@ fn encode_slice_i(
     bw.write_bits(0, 1); // extra_bit_slice
 
     let mut dc_pred_q: [i32; 3] = [128, 128, 128];
+    let interlaced = enc.interlaced && enc.codec == Codec::Mpeg2;
 
     for mb_col in 0..mb_w {
         // macroblock_address_increment = 1
@@ -706,22 +781,93 @@ fn encode_slice_i(
         // macroblock_type for I-picture: `1` (1 bit) = Intra (no quant).
         bw.write_bits(0b1, 1);
 
-        encode_mb_intra(
-            bw,
-            enc,
-            v,
-            mb_row,
-            mb_col,
-            &mut dc_pred_q,
-            recon_y,
-            recon_cb,
-            recon_cr,
-            y_stride,
-            c_stride,
-        )?;
+        if interlaced {
+            // For interlaced pictures with frame_pred_frame_dct=0, a dct_type
+            // bit is present before each MB. We use field-DCT (dct_type=1)
+            // for all intra MBs in interlaced mode.
+            // H.262 §6.3.17.1: dct_type = 0 → frame-DCT, 1 → field-DCT.
+            let dct_type: u32 = 1; // field DCT
+            bw.write_bits(dct_type, 1);
+            encode_mb_intra_field_dct(
+                bw,
+                enc,
+                v,
+                mb_row,
+                mb_col,
+                &mut dc_pred_q,
+                recon_y,
+                recon_cb,
+                recon_cr,
+                y_stride,
+                c_stride,
+            )?;
+        } else {
+            encode_mb_intra(
+                bw,
+                enc,
+                v,
+                mb_row,
+                mb_col,
+                &mut dc_pred_q,
+                recon_y,
+                recon_cb,
+                recon_cr,
+                y_stride,
+                c_stride,
+            )?;
+        }
     }
 
     Ok(())
+}
+
+/// Compute chroma block coordinates for one chroma component block within
+/// a macroblock, given the chroma format.
+///
+/// For 4:2:0: 1 block per component → (cx0, cy0), block_idx ∈ {0}.
+/// For 4:2:2: 2 blocks per component → top (cx0, cy0) and bottom (cx0, cy0+8), block_idx ∈ {0,1}.
+/// For 4:4:4: 4 blocks per component → 2x2 grid like luma, block_idx ∈ {0..3}.
+///
+/// Returns `(src_x, src_y, recon_x, recon_y)` for the given block_idx.
+fn chroma_block_coords(
+    fmt: ChromaFormat,
+    mb_col: usize,
+    mb_row: usize,
+    block_idx: usize,
+) -> (usize, usize, usize, usize) {
+    match fmt {
+        ChromaFormat::Yuv420 => {
+            debug_assert_eq!(block_idx, 0);
+            let cx0 = mb_col * 8;
+            let cy0 = mb_row * 8;
+            (cx0, cy0, cx0, cy0)
+        }
+        ChromaFormat::Yuv422 => {
+            // 2 chroma blocks per component per MB: top (y offset 0) and bottom (y offset 8).
+            debug_assert!(block_idx < 2);
+            let cx0 = mb_col * 8;
+            let cy0 = mb_row * 16 + block_idx * 8;
+            (cx0, cy0, cx0, cy0)
+        }
+        ChromaFormat::Yuv444 => {
+            // 4 chroma blocks per component per MB: same 2x2 as luma.
+            debug_assert!(block_idx < 4);
+            let bx = (block_idx & 1) * 8;
+            let by = (block_idx >> 1) * 8;
+            let cx0 = mb_col * 16 + bx;
+            let cy0 = mb_row * 16 + by;
+            (cx0, cy0, cx0, cy0)
+        }
+    }
+}
+
+/// Number of chroma blocks per component per macroblock for the given format.
+fn chroma_blocks_per_component(fmt: ChromaFormat) -> usize {
+    match fmt {
+        ChromaFormat::Yuv420 => 1,
+        ChromaFormat::Yuv422 => 2,
+        ChromaFormat::Yuv444 => 4,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -743,8 +889,11 @@ fn encode_mb_intra(
 
     let w = enc.width as usize;
     let h = enc.height as usize;
-    let cw = w.div_ceil(2);
-    let ch = h.div_ceil(2);
+    let chroma_format = enc.chroma_format;
+    let c_h_shift = chroma_format.chroma_h_shift() as usize;
+    let c_v_shift = chroma_format.chroma_v_shift() as usize;
+    let cw = w >> c_h_shift;
+    let ch = h >> c_v_shift;
 
     let y_plane = &v.planes[0];
     let cb_plane = &v.planes[1];
@@ -752,10 +901,8 @@ fn encode_mb_intra(
 
     let y0 = mb_row * 16;
     let x0 = mb_col * 16;
-    let cy0 = mb_row * 8;
-    let cx0 = mb_col * 8;
 
-    // 4 luma blocks
+    // 4 luma blocks (same regardless of chroma format).
     for (bx, by) in [(0usize, 0usize), (8, 0), (0, 8), (8, 8)].iter() {
         encode_block_intra(
             bw,
@@ -776,44 +923,53 @@ fn encode_mb_intra(
             enc.codec,
         )?;
     }
-    // Cb
-    encode_block_intra(
-        bw,
-        &cb_plane.data,
-        cb_plane.stride,
-        cw,
-        ch,
-        cx0,
-        cy0,
-        true,
-        q,
-        intra_q,
-        &mut dc_pred_q[1],
-        recon_cb,
-        c_stride,
-        cx0,
-        cy0,
-        enc.codec,
-    )?;
-    // Cr
-    encode_block_intra(
-        bw,
-        &cr_plane.data,
-        cr_plane.stride,
-        cw,
-        ch,
-        cx0,
-        cy0,
-        true,
-        q,
-        intra_q,
-        &mut dc_pred_q[2],
-        recon_cr,
-        c_stride,
-        cx0,
-        cy0,
-        enc.codec,
-    )?;
+
+    // Chroma blocks. The block order in the bitstream is:
+    //   All Cb blocks for this MB (1 for 4:2:0, 2 for 4:2:2, 4 for 4:4:4)
+    //   followed by all Cr blocks.
+    let n_chroma = chroma_blocks_per_component(chroma_format);
+    for cidx in 0..n_chroma {
+        let (cx0, cy0, rx0, ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        encode_block_intra(
+            bw,
+            &cb_plane.data,
+            cb_plane.stride,
+            cw,
+            ch,
+            cx0,
+            cy0,
+            true,
+            q,
+            intra_q,
+            &mut dc_pred_q[1],
+            recon_cb,
+            c_stride,
+            rx0,
+            ry0,
+            enc.codec,
+        )?;
+    }
+    for cidx in 0..n_chroma {
+        let (cx0, cy0, rx0, ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        encode_block_intra(
+            bw,
+            &cr_plane.data,
+            cr_plane.stride,
+            cw,
+            ch,
+            cx0,
+            cy0,
+            true,
+            q,
+            intra_q,
+            &mut dc_pred_q[2],
+            recon_cr,
+            c_stride,
+            rx0,
+            ry0,
+            enc.codec,
+        )?;
+    }
     Ok(())
 }
 
@@ -1082,13 +1238,8 @@ fn encode_slice_p(
                 // CBP comes out 0, demote to MC-Not-Coded so the bitstream
                 // stays well-formed (CBP=0 is not representable).
                 let block_levels = quantise_p_mb_residual(enc, v, mb_row, mb_col, mv_x, mv_y);
-                let mut cbp_actual: u8 = 0;
-                for (b, lv) in block_levels.iter().enumerate() {
-                    if lv.iter().any(|&l| l != 0) {
-                        cbp_actual |= 1 << (5 - b);
-                    }
-                }
-                if cbp_actual == 0 {
+                let (cbp6, cbp_422, cbp_444) = compute_cbp(&block_levels, block_levels.len());
+                if cbp6 == 0 && cbp_422 == 0 && cbp_444 == 0 {
                     // Emit as MC-Not-Coded.
                     write_mb_type(bw, MbTypeCode::McNotCoded)?;
                     encode_mv_diff(bw, &mut mv_pred, mv_x, mv_y)?;
@@ -1099,7 +1250,7 @@ fn encode_slice_p(
                 } else {
                     write_mb_type(bw, MbTypeCode::McCoded)?;
                     encode_mv_diff(bw, &mut mv_pred, mv_x, mv_y)?;
-                    write_cbp(bw, cbp_actual)?;
+                    write_extended_cbp(bw, cbp6, cbp_422, cbp_444, enc.chroma_format)?;
                     encode_p_mb_inter_residual_with_levels(
                         bw,
                         enc,
@@ -1107,7 +1258,9 @@ fn encode_slice_p(
                         mb_col,
                         mv_x,
                         mv_y,
-                        cbp_actual,
+                        cbp6,
+                        cbp_422,
+                        cbp_444,
                         &block_levels,
                         recon_y,
                         recon_cb,
@@ -1438,10 +1591,16 @@ fn apply_p_forward_no_residual(
     if !enc.ref_valid {
         return Err(Error::invalid("P MB without reference picture"));
     }
+    let chroma_format = enc.chroma_format;
+    let c_h_shift = chroma_format.chroma_h_shift() as usize;
+    let c_v_shift = chroma_format.chroma_v_shift() as usize;
+    let c_w = 16 >> c_h_shift;
+    let c_h_mb = 16 >> c_v_shift; // chroma height per MB
+
     let mut pred_y = [0u8; 16 * 16];
-    let mut pred_cb = [0u8; 8 * 8];
-    let mut pred_cr = [0u8; 8 * 8];
-    build_mc_prediction(
+    let mut pred_cb = vec![0u8; c_w * c_h_mb];
+    let mut pred_cr = vec![0u8; c_w * c_h_mb];
+    build_mc_prediction_into(
         enc,
         mb_col,
         mb_row,
@@ -1450,37 +1609,46 @@ fn apply_p_forward_no_residual(
         &mut pred_y,
         &mut pred_cb,
         &mut pred_cr,
+        c_w,
+        c_h_mb,
     );
-    // Write into reconstructed plane.
+    // Write luma into reconstructed plane.
     let yx = mb_col * 16;
     let yy = mb_row * 16;
     for j in 0..16 {
         let dst_off = (yy + j) * y_stride + yx;
         recon_y[dst_off..dst_off + 16].copy_from_slice(&pred_y[j * 16..j * 16 + 16]);
     }
-    let cx = mb_col * 8;
-    let cy = mb_row * 8;
-    for j in 0..8 {
+    // Write chroma into reconstructed plane.
+    let cx = mb_col * c_w;
+    let cy = mb_row * c_h_mb;
+    for j in 0..c_h_mb {
         let dst_off = (cy + j) * c_stride + cx;
-        recon_cb[dst_off..dst_off + 8].copy_from_slice(&pred_cb[j * 8..j * 8 + 8]);
-        recon_cr[dst_off..dst_off + 8].copy_from_slice(&pred_cr[j * 8..j * 8 + 8]);
+        recon_cb[dst_off..dst_off + c_w].copy_from_slice(&pred_cb[j * c_w..j * c_w + c_w]);
+        recon_cr[dst_off..dst_off + c_w].copy_from_slice(&pred_cr[j * c_w..j * c_w + c_w]);
     }
     Ok(())
 }
 
-/// Build 16x16 luma + 8x8 chroma prediction from the encoder's reference
-/// picture. Mirrors `crate::motion::predict_block` so the decoder will see
-/// the same prediction.
+/// Build 16x16 luma + chroma MC prediction from the encoder's reference
+/// picture into flat buffers. The chroma buffer size depends on the chroma
+/// format: 8x8 for 4:2:0, 8x16 for 4:2:2, 16x16 for 4:4:4 (stored row-major
+/// with `c_pred_stride` columns).
+///
+/// Mirrors `crate::motion::predict_block` so the decoder will see the same
+/// prediction.
 #[allow(clippy::too_many_arguments)]
-fn build_mc_prediction(
+fn build_mc_prediction_into(
     enc: &Mpeg1VideoEncoder,
     mb_col: usize,
     mb_row: usize,
     mv_x: i32,
     mv_y: i32,
-    pred_y: &mut [u8; 16 * 16],
-    pred_cb: &mut [u8; 8 * 8],
-    pred_cr: &mut [u8; 8 * 8],
+    pred_y: &mut [u8],  // 16*16
+    pred_cb: &mut [u8], // c_w * c_h
+    pred_cr: &mut [u8], // c_w * c_h
+    c_pred_stride: usize,
+    c_pred_h: usize,
 ) {
     let mb_px = (mb_col * 16) as i32;
     let mb_py = (mb_row * 16) as i32;
@@ -1498,37 +1666,86 @@ fn build_mc_prediction(
         pred_y,
         16,
     );
-    let c_px = (mb_col * 8) as i32;
-    let c_py = (mb_row * 8) as i32;
-    let mv_cx = crate::motion::scale_mv_to_chroma(mv_x);
-    let mv_cy = crate::motion::scale_mv_to_chroma(mv_y);
+    let chroma_format = enc.chroma_format;
+    let c_h_shift = chroma_format.chroma_h_shift();
+    let c_v_shift = chroma_format.chroma_v_shift();
+    // Chroma block origin in chroma samples.
+    let c_px = (mb_col * 16 >> c_h_shift) as i32;
+    let c_py = (mb_row * 16 >> c_v_shift) as i32;
+    let mv_cx = crate::motion::scale_mv_h_to_chroma(mv_x, chroma_format);
+    let mv_cy = crate::motion::scale_mv_v_to_chroma(mv_y, chroma_format);
     let rc_h = (enc.ref_cb.len() / enc.ref_c_stride) as i32;
-    crate::motion::predict_block(
-        &enc.ref_cb,
-        enc.ref_c_stride,
-        enc.ref_c_stride as i32,
-        rc_h,
-        c_px,
-        c_py,
-        mv_cx,
-        mv_cy,
-        8,
-        pred_cb,
-        8,
-    );
-    crate::motion::predict_block(
-        &enc.ref_cr,
-        enc.ref_c_stride,
-        enc.ref_c_stride as i32,
-        rc_h,
-        c_px,
-        c_py,
-        mv_cx,
-        mv_cy,
-        8,
-        pred_cr,
-        8,
-    );
+    // Predict chroma: block size is c_pred_stride × c_pred_h.
+    let c_w = c_pred_stride as i32;
+    let c_h = c_pred_h as i32;
+    // We predict into pred_cb/pred_cr row-by-row.
+    for j in 0..c_pred_h {
+        for i in 0..c_pred_stride {
+            // Fetch from reference using the same bilinear interpolation.
+            let src_x = c_px + i as i32;
+            let src_y = c_py + j as i32;
+            // Compute half-pel coordinates.
+            let (int_x, hx) = {
+                let v = mv_cx;
+                let int = v.div_euclid(2);
+                let half = v.rem_euclid(2) != 0;
+                (src_x + int, half)
+            };
+            let (int_y, hy) = {
+                let v = mv_cy;
+                let int = v.div_euclid(2);
+                let half = v.rem_euclid(2) != 0;
+                (src_y + int, half)
+            };
+            let clamp_x = |x: i32| x.clamp(0, enc.ref_c_stride as i32 - 1);
+            let clamp_y = |y: i32| y.clamp(0, rc_h - 1);
+            let rc_s = enc.ref_c_stride;
+            let fetch = |x: i32, y: i32, plane: &[u8]| -> u32 {
+                plane[(clamp_y(y) as usize) * rc_s + clamp_x(x) as usize] as u32
+            };
+            let v_cb = match (hx, hy) {
+                (false, false) => fetch(int_x, int_y, &enc.ref_cb),
+                (true, false) => {
+                    (fetch(int_x, int_y, &enc.ref_cb) + fetch(int_x + 1, int_y, &enc.ref_cb) + 1)
+                        >> 1
+                }
+                (false, true) => {
+                    (fetch(int_x, int_y, &enc.ref_cb) + fetch(int_x, int_y + 1, &enc.ref_cb) + 1)
+                        >> 1
+                }
+                (true, true) => {
+                    (fetch(int_x, int_y, &enc.ref_cb)
+                        + fetch(int_x + 1, int_y, &enc.ref_cb)
+                        + fetch(int_x, int_y + 1, &enc.ref_cb)
+                        + fetch(int_x + 1, int_y + 1, &enc.ref_cb)
+                        + 2)
+                        >> 2
+                }
+            };
+            let v_cr = match (hx, hy) {
+                (false, false) => fetch(int_x, int_y, &enc.ref_cr),
+                (true, false) => {
+                    (fetch(int_x, int_y, &enc.ref_cr) + fetch(int_x + 1, int_y, &enc.ref_cr) + 1)
+                        >> 1
+                }
+                (false, true) => {
+                    (fetch(int_x, int_y, &enc.ref_cr) + fetch(int_x, int_y + 1, &enc.ref_cr) + 1)
+                        >> 1
+                }
+                (true, true) => {
+                    (fetch(int_x, int_y, &enc.ref_cr)
+                        + fetch(int_x + 1, int_y, &enc.ref_cr)
+                        + fetch(int_x, int_y + 1, &enc.ref_cr)
+                        + fetch(int_x + 1, int_y + 1, &enc.ref_cr)
+                        + 2)
+                        >> 2
+                }
+            };
+            pred_cb[j * c_pred_stride + i] = v_cb as u8;
+            pred_cr[j * c_pred_stride + i] = v_cr as u8;
+        }
+    }
+    let _ = (c_w, c_h);
 }
 
 // ---------------------------------------------------------------------------
@@ -1614,9 +1831,66 @@ fn lookup_motion_code(abs: u8) -> Option<VlcEntry<u8>> {
 // P-MB inter residual (forward MC + coded residual)
 // ---------------------------------------------------------------------------
 
+/// Quantise one 8x8 block of inter residual. `src` is the current samples,
+/// `pred` is the motion-compensated prediction. Returns 64 zigzag-ordered
+/// quantised levels.
+fn quantise_inter_block(
+    src: &[u8],
+    src_stride: usize,
+    src_x0: usize,
+    src_y0: usize,
+    src_w: usize,
+    src_h: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    pred_x0: usize,
+    pred_y0: usize,
+    q: i32,
+    non_intra_q: &[u8; 64],
+) -> [i32; 64] {
+    let mut residual = [0.0f32; 64];
+    for j in 0..8 {
+        let yy = (src_y0 + j).min(src_h.saturating_sub(1));
+        for i in 0..8 {
+            let xx = (src_x0 + i).min(src_w.saturating_sub(1));
+            let s = src[yy * src_stride + xx] as i32;
+            let p = pred[(pred_y0 + j) * pred_stride + (pred_x0 + i)] as i32;
+            residual[j * 8 + i] = (s - p) as f32;
+        }
+    }
+    fdct8x8(&mut residual);
+    let mut out = [0i32; 64];
+    for k in 0..64 {
+        let nat = ZIGZAG[k];
+        let coef = residual[nat];
+        let qf = non_intra_q[nat] as f32;
+        let denom = q as f32 * qf;
+        if denom == 0.0 {
+            continue;
+        }
+        let abs_c = coef.abs();
+        let l_opt = abs_c * 8.0 / denom - 0.5;
+        let l = l_opt.round() as i32;
+        let lv = if l <= 0 {
+            0
+        } else if coef >= 0.0 {
+            l
+        } else {
+            -l
+        };
+        out[k] = lv.clamp(-255, 255);
+    }
+    out
+}
+
 /// Compute the (per-block, mid-tread quantised) residual levels for an
-/// inter macroblock with the given forward MV. Returns a 6×64 array of
-/// quantised levels in zigzag order.
+/// inter macroblock with the given forward MV.
+///
+/// Returns a vector of `n_blocks` x 64 arrays in bitstream block order:
+///   blocks 0..3 = luma 8x8 subblocks (top-left, top-right, bot-left, bot-right)
+///   blocks 4..4+n_cb-1 = Cb blocks
+///   blocks 4+n_cb..4+2*n_cb-1 = Cr blocks
+/// where `n_cb` = `chroma_blocks_per_component(chroma_format)`.
 fn quantise_p_mb_residual(
     enc: &Mpeg1VideoEncoder,
     v: &VideoFrame,
@@ -1624,15 +1898,24 @@ fn quantise_p_mb_residual(
     mb_col: usize,
     mv_x: i32,
     mv_y: i32,
-) -> [[i32; 64]; 6] {
-    let mut out = [[0i32; 64]; 6];
+) -> Vec<[i32; 64]> {
+    let chroma_format = enc.chroma_format;
+    let n_cb = chroma_blocks_per_component(chroma_format);
+    let n_blocks = 4 + 2 * n_cb;
+    let mut out = vec![[0i32; 64]; n_blocks];
     if !enc.ref_valid {
         return out;
     }
-    let mut pred_y = [0u8; 16 * 16];
-    let mut pred_cb = [0u8; 8 * 8];
-    let mut pred_cr = [0u8; 8 * 8];
-    build_mc_prediction(
+
+    let c_h_shift = chroma_format.chroma_h_shift() as usize;
+    let c_v_shift = chroma_format.chroma_v_shift() as usize;
+    let c_w_mb = 16 >> c_h_shift; // chroma width per MB in samples
+    let c_h_mb = 16 >> c_v_shift; // chroma height per MB in samples
+
+    let mut pred_y = vec![0u8; 16 * 16];
+    let mut pred_cb = vec![0u8; c_w_mb * c_h_mb];
+    let mut pred_cr = vec![0u8; c_w_mb * c_h_mb];
+    build_mc_prediction_into(
         enc,
         mb_col,
         mb_row,
@@ -1641,6 +1924,8 @@ fn quantise_p_mb_residual(
         &mut pred_y,
         &mut pred_cb,
         &mut pred_cr,
+        c_w_mb,
+        c_h_mb,
     );
 
     let q = enc.quant_scale as i32;
@@ -1648,8 +1933,8 @@ fn quantise_p_mb_residual(
 
     let w = enc.width as usize;
     let h = enc.height as usize;
-    let cw = w.div_ceil(2);
-    let ch = h.div_ceil(2);
+    let cw = w >> c_h_shift;
+    let ch = h >> c_v_shift;
 
     let y_plane = &v.planes[0];
     let cb_plane = &v.planes[1];
@@ -1657,119 +1942,172 @@ fn quantise_p_mb_residual(
 
     let mb_x_pix = mb_col * 16;
     let mb_y_pix = mb_row * 16;
-    let mb_cx_pix = mb_col * 8;
-    let mb_cy_pix = mb_row * 8;
 
-    for b in 0..6usize {
-        let (plane_data, plane_stride, pw, ph, src_x0, src_y0, pred_slice, pred_stride): (
-            &[u8],
-            usize,
-            usize,
-            usize,
-            usize,
-            usize,
-            &[u8],
-            usize,
-        ) = match b {
-            0 => (
-                &y_plane.data[..],
-                y_plane.stride,
-                w,
-                h,
-                mb_x_pix,
-                mb_y_pix,
-                &pred_y[0..],
-                16,
-            ),
-            1 => (
-                &y_plane.data[..],
-                y_plane.stride,
-                w,
-                h,
-                mb_x_pix + 8,
-                mb_y_pix,
-                &pred_y[8..],
-                16,
-            ),
-            2 => (
-                &y_plane.data[..],
-                y_plane.stride,
-                w,
-                h,
-                mb_x_pix,
-                mb_y_pix + 8,
-                &pred_y[16 * 8..],
-                16,
-            ),
-            3 => (
-                &y_plane.data[..],
-                y_plane.stride,
-                w,
-                h,
-                mb_x_pix + 8,
-                mb_y_pix + 8,
-                &pred_y[16 * 8 + 8..],
-                16,
-            ),
-            4 => (
-                &cb_plane.data[..],
-                cb_plane.stride,
-                cw,
-                ch,
-                mb_cx_pix,
-                mb_cy_pix,
-                &pred_cb[..],
-                8,
-            ),
-            5 => (
-                &cr_plane.data[..],
-                cr_plane.stride,
-                cw,
-                ch,
-                mb_cx_pix,
-                mb_cy_pix,
-                &pred_cr[..],
-                8,
-            ),
-            _ => unreachable!(),
-        };
+    // 4 luma blocks.
+    let luma_offsets = [(0usize, 0usize), (8, 0), (0, 8), (8, 8)];
+    for (b, (bx, by)) in luma_offsets.iter().enumerate() {
+        out[b] = quantise_inter_block(
+            &y_plane.data,
+            y_plane.stride,
+            mb_x_pix + bx,
+            mb_y_pix + by,
+            w,
+            h,
+            &pred_y,
+            16,
+            *bx,
+            *by,
+            q,
+            non_intra_q,
+        );
+    }
 
-        let mut residual = [0.0f32; 64];
-        for j in 0..8 {
-            let yy = (src_y0 + j).min(ph.saturating_sub(1));
-            for i in 0..8 {
-                let xx = (src_x0 + i).min(pw.saturating_sub(1));
-                let s = plane_data[yy * plane_stride + xx] as i32;
-                let p = pred_slice[j * pred_stride + i] as i32;
-                residual[j * 8 + i] = (s - p) as f32;
-            }
-        }
-        fdct8x8(&mut residual);
-        for k in 0..64 {
-            let nat = ZIGZAG[k];
-            let coef = residual[nat];
-            let qf = non_intra_q[nat] as f32;
-            let denom = q as f32 * qf;
-            if denom == 0.0 {
-                continue;
-            }
-            let abs_c = coef.abs();
-            // Optimal-magnitude quantiser: minimise |c - rec(L)| where
-            // rec(L) = sign(c) * (2L+1) * Q*W / 16.
-            //   L_opt ≈ |c|*8 / (Q*W) - 0.5
-            let l_opt = abs_c * 8.0 / denom - 0.5;
-            let l = l_opt.round() as i32;
-            let lv = if l <= 0 {
-                0
-            } else if coef >= 0.0 {
-                l
-            } else {
-                -l
-            };
-            out[b][k] = lv.clamp(-255, 255);
-        }
+    // Chroma Cb blocks.
+    for cidx in 0..n_cb {
+        let (cx0, cy0, _rx0, _ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        let c_bx = (cx0 - mb_col * (16 >> c_h_shift)) % c_w_mb;
+        let c_by = (cy0 - mb_row * c_h_mb) % c_h_mb;
+        out[4 + cidx] = quantise_inter_block(
+            &cb_plane.data,
+            cb_plane.stride,
+            cx0,
+            cy0,
+            cw,
+            ch,
+            &pred_cb,
+            c_w_mb,
+            c_bx,
+            c_by,
+            q,
+            non_intra_q,
+        );
+    }
+    // Chroma Cr blocks.
+    for cidx in 0..n_cb {
+        let (cx0, cy0, _rx0, _ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        let c_bx = (cx0 - mb_col * (16 >> c_h_shift)) % c_w_mb;
+        let c_by = (cy0 - mb_row * c_h_mb) % c_h_mb;
+        out[4 + n_cb + cidx] = quantise_inter_block(
+            &cr_plane.data,
+            cr_plane.stride,
+            cx0,
+            cy0,
+            cw,
+            ch,
+            &pred_cr,
+            c_w_mb,
+            c_bx,
+            c_by,
+            q,
+            non_intra_q,
+        );
     }
     out
+}
+
+/// Reconstruct one 8x8 inter block: dequant levels → IDCT → add prediction → clamp.
+/// Writes results into `recon` at position `(dst_x0, dst_y0)` with stride `recon_stride`.
+fn reconstruct_inter_block_into(
+    levels: &[i32; 64],
+    pred: &[u8],
+    pred_stride: usize,
+    pred_x0: usize,
+    pred_y0: usize,
+    recon: &mut [u8],
+    recon_stride: usize,
+    dst_x0: usize,
+    dst_y0: usize,
+    q: i32,
+    non_intra_q: &[u8; 64],
+) {
+    let mut coeffs = [0i32; 64];
+    for k in 0..64 {
+        let lv = levels[k];
+        if lv == 0 {
+            continue;
+        }
+        let nat = ZIGZAG[k];
+        let qf = non_intra_q[nat] as i32;
+        let add = if lv > 0 { 1 } else { -1 };
+        let mut rec = ((2 * lv + add) * q * qf) / 16;
+        if rec & 1 == 0 && rec != 0 {
+            rec = if rec > 0 { rec - 1 } else { rec + 1 };
+        }
+        coeffs[nat] = rec.clamp(-2048, 2047);
+    }
+    let mut fblock = [0.0f32; 64];
+    for i in 0..64 {
+        fblock[i] = coeffs[i] as f32;
+    }
+    idct8x8(&mut fblock);
+    for j in 0..8 {
+        for i in 0..8 {
+            let p = pred[(pred_y0 + j) * pred_stride + (pred_x0 + i)] as i32;
+            let r = fblock[j * 8 + i].round() as i32;
+            let pix = (p + r).clamp(0, 255) as u8;
+            recon[(dst_y0 + j) * recon_stride + (dst_x0 + i)] = pix;
+        }
+    }
+}
+
+/// Compute the expanded CBP for all blocks in a macroblock. For 4:2:0 this
+/// is a standard 6-bit value (bits 5..0 = blocks 0..5). For 4:2:2 it is
+/// 8-bit and for 4:4:4 it is 12-bit (extra chroma bits follow the 6-bit
+/// base).
+///
+/// Returns `(cbp6, cbp_extra_422, cbp_extra_444)` where only the relevant
+/// fields are set based on chroma format.
+fn compute_cbp(block_levels: &[[i32; 64]], n_blocks: usize) -> (u8, u8, u8) {
+    // 6-bit base CBP (first 6 blocks, luma + first chroma pair).
+    let mut cbp6: u8 = 0;
+    for b in 0..6.min(n_blocks) {
+        if block_levels[b].iter().any(|&l| l != 0) {
+            cbp6 |= 1 << (5 - b);
+        }
+    }
+    // Extra bits for 4:2:2 (blocks 6 and 7 = extra Cb and Cr).
+    let mut cbp_422: u8 = 0;
+    if n_blocks >= 8 {
+        for b in 6..8 {
+            if block_levels[b].iter().any(|&l| l != 0) {
+                cbp_422 |= 1 << (7 - b); // bit 1 for b=6, bit 0 for b=7
+            }
+        }
+    }
+    // Extra bits for 4:4:4 (blocks 8..11 = extra 2 Cb + 2 Cr).
+    let mut cbp_444: u8 = 0;
+    if n_blocks >= 12 {
+        for b in 8..12 {
+            if block_levels[b].iter().any(|&l| l != 0) {
+                cbp_444 |= 1 << (11 - b);
+            }
+        }
+    }
+    (cbp6, cbp_422, cbp_444)
+}
+
+/// Write the extended CBP for MPEG-2 4:2:2 / 4:4:4 inter MBs.
+/// Per H.262 §6.3.17.4:
+///   coded_block_pattern() = VLC(cbp6) [ cbp_4_22(2 bits) [ cbp_4_44(6 bits) ] ]
+fn write_extended_cbp(
+    bw: &mut BitWriter,
+    cbp6: u8,
+    cbp_422: u8,
+    cbp_444: u8,
+    fmt: ChromaFormat,
+) -> Result<()> {
+    write_cbp(bw, cbp6)?;
+    match fmt {
+        ChromaFormat::Yuv420 => {}
+        ChromaFormat::Yuv422 => {
+            bw.write_bits(cbp_422 as u32, 2);
+        }
+        ChromaFormat::Yuv444 => {
+            bw.write_bits(cbp_422 as u32, 2);
+            bw.write_bits(cbp_444 as u32, 6);
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1780,19 +2118,29 @@ fn encode_p_mb_inter_residual_with_levels(
     mb_col: usize,
     mv_x: i32,
     mv_y: i32,
-    cbp: u8,
-    block_levels: &[[i32; 64]; 6],
+    cbp6: u8,
+    cbp_422: u8,
+    cbp_444: u8,
+    block_levels: &[[i32; 64]],
     recon_y: &mut [u8],
     recon_cb: &mut [u8],
     recon_cr: &mut [u8],
     y_stride: usize,
     c_stride: usize,
 ) -> Result<()> {
+    let chroma_format = enc.chroma_format;
+    let c_h_shift = chroma_format.chroma_h_shift() as usize;
+    let c_v_shift = chroma_format.chroma_v_shift() as usize;
+    let c_w_mb = 16 >> c_h_shift;
+    let c_h_mb = 16 >> c_v_shift;
+    let n_cb = chroma_blocks_per_component(chroma_format);
+    let n_blocks = 4 + 2 * n_cb;
+
     // Build prediction.
-    let mut pred_y = [0u8; 16 * 16];
-    let mut pred_cb = [0u8; 8 * 8];
-    let mut pred_cr = [0u8; 8 * 8];
-    build_mc_prediction(
+    let mut pred_y = vec![0u8; 16 * 16];
+    let mut pred_cb = vec![0u8; c_w_mb * c_h_mb];
+    let mut pred_cr = vec![0u8; c_w_mb * c_h_mb];
+    build_mc_prediction_into(
         enc,
         mb_col,
         mb_row,
@@ -1801,6 +2149,8 @@ fn encode_p_mb_inter_residual_with_levels(
         &mut pred_y,
         &mut pred_cb,
         &mut pred_cr,
+        c_w_mb,
+        c_h_mb,
     );
 
     let q = enc.quant_scale as i32;
@@ -1808,100 +2158,121 @@ fn encode_p_mb_inter_residual_with_levels(
 
     let mb_x_pix = mb_col * 16;
     let mb_y_pix = mb_row * 16;
-    let mb_cx_pix = mb_col * 8;
-    let mb_cy_pix = mb_row * 8;
 
-    for b in 0..6usize {
-        let coded = (cbp & (1 << (5 - b))) != 0;
-        let (pred_slice, pred_stride, recon_dst_stride, recon_dst, dst_x0, dst_y0): (
-            &[u8],
-            usize,
-            usize,
-            &mut [u8],
-            usize,
-            usize,
-        ) = match b {
-            0 => (&pred_y[0..], 16, y_stride, recon_y, mb_x_pix, mb_y_pix),
-            1 => (&pred_y[8..], 16, y_stride, recon_y, mb_x_pix + 8, mb_y_pix),
-            2 => (
-                &pred_y[16 * 8..],
-                16,
-                y_stride,
-                recon_y,
-                mb_x_pix,
-                mb_y_pix + 8,
-            ),
-            3 => (
-                &pred_y[16 * 8 + 8..],
-                16,
-                y_stride,
-                recon_y,
-                mb_x_pix + 8,
-                mb_y_pix + 8,
-            ),
-            4 => (&pred_cb[..], 8, c_stride, recon_cb, mb_cx_pix, mb_cy_pix),
-            5 => (&pred_cr[..], 8, c_stride, recon_cr, mb_cx_pix, mb_cy_pix),
-            _ => unreachable!(),
-        };
+    // Helper: is block b coded?
+    let block_coded = |b: usize| -> bool {
+        if b < 6 {
+            (cbp6 & (1 << (5 - b))) != 0
+        } else if b < 8 {
+            (cbp_422 & (1 << (7 - b))) != 0
+        } else {
+            (cbp_444 & (1 << (11 - b))) != 0
+        }
+    };
 
-        if !coded {
-            // Just copy prediction into the recon plane.
+    // Luma blocks (0..3).
+    let luma_offsets = [(0usize, 0usize), (8, 0), (0, 8), (8, 8)];
+    for (b, (bx, by)) in luma_offsets.iter().enumerate() {
+        let dst_x0 = mb_x_pix + bx;
+        let dst_y0 = mb_y_pix + by;
+        if !block_coded(b) {
+            // Copy prediction.
             for j in 0..8 {
-                let dst_off = (dst_y0 + j) * recon_dst_stride + dst_x0;
-                recon_dst[dst_off..dst_off + 8]
-                    .copy_from_slice(&pred_slice[j * pred_stride..j * pred_stride + 8]);
+                for i in 0..8 {
+                    recon_y[(dst_y0 + j) * y_stride + (dst_x0 + i)] =
+                        pred_y[(by + j) * 16 + (bx + i)];
+                }
             }
-            continue;
-        }
-
-        let levels = &block_levels[b];
-
-        // Emit AC coefficients using non-intra (first coeff special) table.
-        encode_non_intra_block(bw, levels)?;
-
-        // Reconstruct sample = clamp(prediction + IDCT(dequant(levels))).
-        let mut coeffs = [0i32; 64];
-        for k in 0..64 {
-            let lv = levels[k];
-            if lv == 0 {
-                continue;
-            }
-            let nat = ZIGZAG[k];
-            let qf = non_intra_q[nat] as i32;
-            let add = if lv > 0 { 1 } else { -1 };
-            let mut rec = ((2 * lv + add) * q * qf) / 16;
-            if rec & 1 == 0 && rec != 0 {
-                rec = if rec > 0 { rec - 1 } else { rec + 1 };
-            }
-            rec = rec.clamp(-2048, 2047);
-            coeffs[nat] = rec;
-        }
-        let mut fblock = [0.0f32; 64];
-        for i in 0..64 {
-            fblock[i] = coeffs[i] as f32;
-        }
-        idct8x8(&mut fblock);
-        for j in 0..8 {
-            for i in 0..8 {
-                let p = pred_slice[j * pred_stride + i] as i32;
-                let r = fblock[j * 8 + i].round() as i32;
-                let pix = (p + r).clamp(0, 255) as u8;
-                let dst_off = (dst_y0 + j) * recon_dst_stride + dst_x0 + i;
-                recon_dst[dst_off] = pix;
-            }
+        } else {
+            encode_non_intra_block(bw, &block_levels[b], enc.codec)?;
+            reconstruct_inter_block_into(
+                &block_levels[b],
+                &pred_y,
+                16,
+                *bx,
+                *by,
+                recon_y,
+                y_stride,
+                dst_x0,
+                dst_y0,
+                q,
+                non_intra_q,
+            );
         }
     }
 
+    // Chroma Cb blocks (4..4+n_cb).
+    for cidx in 0..n_cb {
+        let b = 4 + cidx;
+        let (cx0, cy0, rx0, ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        // Offset within the prediction buffer.
+        let pred_x0 = cx0 - mb_col * c_w_mb;
+        let pred_y0 = cy0 - mb_row * c_h_mb;
+        if !block_coded(b) {
+            for j in 0..8 {
+                for i in 0..8 {
+                    recon_cb[(ry0 + j) * c_stride + (rx0 + i)] =
+                        pred_cb[(pred_y0 + j) * c_w_mb + (pred_x0 + i)];
+                }
+            }
+        } else {
+            encode_non_intra_block(bw, &block_levels[b], enc.codec)?;
+            reconstruct_inter_block_into(
+                &block_levels[b],
+                &pred_cb,
+                c_w_mb,
+                pred_x0,
+                pred_y0,
+                recon_cb,
+                c_stride,
+                rx0,
+                ry0,
+                q,
+                non_intra_q,
+            );
+        }
+    }
+
+    // Chroma Cr blocks (4+n_cb..4+2*n_cb).
+    for cidx in 0..n_cb {
+        let b = 4 + n_cb + cidx;
+        let (cx0, cy0, rx0, ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        let pred_x0 = cx0 - mb_col * c_w_mb;
+        let pred_y0 = cy0 - mb_row * c_h_mb;
+        if !block_coded(b) {
+            for j in 0..8 {
+                for i in 0..8 {
+                    recon_cr[(ry0 + j) * c_stride + (rx0 + i)] =
+                        pred_cr[(pred_y0 + j) * c_w_mb + (pred_x0 + i)];
+                }
+            }
+        } else {
+            encode_non_intra_block(bw, &block_levels[b], enc.codec)?;
+            reconstruct_inter_block_into(
+                &block_levels[b],
+                &pred_cr,
+                c_w_mb,
+                pred_x0,
+                pred_y0,
+                recon_cr,
+                c_stride,
+                rx0,
+                ry0,
+                q,
+                non_intra_q,
+            );
+        }
+    }
+
+    let _ = n_blocks;
     Ok(())
 }
 
 /// Encode a non-intra block's AC coefficients. The first nonzero coefficient
 /// uses the "first-coeff" table interpretation (1s = ±1 level instead of EOB);
 /// subsequent ones use the regular Table B-14. The block must contain at least
-/// one nonzero level (caller's responsibility). Only MPEG-1 P/B encoders call
-/// this fn in the first-pass milestone.
-fn encode_non_intra_block(bw: &mut BitWriter, levels: &[i32; 64]) -> Result<()> {
-    let codec = Codec::Mpeg1;
+/// one nonzero level (caller's responsibility).
+fn encode_non_intra_block(bw: &mut BitWriter, levels: &[i32; 64], codec: Codec) -> Result<()> {
     let mut first = true;
     let mut run: u32 = 0;
     for k in 0..64 {
@@ -2455,6 +2826,217 @@ fn bi_sad_for(
         }
     }
     sum
+}
+
+/// Encode a 16×16 intra macroblock using field-DCT (H.262 §6.3.17.1,
+/// dct_type=1). For each luma block pair the 16 input rows are split into
+/// top-field (even rows 0,2,…,14) and bottom-field (odd rows 1,3,…,15),
+/// each giving one 8-row group per horizontal half. The four luma block
+/// positions in field-DCT mode are:
+///
+///   block 0: top-field rows, left  cols (0–7)  → DCT of even rows, x ∈ [0,7]
+///   block 1: top-field rows, right cols (8–15) → DCT of even rows, x ∈ [8,15]
+///   block 2: bottom-field rows, left  cols     → DCT of odd rows,  x ∈ [0,7]
+///   block 3: bottom-field rows, right cols     → DCT of odd rows,  x ∈ [8,15]
+///
+/// Chroma blocks are always frame-DCT per H.262 regardless of luma dct_type.
+#[allow(clippy::too_many_arguments)]
+fn encode_mb_intra_field_dct(
+    bw: &mut BitWriter,
+    enc: &Mpeg1VideoEncoder,
+    v: &VideoFrame,
+    mb_row: usize,
+    mb_col: usize,
+    dc_pred_q: &mut [i32; 3],
+    recon_y: &mut [u8],
+    recon_cb: &mut [u8],
+    recon_cr: &mut [u8],
+    y_stride: usize,
+    c_stride: usize,
+) -> Result<()> {
+    let q = enc.quant_scale as i32;
+    let intra_q = &DEFAULT_INTRA_QUANT;
+    let codec = enc.codec;
+    let mpeg2 = codec == Codec::Mpeg2;
+    let quant_mul: f32 = if mpeg2 { 16.0 } else { 8.0 };
+
+    let w = enc.width as usize;
+    let h = enc.height as usize;
+    let chroma_format = enc.chroma_format;
+    let c_h_shift = chroma_format.chroma_h_shift() as usize;
+    let c_v_shift = chroma_format.chroma_v_shift() as usize;
+    let cw = w >> c_h_shift;
+    let ch = h >> c_v_shift;
+
+    let y_plane = &v.planes[0];
+    let cb_plane = &v.planes[1];
+    let cr_plane = &v.planes[2];
+
+    let mb_y0 = mb_row * 16;
+    let mb_x0 = mb_col * 16;
+
+    // Helper: encode one 8×8 luma block assembled from field rows.
+    // `field`: 0 = top-field (even rows of MB), 1 = bottom-field (odd rows).
+    // `bx`: horizontal pixel offset within the MB (0 or 8).
+    // The reconstruction writes back using inverse interleaving into `recon_y`.
+    let mut encode_luma_field_block =
+        |bw: &mut BitWriter, field: usize, bx: usize, dc_pred: &mut i32| -> Result<()> {
+            // Gather samples: 8 rows of 8 samples from the current field.
+            // field=0: frame rows 0,2,4,6,8,10,12,14 within the MB.
+            // field=1: frame rows 1,3,5,7,9,11,13,15 within the MB.
+            let mut samples = [0.0f32; 64];
+            for r in 0..8 {
+                let frame_row = mb_y0 + field + r * 2; // even or odd frame row
+                let yy = frame_row.min(h.saturating_sub(1));
+                for i in 0..8 {
+                    let xx = (mb_x0 + bx + i).min(w.saturating_sub(1));
+                    samples[r * 8 + i] = y_plane.data[yy * y_plane.stride + xx] as f32;
+                }
+            }
+
+            fdct8x8(&mut samples);
+
+            // Quantise DC.
+            let dc_coeff = samples[0];
+            let dc_q = ((dc_coeff / 8.0).round() as i32).clamp(0, 255);
+            let dc_diff = dc_q - *dc_pred;
+            *dc_pred = dc_q;
+
+            // Quantise AC.
+            let mut levels = [0i32; 64];
+            let limit = if mpeg2 { 2047 } else { 255 };
+            for k in 1..64 {
+                let nat = ZIGZAG[k];
+                let coef = samples[nat];
+                let qf = intra_q[nat] as f32;
+                let denom = q as f32 * qf;
+                let v = if denom == 0.0 {
+                    0.0
+                } else {
+                    coef * quant_mul / denom
+                };
+                let lv = if v >= 0.0 {
+                    (v + 0.5) as i32
+                } else {
+                    -(((-v) + 0.5) as i32)
+                };
+                levels[k] = lv.clamp(-limit, limit);
+            }
+
+            // Encode DC differential + AC run/level.
+            encode_dc_diff(bw, dc_diff, false)?;
+            encode_ac_coeffs(bw, &levels, codec)?;
+
+            // Reconstruct (dequant → IDCT) and write back with field
+            // interleaving: DCT output row `r` maps to frame row `mb_y0 + field + r*2`.
+            let mut coeffs = [0i32; 64];
+            coeffs[0] = dc_q * 8;
+            for k in 1..64 {
+                let lv = levels[k];
+                if lv == 0 {
+                    continue;
+                }
+                let nat = ZIGZAG[k];
+                let qf = intra_q[nat] as i32;
+                let mut rec = if mpeg2 {
+                    (lv * q * qf) / 16
+                } else {
+                    (2 * lv * q * qf) / 16
+                };
+                if !mpeg2 && rec & 1 == 0 && rec != 0 {
+                    rec = if rec > 0 { rec - 1 } else { rec + 1 };
+                }
+                coeffs[nat] = rec.clamp(-2048, 2047);
+            }
+            if mpeg2 {
+                let mut sum: i32 = 0;
+                for &c in coeffs.iter() {
+                    sum ^= c;
+                }
+                if sum & 1 == 0 {
+                    coeffs[63] ^= 1;
+                    coeffs[63] = coeffs[63].clamp(-2048, 2047);
+                }
+            }
+            let mut fblock = [0.0f32; 64];
+            for i in 0..64 {
+                fblock[i] = coeffs[i] as f32;
+            }
+            idct8x8(&mut fblock);
+            for r in 0..8 {
+                let frame_row = mb_y0 + field + r * 2;
+                let dy = frame_row;
+                for i in 0..8 {
+                    let dx = mb_x0 + bx + i;
+                    let pix = fblock[r * 8 + i];
+                    let p = if pix <= 0.0 {
+                        0u8
+                    } else if pix >= 255.0 {
+                        255u8
+                    } else {
+                        pix.round() as u8
+                    };
+                    recon_y[dy * y_stride + dx] = p;
+                }
+            }
+            Ok(())
+        };
+
+    // Emit 4 luma blocks in field-DCT order:
+    //   block 0: top-field (field=0), left (bx=0)
+    //   block 1: top-field (field=0), right (bx=8)
+    //   block 2: bottom-field (field=1), left (bx=0)
+    //   block 3: bottom-field (field=1), right (bx=8)
+    let dc_ref = &mut dc_pred_q[0];
+    for &(field, bx) in &[(0usize, 0usize), (0, 8), (1, 0), (1, 8)] {
+        encode_luma_field_block(bw, field, bx, dc_ref)?;
+    }
+
+    // Chroma blocks use frame-DCT regardless of luma dct_type (H.262 §6.3.17.1).
+    let n_chroma = chroma_blocks_per_component(chroma_format);
+    for cidx in 0..n_chroma {
+        let (cx0, cy0, rx0, ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        encode_block_intra(
+            bw,
+            &cb_plane.data,
+            cb_plane.stride,
+            cw,
+            ch,
+            cx0,
+            cy0,
+            true,
+            q,
+            intra_q,
+            &mut dc_pred_q[1],
+            recon_cb,
+            c_stride,
+            rx0,
+            ry0,
+            codec,
+        )?;
+    }
+    for cidx in 0..n_chroma {
+        let (cx0, cy0, rx0, ry0) = chroma_block_coords(chroma_format, mb_col, mb_row, cidx);
+        encode_block_intra(
+            bw,
+            &cr_plane.data,
+            cr_plane.stride,
+            cw,
+            ch,
+            cx0,
+            cy0,
+            true,
+            q,
+            intra_q,
+            &mut dc_pred_q[2],
+            recon_cr,
+            c_stride,
+            rx0,
+            ry0,
+            codec,
+        )?;
+    }
+    Ok(())
 }
 
 /// Encode an intra MB into the bitstream, discarding the reconstruction.

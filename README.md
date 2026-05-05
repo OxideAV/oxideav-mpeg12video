@@ -109,9 +109,10 @@ per MB row). The MPEG-1 default GOP is `IPP` — no B-frames — to keep
 cumulative drift in the f32 IDCT chain bounded on long sequences. Use
 `make_encoder_with_gop` for arbitrary `I B*N P B*N P ...` layouts.
 
-The MPEG-2 encoder currently produces **I-only** bitstreams (progressive
-Main Profile @ Main Level 4:2:0). MPEG-2 P/B encoding is a later
-milestone.
+The MPEG-2 encoder supports progressive I+P GOPs (any `gop_size`) and
+interlaced I-only streams. Accepted pixel formats are `Yuv420P`,
+`Yuv422P`, and `Yuv444P`; the format is reflected in `sequence_extension`.
+MPEG-2 B-frame encoding is a later milestone.
 
 ```rust
 use oxideav_core::{CodecId, CodecParameters, Frame, PixelFormat, Rational};
@@ -137,8 +138,10 @@ while let Ok(pkt) = enc.receive_packet() {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-For MPEG-2 I-only encoding, use `make_encoder_mpeg2` with codec id
-`"mpeg2video"`.
+For MPEG-2 encoding, use `make_encoder_mpeg2` (I+P, progressive 4:2:0),
+`make_encoder_mpeg2_with_gop` (custom GOP size and chroma format), or
+`make_encoder_mpeg2_interlaced` (field-DCT interlaced I-frames). Supply
+`Yuv422P` or `Yuv444P` in `params.pixel_format` for those chroma modes.
 
 Encoder coverage:
 
@@ -153,15 +156,21 @@ Encoder coverage:
   the MPEG-2 intra dequant formula (`(level * q * W) / 16`) and global
   mismatch, and writes escape run/level pairs as `run(6) + signed 12-bit
   level`.
-- P-pictures (MPEG-1 only): integer-pel block-matching motion estimation
-  at ±8 with half-pel refinement, MV differential via Table B-10, MB types
-  skip / forward / forward+pattern / intra fallback, CBP via Table B-9,
-  non-intra quant + Table B-14 VLC.
+- P-pictures (MPEG-1 and MPEG-2): integer-pel block-matching motion
+  estimation at ±8 with half-pel refinement, MV differential via Table
+  B-10, MB types skip / forward / forward+pattern / intra fallback, CBP
+  via Table B-9, non-intra quant + Table B-14 VLC.
 - B-pictures (MPEG-1 only): per-MB decision between forward / backward /
   interpolated (fwd + bwd averaged) MC and intra fallback; display-order
   reorder buffer emits each anchor before its preceding B-pictures.
   `forward_f_code` and `backward_f_code` are both 1 (±16 half-pel MV
   range).
+- MPEG-2 chroma formats: `Yuv420P` (4:2:0), `Yuv422P` (4:2:2), `Yuv444P`
+  (4:4:4). Extended CBP for 4:2:2/4:4:4 per H.262 §6.3.17.4.
+- MPEG-2 interlaced frame encode (via `make_encoder_mpeg2_interlaced`):
+  emits `frame_pred_frame_dct = 0` and `progressive_frame = 0`; per-MB
+  `dct_type` bit selects field-DCT for luma (top/bottom field row
+  interleaving). Chroma always frame-DCT per H.262 §6.3.17.1.
 - Reconstructed references are kept in-encoder so decoder output is
   drift-free with respect to what the encoder predicted from.
 - Closed-GOP semantics: B-frames that would straddle a GOP boundary are

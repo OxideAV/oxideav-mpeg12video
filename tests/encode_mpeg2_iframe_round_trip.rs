@@ -14,7 +14,9 @@ use oxideav_core::{
     TimeBase, VideoFrame,
 };
 use oxideav_mpeg12video::{
-    decoder::make_decoder_mpeg2, encoder::make_encoder_mpeg2, CODEC_ID_MPEG2_STR,
+    decoder::make_decoder_mpeg2,
+    encoder::{make_encoder_mpeg2_interlaced, make_encoder_mpeg2_with_gop},
+    CODEC_ID_MPEG2_STR,
 };
 
 const W: u32 = 64;
@@ -72,13 +74,17 @@ fn synth_frame(idx: u32) -> VideoFrame {
 }
 
 fn encode_frames(frames: &[VideoFrame]) -> Vec<u8> {
+    encode_frames_gop(frames, 1)
+}
+
+fn encode_frames_gop(frames: &[VideoFrame], gop_size: u32) -> Vec<u8> {
     let mut params = CodecParameters::video(CodecId::new(CODEC_ID_MPEG2_STR));
     params.width = Some(W);
     params.height = Some(H);
     params.pixel_format = Some(PixelFormat::Yuv420P);
     params.frame_rate = Some(Rational::new(25, 1));
     params.bit_rate = Some(1_500_000);
-    let mut enc = make_encoder_mpeg2(&params).expect("build mpeg2 encoder");
+    let mut enc = make_encoder_mpeg2_with_gop(&params, gop_size, 0).expect("build mpeg2 encoder");
     let mut data = Vec::new();
     for f in frames {
         enc.send_frame(&Frame::Video(f.clone()))
@@ -305,7 +311,7 @@ fn which(prog: &str) -> Option<String> {
 }
 
 #[test]
-fn mpeg2_encoder_rejects_b_frames_and_long_gop() {
+fn mpeg2_encoder_rejects_b_frames() {
     let mut params = CodecParameters::video(CodecId::new(CODEC_ID_MPEG2_STR));
     params.width = Some(W);
     params.height = Some(H);
@@ -315,7 +321,470 @@ fn mpeg2_encoder_rejects_b_frames_and_long_gop() {
     // B-frames not yet supported.
     let r = oxideav_mpeg12video::encoder::make_encoder_mpeg2_with_gop(&params, 1, 1);
     assert!(r.is_err(), "B-frames must be rejected in this milestone");
-    // Long GOP not yet supported either.
-    let r = oxideav_mpeg12video::encoder::make_encoder_mpeg2_with_gop(&params, 12, 0);
-    assert!(r.is_err(), "long GOP must be rejected in this milestone");
+    // Long GOP (I+P) is now supported.
+    let r = oxideav_mpeg12video::encoder::make_encoder_mpeg2_with_gop(&params, 4, 0);
+    assert!(r.is_ok(), "I+P long GOP should be accepted");
+}
+
+// ---------------------------------------------------------------------------
+// 4:2:2 chroma encode + decode round-trip
+// ---------------------------------------------------------------------------
+
+/// Build a synthetic Yuv422P frame: Y gradient + solid Cb/Cr offsets.
+fn synth_frame_422(idx: u32) -> VideoFrame {
+    let w = W as usize;
+    let h = H as usize;
+    let cw = w / 2;
+    let ch = h; // 4:2:2: full height chroma
+    let mut y = vec![0u8; w * h];
+    for row in 0..h {
+        for col in 0..w {
+            y[row * w + col] = ((col as u32 * 3 + row as u32 + idx * 5) & 0xFF) as u8;
+        }
+    }
+    let cb = vec![140u8; cw * ch];
+    let cr = vec![115u8; cw * ch];
+    VideoFrame {
+        pts: Some(idx as i64),
+        planes: vec![
+            VideoPlane { stride: w, data: y },
+            VideoPlane {
+                stride: cw,
+                data: cb,
+            },
+            VideoPlane {
+                stride: cw,
+                data: cr,
+            },
+        ],
+    }
+}
+
+fn encode_frames_with_pix(frames: &[VideoFrame], pix: PixelFormat) -> Vec<u8> {
+    let mut params = CodecParameters::video(CodecId::new(CODEC_ID_MPEG2_STR));
+    params.width = Some(W);
+    params.height = Some(H);
+    params.pixel_format = Some(pix);
+    params.frame_rate = Some(Rational::new(25, 1));
+    params.bit_rate = Some(3_000_000);
+    // Use I-only GOP (gop_size=1) so every frame is an I-frame.
+    let mut enc =
+        make_encoder_mpeg2_with_gop(&params, 1, 0).expect("build mpeg2 encoder with pix fmt");
+    let mut data = Vec::new();
+    for f in frames {
+        enc.send_frame(&Frame::Video(f.clone()))
+            .expect("send_frame");
+        loop {
+            match enc.receive_packet() {
+                Ok(p) => data.extend_from_slice(&p.data),
+                Err(Error::NeedMore) => break,
+                Err(Error::Eof) => break,
+                Err(e) => panic!("encoder error: {e}"),
+            }
+        }
+    }
+    enc.flush().expect("flush");
+    loop {
+        match enc.receive_packet() {
+            Ok(p) => data.extend_from_slice(&p.data),
+            Err(Error::NeedMore) => break,
+            Err(Error::Eof) => break,
+            Err(e) => panic!("encoder error on flush: {e}"),
+        }
+    }
+    data
+}
+
+#[test]
+fn mpeg2_422_iframe_round_trip() {
+    let frames: Vec<VideoFrame> = (0..2).map(synth_frame_422).collect();
+    let bytes = encode_frames_with_pix(&frames, PixelFormat::Yuv422P);
+    assert!(!bytes.is_empty(), "encoder produced no bytes");
+
+    let decoded = decode_stream(&bytes);
+    assert_eq!(decoded.len(), 2, "expected 2 decoded frames");
+
+    for (i, dec) in decoded.iter().enumerate() {
+        // Decoded Y plane must be 64×64.
+        assert_eq!(
+            dec.planes[0].data.len(),
+            W as usize * H as usize,
+            "frame {i}: Y size"
+        );
+        // Decoded Cb/Cr planes must be 32×64 (4:2:2 half-width, full height).
+        let exp_c_len = (W / 2) as usize * H as usize;
+        assert_eq!(dec.planes[1].data.len(), exp_c_len, "frame {i}: Cb size");
+        assert_eq!(dec.planes[2].data.len(), exp_c_len, "frame {i}: Cr size");
+
+        // Luma quality: ≥ 95% of pixels within ±12 of original.
+        let pct = pixel_match_plane(&frames[i].planes[0].data, &dec.planes[0].data, 12);
+        eprintln!("422 frame {i}: luma pct(±12)={:.2}%", pct * 100.0);
+        assert!(
+            pct >= 0.95,
+            "frame {i}: 4:2:2 luma ±12 match {:.2}% < 95%",
+            pct * 100.0
+        );
+    }
+}
+
+/// Optionally cross-validate 4:2:2 output with ffmpeg.
+#[test]
+fn ffmpeg_decodes_mpeg2_422_output() {
+    if which("ffmpeg").is_none() {
+        eprintln!("ffmpeg not found — skipping 4:2:2 ffmpeg interop test");
+        return;
+    }
+    let frames: Vec<VideoFrame> = (0..2).map(synth_frame_422).collect();
+    let bytes = encode_frames_with_pix(&frames, PixelFormat::Yuv422P);
+
+    let in_path = "/tmp/mpeg2_oxideav_422.m2v";
+    std::fs::write(in_path, &bytes).expect("write 422 m2v");
+
+    let out_path = "/tmp/mpeg2_oxideav_422_dec.yuv";
+    let _ = std::fs::remove_file(out_path);
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "mpegvideo",
+            "-i",
+            in_path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv422p",
+            out_path,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("spawn ffmpeg");
+    assert!(
+        status.success(),
+        "ffmpeg failed to decode our MPEG-2 4:2:2 output"
+    );
+
+    let raw = std::fs::read(out_path).expect("read ffmpeg 422 output");
+    let w = W as usize;
+    let h = H as usize;
+    let frame_size = w * h + 2 * (w / 2) * h;
+    assert!(raw.len() >= frame_size, "ffmpeg 422 output too short");
+
+    // Compare luma of first frame.
+    let y_orig = &frames[0].planes[0].data;
+    let y_dec = &raw[..w * h];
+    let pct = pixel_match_plane(y_orig, y_dec, 32);
+    eprintln!("ffmpeg 4:2:2 luma ±32 match: {:.2}%", pct * 100.0);
+    assert!(
+        pct >= 0.90,
+        "4:2:2 ffmpeg luma ±32 match {:.2}% < 90%",
+        pct * 100.0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4:4:4 chroma encode + decode round-trip
+// ---------------------------------------------------------------------------
+
+fn synth_frame_444(idx: u32) -> VideoFrame {
+    let w = W as usize;
+    let h = H as usize;
+    // 4:4:4: full-size chroma
+    let mut y = vec![0u8; w * h];
+    for row in 0..h {
+        for col in 0..w {
+            y[row * w + col] = ((col as u32 * 3 + row as u32 + idx * 5) & 0xFF) as u8;
+        }
+    }
+    let cb = vec![135u8; w * h];
+    let cr = vec![120u8; w * h];
+    VideoFrame {
+        pts: Some(idx as i64),
+        planes: vec![
+            VideoPlane { stride: w, data: y },
+            VideoPlane {
+                stride: w,
+                data: cb,
+            },
+            VideoPlane {
+                stride: w,
+                data: cr,
+            },
+        ],
+    }
+}
+
+#[test]
+fn mpeg2_444_iframe_round_trip() {
+    let frames: Vec<VideoFrame> = (0..2).map(synth_frame_444).collect();
+    let bytes = encode_frames_with_pix(&frames, PixelFormat::Yuv444P);
+    assert!(!bytes.is_empty(), "encoder produced no bytes");
+
+    let decoded = decode_stream(&bytes);
+    assert_eq!(decoded.len(), 2, "expected 2 decoded frames");
+
+    for (i, dec) in decoded.iter().enumerate() {
+        let w = W as usize;
+        let h = H as usize;
+        assert_eq!(dec.planes[0].data.len(), w * h, "frame {i}: Y size");
+        assert_eq!(
+            dec.planes[1].data.len(),
+            w * h,
+            "frame {i}: Cb size (4:4:4)"
+        );
+        assert_eq!(
+            dec.planes[2].data.len(),
+            w * h,
+            "frame {i}: Cr size (4:4:4)"
+        );
+
+        let pct = pixel_match_plane(&frames[i].planes[0].data, &dec.planes[0].data, 12);
+        eprintln!("444 frame {i}: luma pct(±12)={:.2}%", pct * 100.0);
+        assert!(
+            pct >= 0.95,
+            "frame {i}: 4:4:4 luma ±12 match {:.2}% < 95%",
+            pct * 100.0
+        );
+    }
+}
+
+#[test]
+fn ffmpeg_decodes_mpeg2_444_output() {
+    if which("ffmpeg").is_none() {
+        eprintln!("ffmpeg not found — skipping 4:4:4 ffmpeg interop test");
+        return;
+    }
+    let frames: Vec<VideoFrame> = (0..2).map(synth_frame_444).collect();
+    let bytes = encode_frames_with_pix(&frames, PixelFormat::Yuv444P);
+
+    let in_path = "/tmp/mpeg2_oxideav_444.m2v";
+    std::fs::write(in_path, &bytes).expect("write 444 m2v");
+
+    let out_path = "/tmp/mpeg2_oxideav_444_dec.yuv";
+    let _ = std::fs::remove_file(out_path);
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "mpegvideo",
+            "-i",
+            in_path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv444p",
+            out_path,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("spawn ffmpeg");
+    assert!(
+        status.success(),
+        "ffmpeg failed to decode our MPEG-2 4:4:4 output"
+    );
+
+    let raw = std::fs::read(out_path).expect("read ffmpeg 444 output");
+    let w = W as usize;
+    let h = H as usize;
+    let frame_size = w * h * 3;
+    assert!(raw.len() >= frame_size, "ffmpeg 444 output too short");
+
+    let y_orig = &frames[0].planes[0].data;
+    let y_dec = &raw[..w * h];
+    let pct = pixel_match_plane(y_orig, y_dec, 32);
+    eprintln!("ffmpeg 4:4:4 luma ±32 match: {:.2}%", pct * 100.0);
+    assert!(
+        pct >= 0.90,
+        "4:4:4 ffmpeg luma ±32 match {:.2}% < 90%",
+        pct * 100.0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MPEG-2 interlaced I-frame encode + decode round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mpeg2_interlaced_iframe_round_trip() {
+    let frames: Vec<VideoFrame> = (0..2).map(synth_frame).collect();
+
+    let mut params = CodecParameters::video(CodecId::new(CODEC_ID_MPEG2_STR));
+    params.width = Some(W);
+    params.height = Some(H);
+    params.pixel_format = Some(PixelFormat::Yuv420P);
+    params.frame_rate = Some(Rational::new(25, 1));
+    params.bit_rate = Some(3_000_000);
+
+    let mut enc =
+        make_encoder_mpeg2_interlaced(&params, 1).expect("build interlaced mpeg2 encoder");
+    let mut bytes = Vec::new();
+    for f in &frames {
+        enc.send_frame(&Frame::Video(f.clone()))
+            .expect("send_frame");
+        loop {
+            match enc.receive_packet() {
+                Ok(p) => bytes.extend_from_slice(&p.data),
+                Err(Error::NeedMore) | Err(Error::Eof) => break,
+                Err(e) => panic!("encoder error: {e}"),
+            }
+        }
+    }
+    enc.flush().expect("flush");
+    loop {
+        match enc.receive_packet() {
+            Ok(p) => bytes.extend_from_slice(&p.data),
+            Err(Error::NeedMore) | Err(Error::Eof) => break,
+            Err(e) => panic!("encoder error on flush: {e}"),
+        }
+    }
+
+    assert!(!bytes.is_empty(), "interlaced encoder produced no bytes");
+
+    // Decode and check frame count + luma quality.
+    let decoded = decode_stream(&bytes);
+    assert_eq!(
+        decoded.len(),
+        2,
+        "expected 2 decoded frames from interlaced stream"
+    );
+
+    for (i, dec) in decoded.iter().enumerate() {
+        let pct = pixel_match_plane(&frames[i].planes[0].data, &dec.planes[0].data, 16);
+        eprintln!("interlaced frame {i}: luma pct(±16)={:.2}%", pct * 100.0);
+        assert!(
+            pct >= 0.90,
+            "frame {i}: interlaced luma ±16 match {:.2}% < 90%",
+            pct * 100.0
+        );
+    }
+}
+
+/// Cross-validate interlaced output with ffmpeg.
+#[test]
+fn ffmpeg_decodes_mpeg2_interlaced_output() {
+    if which("ffmpeg").is_none() {
+        eprintln!("ffmpeg not found — skipping interlaced ffmpeg interop test");
+        return;
+    }
+    let frames: Vec<VideoFrame> = (0..2).map(synth_frame).collect();
+
+    let mut params = CodecParameters::video(CodecId::new(CODEC_ID_MPEG2_STR));
+    params.width = Some(W);
+    params.height = Some(H);
+    params.pixel_format = Some(PixelFormat::Yuv420P);
+    params.frame_rate = Some(Rational::new(25, 1));
+    params.bit_rate = Some(3_000_000);
+
+    let mut enc =
+        make_encoder_mpeg2_interlaced(&params, 1).expect("build interlaced mpeg2 encoder");
+    let mut bytes = Vec::new();
+    for f in &frames {
+        enc.send_frame(&Frame::Video(f.clone()))
+            .expect("send_frame");
+        loop {
+            match enc.receive_packet() {
+                Ok(p) => bytes.extend_from_slice(&p.data),
+                Err(Error::NeedMore) | Err(Error::Eof) => break,
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+    enc.flush().expect("flush");
+    loop {
+        match enc.receive_packet() {
+            Ok(p) => bytes.extend_from_slice(&p.data),
+            Err(Error::NeedMore) | Err(Error::Eof) => break,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    let in_path = "/tmp/mpeg2_oxideav_interlaced.m2v";
+    let out_path = "/tmp/mpeg2_oxideav_interlaced_dec.yuv";
+    std::fs::write(in_path, &bytes).expect("write interlaced m2v");
+    let _ = std::fs::remove_file(out_path);
+
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "mpegvideo",
+            "-i",
+            in_path,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            out_path,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("spawn ffmpeg");
+    assert!(
+        status.success(),
+        "ffmpeg failed to decode interlaced MPEG-2 output"
+    );
+
+    let raw = std::fs::read(out_path).expect("read ffmpeg interlaced output");
+    let w = W as usize;
+    let h = H as usize;
+    let frame_size = w * h + 2 * (w / 2) * (h / 2);
+    assert!(
+        raw.len() >= frame_size,
+        "ffmpeg interlaced output too short"
+    );
+
+    let y_orig = &frames[0].planes[0].data;
+    let y_dec = &raw[..w * h];
+    let pct = pixel_match_plane(y_orig, y_dec, 32);
+    eprintln!("ffmpeg interlaced luma ±32 match: {:.2}%", pct * 100.0);
+    assert!(
+        pct >= 0.85,
+        "interlaced ffmpeg luma ±32 match {:.2}% < 85%",
+        pct * 100.0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MPEG-2 I+P long GOP round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mpeg2_ip_long_gop_round_trip() {
+    let frames: Vec<VideoFrame> = (0..6).map(synth_frame).collect();
+    // GOP of 3: I P P | I P P
+    let bytes = encode_frames_gop(&frames, 3);
+    assert!(!bytes.is_empty(), "long-GOP encoder produced no bytes");
+
+    let decoded = decode_stream(&bytes);
+    assert_eq!(decoded.len(), 6, "expected 6 decoded frames");
+
+    // Only check first frame (the I-frame) for tight tolerance.
+    let pct = pixel_match_plane(&frames[0].planes[0].data, &decoded[0].planes[0].data, 8);
+    eprintln!("long-gop I-frame luma pct(±8)={:.2}%", pct * 100.0);
+    assert!(
+        pct >= 0.99,
+        "I-frame luma ±8 match {:.2}% < 99%",
+        pct * 100.0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn pixel_match_plane(orig: &[u8], recon: &[u8], tol: i32) -> f64 {
+    let mut matched = 0u64;
+    let count = orig.len().min(recon.len()) as u64;
+    for (&a, &b) in orig.iter().zip(recon.iter()) {
+        if (a as i32 - b as i32).abs() <= tol {
+            matched += 1;
+        }
+    }
+    if count == 0 {
+        1.0
+    } else {
+        matched as f64 / count as f64
+    }
 }

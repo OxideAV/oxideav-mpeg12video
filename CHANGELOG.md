@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MPEG-2 encoder: 4:2:2 and 4:4:4 chroma format support — `Yuv422P` /
+  `Yuv444P` input maps to the corresponding MPEG-2 `chroma_format` code in
+  `sequence_extension`. Block counts are 8 / 12 per MB for 4:2:2 / 4:4:4;
+  extended CBP is emitted per H.262 §6.3.17.4 (2 raw bits for 4:2:2,
+  2 + 6 raw bits for 4:4:4); chroma MC is MV-scaled correctly via
+  `scale_mv_h_to_chroma` / `scale_mv_v_to_chroma`. `make_encoder_mpeg2`
+  selects the chroma format automatically from `params.pixel_format`.
+- MPEG-2 encoder: interlaced frame encoding — `make_encoder_mpeg2_interlaced`
+  emits `progressive_frame = 0` and `frame_pred_frame_dct = 0` in every
+  `picture_coding_extension`. Each intra MB writes a `dct_type = 1` bit and
+  uses field-DCT: luma rows are split into top-field (even rows 0,2,…,14)
+  and bottom-field (odd rows 1,3,…,15); each field half feeds a separate
+  8×8 DCT block. Reconstruction interleaves the IDCT output back into the
+  correct frame rows. Chroma blocks always use frame-DCT regardless of
+  `dct_type` (H.262 §6.3.17.1).
+- MPEG-2 encoder: I+P GOP support — `make_encoder_mpeg2_with_gop` now accepts
+  `gop_size > 1` with `num_b_frames = 0`, enabling true I+P bitstreams at
+  any GOP length. Previously only I-only (`gop_size = 1`) was permitted.
+- New encoder factory `make_encoder_mpeg2_interlaced(params, gop_size)` for
+  interlaced content.
+- Tests: `mpeg2_422_iframe_round_trip`, `ffmpeg_decodes_mpeg2_422_output`,
+  `mpeg2_444_iframe_round_trip`, `ffmpeg_decodes_mpeg2_444_output`,
+  `mpeg2_interlaced_iframe_round_trip`, `ffmpeg_decodes_mpeg2_interlaced_output`,
+  `mpeg2_ip_long_gop_round_trip` — all using self-roundtrip + optional
+  ffmpeg cross-validation (skips when ffmpeg unavailable).
+
+### Changed
+
+- `make_encoder_mpeg2_with_gop` no longer rejects `gop_size > 1`; only
+  `num_b_frames != 0` is rejected.
+- Test `mpeg2_encoder_rejects_b_frames_and_long_gop` renamed to
+  `mpeg2_encoder_rejects_b_frames` and the long-GOP assertion removed.
+- `encode_frames` helper in the MPEG-2 test file now uses `gop_size = 1`
+  explicitly (via `make_encoder_mpeg2_with_gop`) to preserve the I-only
+  start-code census assertions.
+
+### Added (decoder — see previous milestone notes)
+
 - MPEG-2 decoder: 4:2:2 and 4:4:4 chroma format support — `chroma_format`
   in `sequence_extension` selects between 6 / 8 / 12 blocks per
   macroblock, the chroma planes are sized accordingly (full vertical for
