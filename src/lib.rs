@@ -57,7 +57,10 @@ use oxideav_core::{CodecInfo, CodecRegistry};
 pub const CODEC_ID_STR: &str = "mpeg1video";
 pub const CODEC_ID_MPEG2_STR: &str = "mpeg2video";
 
-pub fn register(reg: &mut CodecRegistry) {
+/// Register MPEG-1 / MPEG-2 video on the supplied [`CodecRegistry`].
+/// Prefer the unified [`register`] entry point when you have a
+/// [`oxideav_core::RuntimeContext`] in hand.
+pub fn register_codecs(reg: &mut CodecRegistry) {
     // MPEG-1 video.
     let caps = CodecCapabilities::video("mpeg1video_sw")
         .with_lossy(true)
@@ -101,4 +104,30 @@ pub fn register(reg: &mut CodecRegistry) {
                 CodecTag::fourcc(b"HDV9"),
             ]),
     );
+}
+
+/// Unified registration entry point — installs MPEG-1 + MPEG-2 video
+/// into the codec sub-registry of the supplied
+/// [`oxideav_core::RuntimeContext`].
+pub fn register(ctx: &mut oxideav_core::RuntimeContext) {
+    register_codecs(&mut ctx.codecs);
+}
+
+#[cfg(test)]
+mod register_tests {
+    use super::*;
+
+    #[test]
+    fn register_via_runtime_context_installs_codec_factory() {
+        let mut ctx = oxideav_core::RuntimeContext::new();
+        register(&mut ctx);
+        assert!(
+            ctx.codecs.has_decoder(&CodecId::new(CODEC_ID_STR)),
+            "MPEG-1 decoder factory not installed via RuntimeContext"
+        );
+        assert!(
+            ctx.codecs.has_decoder(&CodecId::new(CODEC_ID_MPEG2_STR)),
+            "MPEG-2 decoder factory not installed via RuntimeContext"
+        );
+    }
 }
