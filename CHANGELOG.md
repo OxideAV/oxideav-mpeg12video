@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.10...v0.0.11) - 2026-05-06
+
+### Other
+
+- drop dead `linkme` dep
+- psy-QP, half-pel diamond + lambda, B-frame QP offset
+- fix precedence, field_reassign_with_default, too_many_arguments
+- mpeg2 encoder: 4:2:2/4:4:4 chroma + interlaced frame-DCT + I+P GOPs
+- auto-register via oxideav_core::register! macro (linkme distributed slice)
+- 4:2:2/4:4:4 chroma + interlaced + dual-prime decode ([#508](https://github.com/OxideAV/oxideav-mpeg12video/pull/508))
+- unify entry point on register(&mut RuntimeContext) ([#502](https://github.com/OxideAV/oxideav-mpeg12video/pull/502))
+
 ### Added
 
 - Encoder: activity-based per-MB QP allocation on I-pictures (psy-QP). The
