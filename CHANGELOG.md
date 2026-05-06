@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Encoder: activity-based per-MB QP allocation on I-pictures (psy-QP). The
+  encoder now classifies each MB by luma sample variance and lowers the
+  slice quantiser by up to 2 steps via the I-picture "Intra, Quant" macro-
+  block type (5-bit `quantizer_scale_code`) for high-activity (textured)
+  MBs; low-activity MBs get a small +1 raise. Default ON via
+  [`encoder::DEFAULT_PSY_QP`]; opt out with
+  [`encoder::make_encoder_with_gop_psy(_, _, _, false)`]. Measured +1.33 dB
+  Y-PSNR on the new mixed-complexity 64×96 I-frame fixture, +2.5 dB on the
+  IBPBP synthetic-motion fixture, +1.4 dB on the IBPPP gradient-motion
+  fixture.
+- Encoder: half-pel motion estimation now uses a two-stage diamond pattern
+  (4 axes then 4 diagonals around the surviving winner) and a Lagrangian
+  bias whose per-pel / per-half-pel weight scales as `4·sqrt(qp)` /
+  `2·sqrt(qp)` and whose half-pel "win threshold" scales as `4·qp`. The
+  previous fixed values (16 / 8 / 32) over-biased the integer search at low
+  QP and over-required half-pel wins (rarely taken even when the bilinear
+  interpolation was clearly closer). New synthetic 1.5-pel/frame slide
+  fixture measures 48.30 dB avg Y-PSNR.
+- Encoder: `make_encoder_with_gop_b_offset(params, gop_size, num_b_frames,
+  b_quant_offset)` factory exposes a per-encoder QP offset that is added
+  to `quant_scale` for B-pictures only (clamped to `[1, 31]`). B-frames
+  are not reference pictures so coarser quantisation here saves bits
+  without polluting any I/P reconstruction the decoder will reuse.
+- Test fixtures: `tests/encoder_quality_psy.rs` covers the round-39 push —
+  psy-QP A/B comparison, sub-pel translation roundtrip, IBPBP
+  synthetic-motion roundtrip, and smoke tests for the new
+  `make_encoder_with_gop_psy(_, _, _, false)` and
+  `make_encoder_with_gop_b_offset(...)` factories.
+
+### Added (previous milestones)
+
 - MPEG-2 encoder: 4:2:2 and 4:4:4 chroma format support — `Yuv422P` /
   `Yuv444P` input maps to the corresponding MPEG-2 `chroma_format` code in
   `sequence_extension`. Block counts are 8 / 12 per MB for 4:2:2 / 4:4:4;

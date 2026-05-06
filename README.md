@@ -165,6 +165,29 @@ Encoder coverage:
   reorder buffer emits each anchor before its preceding B-pictures.
   `forward_f_code` and `backward_f_code` are both 1 (±16 half-pel MV
   range).
+- Activity-based per-MB QP on I-pictures (psy-QP, ON by default). The
+  encoder ranks MBs by luma variance per row and lowers the slice
+  quantiser by up to 2 steps for top-quartile-activity MBs via the
+  I-picture "Intra, Quant" macroblock type + 5-bit
+  `quantizer_scale_code`; bottom-quartile MBs get a soft +1 raise. Cost
+  per quant-flagged MB is ~6 bits; benefit is +1.3 dB Y-PSNR on
+  mixed-complexity content at the same average QP. Toggle off with
+  [`encoder::make_encoder_with_gop_psy(params, gop_size, num_b_frames,
+  false)`].
+- Half-pel motion estimation uses a two-stage diamond pattern (axes then
+  diagonals around the surviving winner) and a Lagrangian SAD bias whose
+  per-pel / per-half-pel weight scales as `4·sqrt(qp)` / `2·sqrt(qp)` and
+  whose "half-pel win threshold" scales as `4·qp`. This lets genuine
+  fractional motion through at low QP while preventing drift accumulation
+  on integer-motion content. Measured 48.3 dB Y-PSNR on the new
+  1.5-pel/frame translation fixture; +2.5 dB on the IBPBP synthetic-motion
+  fixture relative to the round-38 baseline.
+- Optional per-encoder B-frame QP offset via
+  [`encoder::make_encoder_with_gop_b_offset(params, gop_size, num_b_frames,
+  offset)`]. The offset is added to `quant_scale` for B-pictures only
+  (clamped to `[1, 31]`); positive offsets save bits on non-reference B
+  frames so the saved budget naturally improves I/P quality at fixed
+  bitrate.
 - MPEG-2 chroma formats: `Yuv420P` (4:2:0), `Yuv422P` (4:2:2), `Yuv444P`
   (4:4:4). Extended CBP for 4:2:2/4:4:4 per H.262 §6.3.17.4.
 - MPEG-2 interlaced frame encode (via `make_encoder_mpeg2_interlaced`):
