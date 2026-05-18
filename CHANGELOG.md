@@ -6,6 +6,12 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.12](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.11...v0.0.12) - 2026-05-18
+
+### Other
+
+- orphan rebuild: clean-room scaffold post 2026-05-18 audit
+
 ### Erased
 
 - Prior master history was force-erased on **2026-05-18** under
