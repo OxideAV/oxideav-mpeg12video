@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–3 (sequence layer + GOP header).**
+**Clean-room rebuild — rounds 1–4 (sequence layer + GOP header + picture header).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -91,11 +91,58 @@ be defended as clean-room. The rebuild starts here.
   time-code, and asserts `closed_gop = 1`, `broken_link = 0` (the
   defaults that ffmpeg's mpeg2video encoder writes).
 
-### What's NOT in rounds 1–3
+### What round 4 lands
 
-* `picture_header()` / `picture_coding_extension()` parsers,
-  `quant_matrix_extension()`, `sequence_display_extension()`,
-  `sequence_scalable_extension()`
+* Parser for `picture_header()` per **ISO/IEC 13818-2 §6.2.3**
+  with field semantics from §6.3.10:
+  * `picture_start_code` = `0x00000100` validation.
+  * 10-bit `temporal_reference`.
+  * 3-bit `picture_coding_type` decoded against Table 6-12 (`I` /
+    `P` / `B`; `forbidden` `000`, MPEG-1 `D` `100`, and
+    `reserved` `101`/`110`/`111` codes rejected).
+  * 16-bit `vbv_delay` (raw — the `0xFFFF` VBR sentinel is
+    surfaced without reinterpretation).
+  * Conditional 1-bit `full_pel_forward_vector` + 3-bit
+    `forward_f_code` for `picture_coding_type ∈ {P, B}`.
+  * Conditional 1-bit `full_pel_backward_vector` + 3-bit
+    `backward_f_code` for `picture_coding_type == B`.
+  * `extra_information_picture` byte loop driven by
+    `extra_bit_picture` (collected as a raw `Vec<u8>`).
+* Parser for `picture_coding_extension()` per **§6.2.3.1** with
+  field semantics from §6.3.11:
+  * `extension_start_code` + Picture Coding Extension ID `1000`
+    (Table 6-2) validation.
+  * Four 4-bit `f_code[s][t]` sub-fields with the forbidden-zero
+    guard (§6.3.11; `15` = unused).
+  * 2-bit `intra_dc_precision` (Table 6-13) and 2-bit
+    `picture_structure` (Table 6-14; reserved `00` rejected).
+  * Ten trailing single-bit flags from `top_field_first` through
+    `composite_display_flag`.
+* Composed-view helper `Mpeg2PictureHeader::parse_with_extension`
+  that handles the `next_start_code()` zero-byte stuffing
+  between the two layers (§5.2.3).
+* Typed `Mpeg2PictureHeader`, `PictureCodingType`,
+  `PictureCodingExtension`, `PictureStructure` plus
+  `PICTURE_START_CODE` / `PICTURE_CODING_EXTENSION_ID` constants
+  (re-exported at the crate root).
+* 18 new unit tests (every spec-defined rejection site exercised:
+  wrong start code, forbidden / D-picture / reserved
+  `picture_coding_type`, zero `f_code[s][t]`, reserved
+  `picture_structure`, wrong PCE extension identifier, truncated
+  buffers) plus the round-trip extra-info loop and the
+  helper-flag matrix.
+* 2 new black-box integration tests against the existing 352×240
+  fixture (picture-header decode at offset `0x1e` and
+  picture_header + picture_coding_extension composition).
+
+### What's NOT in rounds 1–4
+
+* `quant_matrix_extension()` (§6.2.3.2),
+  `picture_display_extension()` (§6.2.3.3),
+  `sequence_display_extension()` (§6.2.2.4),
+  `sequence_scalable_extension()` (§6.2.2.5)
+* Composite-display sub-fields inside
+  `picture_coding_extension()` when `composite_display_flag = 1`
 * Slice / macroblock decoding, VLC tables, motion vectors, IDCT
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
@@ -107,8 +154,9 @@ Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
   text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
-  6.2.2.3, 6.2.2.6, 6.3.3, 6.3.4, 6.3.5, 6.3.8, Tables 6-2 / 6-3 /
-  6-4 / 6-5 / 6-11.
+  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.3.3, 6.3.4, 6.3.5, 6.3.8,
+  6.3.10, 6.3.11, Tables 6-2 / 6-3 / 6-4 / 6-5 / 6-11 / 6-12 / 6-13
+  / 6-14.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `oxideav-core`'s published `BitReader` MSB-first API.

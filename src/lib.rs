@@ -4,12 +4,13 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–3 — structural sequence-layer
-//! parsers plus the `group_of_pictures_header()` layer. Macroblock
-//! decoding, IDCT, and motion compensation are not wired up yet; the
-//! public `register` symbol is still a no-op so that downstream
-//! consumers can depend on the crate without the decoder being
-//! inadvertently selected by the registry.
+//! **Status:** rebuild rounds 1–4 — structural sequence-layer
+//! parsers, the `group_of_pictures_header()` layer, and the
+//! `picture_header()` (+ `picture_coding_extension()`) layer.
+//! Macroblock decoding, IDCT, and motion compensation are not wired
+//! up yet; the public `register` symbol is still a no-op so that
+//! downstream consumers can depend on the crate without the decoder
+//! being inadvertently selected by the registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -24,16 +25,25 @@
 //!   §6.2.2.6 (field semantics §6.3.8), including the 25-bit
 //!   `time_code` decomposition and the `closed_gop` / `broken_link`
 //!   editing flags.
+//! * [`picture_header::Mpeg2PictureHeader`] — `picture_header()`
+//!   from §6.2.3 (field semantics §6.3.10) plus the companion
+//!   [`picture_header::PictureCodingExtension`] for §6.2.3.1 /
+//!   §6.3.11.
 
 #![warn(missing_debug_implementations)]
 
 use oxideav_core::RuntimeContext;
 
 pub mod gop_header;
+pub mod picture_header;
 pub mod sequence_extension;
 pub mod sequence_header;
 
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
+pub use picture_header::{
+    Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
+    PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
+};
 pub use sequence_extension::{
     ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension, EXTENSION_START_CODE,
     SEQUENCE_EXTENSION_ID,
@@ -82,9 +92,9 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–3 only parse the sequence
-/// and group-of-pictures headers — they do not yet provide a
-/// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`], so there
+/// No-op codec registration. Rounds 1–4 only parse the sequence,
+/// group-of-pictures, and picture headers — they do not yet provide
+/// a [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`], so there
 /// is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 

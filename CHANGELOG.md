@@ -63,6 +63,38 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   the existing 352×240 fixture (locates the GOP start code,
   decodes the time-code, asserts `closed_gop = 1`,
   `broken_link = 0`).
+- Clean-room rebuild round 4: parser for `picture_header()`
+  (§6.2.3) with field semantics from §6.3.10.
+  - `picture_start_code` = `0x00000100` validation.
+  - 10-bit `temporal_reference`, 3-bit `picture_coding_type`
+    decoded against Table 6-12 (forbidden / D-picture /
+    reserved codes rejected), 16-bit `vbv_delay`.
+  - Conditional 1-bit `full_pel_forward_vector` + 3-bit
+    `forward_f_code` for P / B pictures.
+  - Conditional 1-bit `full_pel_backward_vector` + 3-bit
+    `backward_f_code` for B pictures.
+  - `extra_information_picture` byte loop captured as raw
+    `Vec<u8>` (empty for every conforming MPEG-2 stream).
+- Parser for `picture_coding_extension()` (§6.2.3.1) with field
+  semantics from §6.3.11.
+  - `extension_start_code` `0x000001B5` + 4-bit Picture Coding
+    Extension ID `1000` (Table 6-2) validation.
+  - Four 4-bit `f_code[s][t]` sub-fields with the §6.3.11
+    forbidden-zero guard.
+  - 2-bit `intra_dc_precision` (Table 6-13) and 2-bit
+    `picture_structure` (Table 6-14; reserved `00` rejected).
+  - 10 trailing single-bit flags from `top_field_first` through
+    `composite_display_flag`.
+- Composed-view helper `Mpeg2PictureHeader::parse_with_extension`
+  that parses `picture_header()` + `next_start_code()`
+  zero-byte stuffing (§5.2.3) + `picture_coding_extension()`.
+- Typed `Mpeg2PictureHeader`, `PictureCodingType`,
+  `PictureCodingExtension`, `PictureStructure` (re-exported at
+  the crate root); `PICTURE_START_CODE` /
+  `PICTURE_CODING_EXTENSION_ID` constants.
+- 18 new unit tests + 2 new black-box integration tests against
+  the existing 352×240 fixture (picture-header parse +
+  picture_header + picture_coding_extension composition).
 
 ### Erased
 
@@ -80,10 +112,12 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Next
 
-- `picture_header()` (§6.2.3) / `picture_coding_extension()`
-  (§6.2.3.1) parsers.
-- `quant_matrix_extension()` (§6.2.2.10),
+- `quant_matrix_extension()` (§6.2.3.2),
+  `picture_display_extension()` (§6.2.3.3),
   `sequence_display_extension()` (§6.2.2.4),
   `sequence_scalable_extension()` (§6.2.2.5).
+- Composite-display sub-fields (`v_axis` / `field_sequence` /
+  `sub_carrier` / `burst_amplitude` / `sub_carrier_phase`) inside
+  `picture_coding_extension()` when `composite_display_flag` is 1.
 - Slice/macroblock decoding, VLC tables, motion compensation, IDCT.
 - `oxideav_core::Decoder` wiring once a complete picture round-trips.
