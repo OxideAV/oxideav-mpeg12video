@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–2 (sequence layer only).**
+**Clean-room rebuild — rounds 1–3 (sequence layer + GOP header).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -66,11 +66,36 @@ be defended as clean-room. The rebuild starts here.
   `ffmpeg`-produced 352×240 fixture (extension decode +
   end-to-end composed `Mpeg2Sequence` round-trip).
 
-### What's NOT in rounds 1–2
+### What round 3 lands
 
-* `group_of_pictures_header()` / `picture_header()` /
-  `picture_coding_extension()` parsers, `quant_matrix_extension()`,
-  `sequence_display_extension()`, `sequence_scalable_extension()`
+* Parser for `group_of_pictures_header()` per **ISO/IEC 13818-2
+  §6.2.2.6** with field semantics from §6.3.8:
+  * `group_start_code` = `0x000001B8` validation.
+  * 25-bit `time_code` decomposition (Table 6-11):
+    * 1-bit `drop_frame_flag`
+    * 5-bit `time_code_hours` (range 0..=23 enforced)
+    * 6-bit `time_code_minutes` (range 0..=59 enforced)
+    * 1-bit `marker_bit` (enforced `'1'`)
+    * 6-bit `time_code_seconds` (range 0..=59 enforced)
+    * 6-bit `time_code_pictures` (range 0..=59 enforced)
+  * 1-bit `closed_gop` flag.
+  * 1-bit `broken_link` flag.
+* Typed `Mpeg2Gop { time_code, closed_gop, broken_link }` plus
+  typed `TimeCode { drop_frame, hours, minutes, seconds, pictures }`
+  (both re-exported at the crate root).
+* 11 new unit tests (every spec-defined rejection site exercised:
+  wrong start code, hours/minutes/seconds/pictures out of range,
+  zeroed marker_bit, truncated buffer, full flag-matrix capture).
+* 1 new black-box integration test against the existing 352×240
+  fixture — locates the `0x000001B8` GOP start code, decodes the
+  time-code, and asserts `closed_gop = 1`, `broken_link = 0` (the
+  defaults that ffmpeg's mpeg2video encoder writes).
+
+### What's NOT in rounds 1–3
+
+* `picture_header()` / `picture_coding_extension()` parsers,
+  `quant_matrix_extension()`, `sequence_display_extension()`,
+  `sequence_scalable_extension()`
 * Slice / macroblock decoding, VLC tables, motion vectors, IDCT
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
@@ -82,7 +107,8 @@ Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
   text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
-  6.2.2.3, 6.3.3, 6.3.4, 6.3.5, Tables 6-2 / 6-3 / 6-4 / 6-5.
+  6.2.2.3, 6.2.2.6, 6.3.3, 6.3.4, 6.3.5, 6.3.8, Tables 6-2 / 6-3 /
+  6-4 / 6-5 / 6-11.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `oxideav-core`'s published `BitReader` MSB-first API.

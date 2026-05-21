@@ -48,6 +48,21 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - 12 new unit tests + 2 new black-box integration tests against
   the existing 352×240 fixture (extension decode + composed
   `Mpeg2Sequence` round-trip).
+- Clean-room rebuild round 3: parser for
+  `group_of_pictures_header()` (§6.2.2.6) with field semantics
+  from §6.3.8.
+  - `group_start_code` = `0x000001B8` validation.
+  - 25-bit `time_code` decomposition per Table 6-11:
+    1-bit `drop_frame_flag`, 5-bit `time_code_hours` (0..=23),
+    6-bit `time_code_minutes` (0..=59), 1-bit `marker_bit`
+    enforcement, 6-bit `time_code_seconds` (0..=59), 6-bit
+    `time_code_pictures` (0..=59).
+  - 1-bit `closed_gop` and 1-bit `broken_link` flags.
+- Typed `Mpeg2Gop` + `TimeCode` (re-exported at the crate root).
+- 11 new unit tests + 1 new black-box integration test against
+  the existing 352×240 fixture (locates the GOP start code,
+  decodes the time-code, asserts `closed_gop = 1`,
+  `broken_link = 0`).
 
 ### Erased
 
@@ -65,8 +80,8 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Next
 
-- `group_of_pictures_header()` (§6.2.2.6) +
-  `picture_header()` / `picture_coding_extension()` parsers.
+- `picture_header()` (§6.2.3) / `picture_coding_extension()`
+  (§6.2.3.1) parsers.
 - `quant_matrix_extension()` (§6.2.2.10),
   `sequence_display_extension()` (§6.2.2.4),
   `sequence_scalable_extension()` (§6.2.2.5).
