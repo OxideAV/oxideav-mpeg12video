@@ -24,6 +24,30 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   at the crate root).
 - 12 unit tests + 1 black-box integration test against an
   `ffmpeg`-produced 352×240 MPEG-2 elementary stream.
+- Clean-room rebuild round 2: parser for `sequence_extension()`
+  (§6.2.2.3) with field semantics from §6.3.5.
+  - `extension_start_code` `0x000001B5` + 4-bit
+    `extension_start_code_identifier == '0001'` Sequence Extension
+    ID (Table 6-2) validation.
+  - 8-bit `profile_and_level_indication` (raw byte),
+    `progressive_sequence` flag, 2-bit `chroma_format`
+    decoded against Table 6-5 (reserved `00` rejected).
+  - 2-bit `horizontal_size_extension`, 2-bit
+    `vertical_size_extension`, 12-bit `bit_rate_extension`,
+    `marker_bit` enforcement, 8-bit `vbv_buffer_size_extension`,
+    `low_delay`, 2-bit `frame_rate_extension_n`, 5-bit
+    `frame_rate_extension_d`.
+- Composed-view helper `Mpeg2Sequence::from_buf` that parses a
+  `sequence_header()` + `next_start_code()` zero-byte stuffing
+  (§5.2.3) + `sequence_extension()` pair and synthesises the
+  14-bit `horizontal_size`, 14-bit `vertical_size`, 30-bit
+  `bit_rate`, and 18-bit `vbv_buffer_size`. Composite
+  `bit_rate == 0` rejected per §6.3.3.
+- Typed `Mpeg2SequenceExtension`, `ChromaFormat`, and
+  `Mpeg2Sequence` (re-exported at the crate root).
+- 12 new unit tests + 2 new black-box integration tests against
+  the existing 352×240 fixture (extension decode + composed
+  `Mpeg2Sequence` round-trip).
 
 ### Erased
 
@@ -41,9 +65,10 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Next
 
-- `sequence_extension()` (§6.2.2.3) + the size/bitrate/VBV
-  high-bit synthesis that combines with this round's lower bits.
-- `group_of_pictures_header()` + `picture_header()` /
-  `picture_coding_extension()` parsers.
+- `group_of_pictures_header()` (§6.2.2.6) +
+  `picture_header()` / `picture_coding_extension()` parsers.
+- `quant_matrix_extension()` (§6.2.2.10),
+  `sequence_display_extension()` (§6.2.2.4),
+  `sequence_scalable_extension()` (§6.2.2.5).
 - Slice/macroblock decoding, VLC tables, motion compensation, IDCT.
 - `oxideav_core::Decoder` wiring once a complete picture round-trips.

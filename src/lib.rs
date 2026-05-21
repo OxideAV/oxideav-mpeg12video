@@ -4,22 +4,33 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild round 1 — structural sequence-header parser
-//! only. Macroblock decoding, IDCT, and motion compensation are not
-//! wired up yet; the public `register` symbol is still a no-op so
-//! that downstream consumers can depend on the crate without the
-//! decoder being inadvertently selected by the registry.
+//! **Status:** rebuild rounds 1–2 — structural sequence-layer
+//! parsers only. Macroblock decoding, IDCT, and motion compensation
+//! are not wired up yet; the public `register` symbol is still a
+//! no-op so that downstream consumers can depend on the crate
+//! without the decoder being inadvertently selected by the registry.
 //!
-//! The first landed piece is [`sequence_header::Mpeg2SequenceHeader`],
-//! which decodes the `sequence_header()` element specified in
-//! ISO/IEC 13818-2 §6.2.2.1 (with field semantics from §6.3.3).
+//! The landed pieces so far are:
+//!
+//! * [`sequence_header::Mpeg2SequenceHeader`] — `sequence_header()`
+//!   from ISO/IEC 13818-2 §6.2.2.1 (field semantics §6.3.3).
+//! * [`sequence_extension::Mpeg2SequenceExtension`] —
+//!   `sequence_extension()` from §6.2.2.3 (field semantics §6.3.5).
+//! * [`sequence_extension::Mpeg2Sequence`] — composed view that
+//!   pairs the two and synthesises the full 14-bit width/height,
+//!   30-bit bit_rate, and 18-bit vbv_buffer_size.
 
 #![warn(missing_debug_implementations)]
 
 use oxideav_core::RuntimeContext;
 
+pub mod sequence_extension;
 pub mod sequence_header;
 
+pub use sequence_extension::{
+    ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension, EXTENSION_START_CODE,
+    SEQUENCE_EXTENSION_ID,
+};
 pub use sequence_header::{AspectRatio, Mpeg2SequenceHeader, SEQUENCE_HEADER_CODE};
 
 /// Crate-local error type. Each variant is raised at most by the
