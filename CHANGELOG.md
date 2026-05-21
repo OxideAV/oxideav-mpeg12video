@@ -95,6 +95,45 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - 18 new unit tests + 2 new black-box integration tests against
   the existing 352×240 fixture (picture-header parse +
   picture_header + picture_coding_extension composition).
+- Clean-room rebuild round 5: parser for the `slice()` header bits
+  (§6.2.4) with field semantics from §6.3.16.
+  - 32-bit `slice_start_code`: 24-bit prefix `0x000001` + 8-bit
+    `slice_vertical_position` validated against the Table 6-1
+    range `0x01..=0xAF`.
+  - Optional 3-bit `slice_vertical_position_extension`, present
+    iff the caller's `SliceContext::vertical_size` is `> 2800`
+    (§6.2.4); §6.3.16's stricter `svp ∈ [1:128]` constraint
+    enforced when the extension is present.
+  - Optional 7-bit `priority_breakpoint`, gated on the caller's
+    `SliceContext::priority_breakpoint_present` (caller derives
+    from `sequence_scalable_extension()`, not yet parsed by this
+    crate).
+  - 5-bit `quantiser_scale_code` with the spec-defined
+    forbidden-zero check (§6.3.16).
+  - Optional intra-slice prelude: `intra_slice_flag` /
+    `intra_slice` / 7-bit `reserved_bits` (enforced `== 0`) plus
+    the `extra_information_slice` byte loop driven by the same
+    `nextbits() == '1'` mechanism used for
+    `extra_information_picture`. Final `extra_bit_slice` bit
+    enforced `== '0'`.
+  - `SliceHeader::mb_row()` helper computes `mb_row` per
+    §6.3.16: `(extension << 7) + svp - 1` when the extension is
+    present, `svp - 1` otherwise.
+  - `body_bit_position` field gives the bit offset (from the start
+    of the slice buffer) at which the first `macroblock()` begins
+    — the macroblock body itself is **not** in scope for round 5.
+- Typed `SliceHeader` + `SliceContext` (re-exported at the crate
+  root) plus `SLICE_VERTICAL_POSITION_MIN` /
+  `SLICE_VERTICAL_POSITION_MAX` constants.
+- 14 new unit tests covering every spec-defined rejection site
+  (wrong prefix, svp = 0, svp = 0xB0, svp > 128 with extension,
+  zero `quantiser_scale_code`, non-zero `reserved_bits`,
+  truncated buffer) plus the intra-slice prelude /
+  `extra_information_slice` round-trip and bit-position
+  accounting.
+- 2 new black-box integration tests against the existing 352×240
+  fixture (first slice header at offset `0x2e`,
+  slice-start-code multiplicity sanity check).
 
 ### Erased
 

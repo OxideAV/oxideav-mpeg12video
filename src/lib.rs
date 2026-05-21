@@ -4,9 +4,10 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–4 — structural sequence-layer
-//! parsers, the `group_of_pictures_header()` layer, and the
-//! `picture_header()` (+ `picture_coding_extension()`) layer.
+//! **Status:** rebuild rounds 1–5 — structural sequence-layer
+//! parsers, the `group_of_pictures_header()` layer, the
+//! `picture_header()` (+ `picture_coding_extension()`) layer, and
+//! the `slice()` header bits (everything before the macroblock loop).
 //! Macroblock decoding, IDCT, and motion compensation are not wired
 //! up yet; the public `register` symbol is still a no-op so that
 //! downstream consumers can depend on the crate without the decoder
@@ -29,6 +30,15 @@
 //!   from §6.2.3 (field semantics §6.3.10) plus the companion
 //!   [`picture_header::PictureCodingExtension`] for §6.2.3.1 /
 //!   §6.3.11.
+//! * [`slice_header::SliceHeader`] — the start-code-aligned header
+//!   bits of `slice()` from §6.2.4 (field semantics §6.3.16):
+//!   `slice_vertical_position` (from the start code), optional
+//!   `slice_vertical_position_extension` (when `vertical_size >
+//!   2800`), optional `priority_breakpoint` (when the surrounding
+//!   sequence is data-partitioned), `quantiser_scale_code`, the
+//!   optional `intra_slice_flag` / `intra_slice` / `reserved_bits`
+//!   prelude, and the `extra_information_slice` byte loop. The
+//!   macroblock body is **not** yet decoded.
 
 #![warn(missing_debug_implementations)]
 
@@ -38,6 +48,7 @@ pub mod gop_header;
 pub mod picture_header;
 pub mod sequence_extension;
 pub mod sequence_header;
+pub mod slice_header;
 
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use picture_header::{
@@ -49,6 +60,9 @@ pub use sequence_extension::{
     SEQUENCE_EXTENSION_ID,
 };
 pub use sequence_header::{AspectRatio, Mpeg2SequenceHeader, SEQUENCE_HEADER_CODE};
+pub use slice_header::{
+    SliceContext, SliceHeader, SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN,
+};
 
 /// Crate-local error type. Each variant is raised at most by the
 /// specific decoder stage named in its docstring; sites may grow as

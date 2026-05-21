@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–4 (sequence layer + GOP header + picture header).**
+**Clean-room rebuild — rounds 1–5 (sequence layer + GOP header + picture header + slice header).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -135,7 +135,53 @@ be defended as clean-room. The rebuild starts here.
   fixture (picture-header decode at offset `0x1e` and
   picture_header + picture_coding_extension composition).
 
-### What's NOT in rounds 1–4
+### What round 5 lands
+
+* Parser for the `slice()` header bits per **ISO/IEC 13818-2 §6.2.4**
+  with field semantics from §6.3.16. Macroblock decoding is **not**
+  in scope; the parser stops as soon as the terminating
+  `extra_bit_slice` is consumed and reports `body_bit_position` so a
+  later round can seed a macroblock parser at the right place.
+  * 32-bit `slice_start_code`: 24-bit prefix `0x000001` + 8-bit
+    `slice_vertical_position` validated against the Table 6-1 range
+    `0x01..=0xAF`.
+  * Optional 3-bit `slice_vertical_position_extension`, present iff
+    the caller's [`SliceContext::vertical_size`] is `> 2800`
+    (§6.2.4). When present, §6.3.16's stricter `svp ∈ [1:128]`
+    constraint is enforced.
+  * Optional 7-bit `priority_breakpoint`, gated on the caller's
+    [`SliceContext::priority_breakpoint_present`] flag, which the
+    higher layer derives from `sequence_scalable_extension()` (not
+    yet parsed by this crate).
+  * 5-bit `quantiser_scale_code` with the spec-defined
+    forbidden-zero check (§6.3.16).
+  * Optional intra-slice prelude: `intra_slice_flag` /
+    `intra_slice` / 7-bit `reserved_bits` (enforced `== 0`) + the
+    `extra_information_slice` byte loop driven by the same
+    `nextbits() == '1'` mechanism used for `extra_information_picture`.
+  * Terminating `extra_bit_slice` (enforced `== '0'`).
+  * `SliceHeader::mb_row()` computes `mb_row` per §6.3.16:
+    `(extension << 7) + svp - 1` when the extension is present,
+    `svp - 1` otherwise.
+* Typed `SliceHeader { slice_vertical_position,
+  slice_vertical_position_extension, priority_breakpoint,
+  quantiser_scale_code, intra_slice_flag, intra_slice,
+  extra_information_slice, body_bit_position }` plus the
+  `SliceContext` caller-supplied state container (both re-exported
+  at the crate root).
+* `SLICE_VERTICAL_POSITION_MIN` / `SLICE_VERTICAL_POSITION_MAX`
+  constants taken from Table 6-1.
+* 14 new unit tests covering every spec-defined rejection site
+  (wrong prefix, svp = 0, svp = 0xB0, svp > 128 with extension,
+  zero `quantiser_scale_code`, non-zero `reserved_bits`,
+  truncated buffer) plus the intra-slice prelude /
+  `extra_information_slice` round-trip and the `mb_row()` /
+  bit-position-tracking accounting.
+* 2 new black-box integration tests against the existing 352×240
+  fixture (first slice header at offset `0x2e`, slice-start-code
+  multiplicity sanity check).
+
+### What's NOT in rounds 1–5
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -143,7 +189,8 @@ be defended as clean-room. The rebuild starts here.
   `sequence_scalable_extension()` (§6.2.2.5)
 * Composite-display sub-fields inside
   `picture_coding_extension()` when `composite_display_flag = 1`
-* Slice / macroblock decoding, VLC tables, motion vectors, IDCT
+* `macroblock()` body (VLC tables, motion vectors, coded-block
+  patterns, transform coefficients), IDCT
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
   is still a no-op so the registry does not yet route to this crate
@@ -154,9 +201,9 @@ Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
   text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
-  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.3.3, 6.3.4, 6.3.5, 6.3.8,
-  6.3.10, 6.3.11, Tables 6-2 / 6-3 / 6-4 / 6-5 / 6-11 / 6-12 / 6-13
-  / 6-14.
+  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.3.3, 6.3.4, 6.3.5,
+  6.3.8, 6.3.10, 6.3.11, 6.3.16, Tables 6-1 / 6-2 / 6-3 / 6-4 /
+  6-5 / 6-11 / 6-12 / 6-13 / 6-14.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `oxideav-core`'s published `BitReader` MSB-first API.
