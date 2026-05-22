@@ -134,6 +134,38 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - 2 new black-box integration tests against the existing 352×240
   fixture (first slice header at offset `0x2e`,
   slice-start-code multiplicity sanity check).
+- Clean-room rebuild round 6: parser for
+  `macroblock_address_increment` (§6.2.5) with field semantics
+  from §6.3.17.1 and the Annex B Table B-1 VLC.
+  - 33 increment-value codewords (`1..=33`) walked MSB-first
+    against the spec's tabulated bit-strings (1-, 3-, 4-, 5-, 7-,
+    8-, 10-, and 11-bit code groups).
+  - `macroblock_escape` (`0000 0001 000`, 11 bits) consumption
+    with the §6.3.17.1 "add 33 per escape" chain rule (caller
+    receives the consumed escape count for spec-bound validation
+    against `mb_width × (mb_height − mb_row)`).
+  - Optional MPEG-1 `macroblock_stuffing` (`0000 0001 111`)
+    recognition, gated on `MbAddressIncrementContext::mpeg1` per
+    ISO/IEC 11172-2:1993 §D.5.5.1. MPEG-2 streams (the default
+    context) reject the stuffing code as a §6.3.17.1 violation;
+    stuffing after an escape is rejected in both contexts.
+  - Typed `MbAddressIncrement { value, escape_count,
+    stuffing_count, bit_position_after }` (re-exported at the
+    crate root) plus the `MbAddressIncrementContext` helper
+    (`mpeg1()` / `mpeg2()`).
+- 16 new unit tests covering every Table B-1 entry (parsed
+  individually), the escape chain (`33 + N`, `66`, `70` worked
+  example from §D.5.5.2), spec-mandated stuffing rejection in
+  MPEG-2, MPEG-1 stuffing acceptance, stuffing-after-escape
+  rejection, garbage-prefix rejection, truncated-buffer
+  handling, bit-position accounting, and Table B-1 internal
+  invariants (33 values + escape + stuffing, no width-collisions,
+  every code fits its declared bit width).
+- 2 new black-box integration tests against the existing 352×240
+  fixture: parses the first `macroblock_address_increment`
+  immediately after the first slice header (expected `value = 1`,
+  the single bit `'1'`) and confirms the fixture does not emit
+  the MPEG-1-only stuffing code.
 
 ### Erased
 
@@ -158,5 +190,9 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - Composite-display sub-fields (`v_axis` / `field_sequence` /
   `sub_carrier` / `burst_amplitude` / `sub_carrier_phase`) inside
   `picture_coding_extension()` when `composite_display_flag` is 1.
-- Slice/macroblock decoding, VLC tables, motion compensation, IDCT.
+- Macroblock-loop continuation past `macroblock_address_increment`:
+  Table B-2 / B-3 / B-4 `macroblock_type` per picture coding type
+  (§6.2.5.1 / §6.3.17.2 / Tables B-2 .. B-4), then
+  `motion_vectors()`, `coded_block_pattern`, and the residual block
+  VLC tables (B-5 .. B-16) plus IDCT.
 - `oxideav_core::Decoder` wiring once a complete picture round-trips.

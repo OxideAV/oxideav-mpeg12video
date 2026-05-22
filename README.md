@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–5 (sequence layer + GOP header + picture header + slice header).**
+**Clean-room rebuild — rounds 1–6 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -181,7 +181,47 @@ be defended as clean-room. The rebuild starts here.
   fixture (first slice header at offset `0x2e`, slice-start-code
   multiplicity sanity check).
 
-### What's NOT in rounds 1–5
+### What round 6 lands
+
+* Parser for `macroblock_address_increment` per **ISO/IEC 13818-2
+  §6.2.5** with field semantics from §6.3.17.1 and the Annex B
+  Table B-1 VLC walker. The macroblock body (type, motion vectors,
+  coded block pattern, transform coefficients) remains out of scope.
+  * All 33 increment-value VLC codes (`1..=33`) walked MSB-first
+    against the spec's tabulated bit-strings — 1-, 3-, 4-, 5-, 7-,
+    8-, 10-, and 11-bit code groups (Table B-1).
+  * `macroblock_escape` (`0000 0001 000`, 11 bits) consumed with
+    the §6.3.17.1 "add 33 per escape" chain rule. The decoded
+    `MbAddressIncrement` surfaces `escape_count` separately so the
+    higher layer can validate against the spec-imposed bound
+    `mb_width × (mb_height − mb_row)`.
+  * MPEG-1-only `macroblock_stuffing` (`0000 0001 111`, 11 bits)
+    recognition, gated on `MbAddressIncrementContext::mpeg1` per
+    ISO/IEC 11172-2:1993 §D.5.5.1. MPEG-2 streams (the default)
+    reject the stuffing code as a §6.3.17.1 violation; stuffing
+    *after* an escape is rejected in both MPEG-1 and MPEG-2
+    contexts.
+  * Returns `MbAddressIncrement { value, escape_count,
+    stuffing_count, bit_position_after }` so callers can chain
+    the parser into the next macroblock field without losing the
+    partial-byte cursor.
+* Typed `MbAddressIncrement` + `MbAddressIncrementContext`
+  (re-exported at the crate root).
+* 16 new unit tests covering every Table B-1 entry parsed
+  individually, the escape chain (`34`, `66`, `70` — the §D.5.5.2
+  worked example), spec-mandated stuffing rejection in MPEG-2,
+  MPEG-1 stuffing acceptance, stuffing-after-escape rejection,
+  garbage-prefix rejection, truncated-buffer handling,
+  bit-position accounting, and Table B-1 internal invariants
+  (33 values + escape + stuffing, no width-collisions, every
+  code fits its declared bit width).
+* 2 new black-box integration tests against the existing 352×240
+  fixture: parses the first `macroblock_address_increment`
+  immediately after the first slice header (expected `value = 1`,
+  the single bit `'1'`) and confirms the fixture does not emit
+  the MPEG-1-only stuffing code.
+
+### What's NOT in rounds 1–6
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -189,8 +229,9 @@ be defended as clean-room. The rebuild starts here.
   `sequence_scalable_extension()` (§6.2.2.5)
 * Composite-display sub-fields inside
   `picture_coding_extension()` when `composite_display_flag = 1`
-* `macroblock()` body (VLC tables, motion vectors, coded-block
-  patterns, transform coefficients), IDCT
+* `macroblock_type` Tables B-2 / B-3 / B-4 (per picture coding type,
+  §6.2.5.1 / §6.3.17.2), `motion_vectors()`, `coded_block_pattern`,
+  block-residual VLC Tables B-5 .. B-16, and IDCT
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
   is still a no-op so the registry does not yet route to this crate
@@ -201,11 +242,17 @@ Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
   text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
-  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.3.3, 6.3.4, 6.3.5,
-  6.3.8, 6.3.10, 6.3.11, 6.3.16, Tables 6-1 / 6-2 / 6-3 / 6-4 /
-  6-5 / 6-11 / 6-12 / 6-13 / 6-14.
+  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.3.3, 6.3.4,
+  6.3.5, 6.3.8, 6.3.10, 6.3.11, 6.3.16, 6.3.17.1, Tables 6-1 /
+  6-2 / 6-3 / 6-4 / 6-5 / 6-11 / 6-12 / 6-13 / 6-14, and Annex B
+  Table B-1.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
+* `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
+  ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.3.5, §D.5.5.1, §D.5.5.2,
+  and Annex B Table B.1 — referenced only for the
+  `macroblock_stuffing` semantics (a code MPEG-2 drops). The
+  MPEG-2 Table B-1 entries themselves trace to 13818-2.
 * `oxideav-core`'s published `BitReader` MSB-first API.
 * The `ffmpeg` CLI binary, used **only** as an opaque encoder for
   the integration-test fixture. Its source code was not consulted.
