@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–6 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment).**
+**Clean-room rebuild — rounds 1–7 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -221,7 +221,42 @@ be defended as clean-room. The rebuild starts here.
   the single bit `'1'`) and confirms the fixture does not emit
   the MPEG-1-only stuffing code.
 
-### What's NOT in rounds 1–6
+### What round 7 lands
+
+* Parser for `macroblock_type` — the leading VLC of
+  `macroblock_modes()` per **ISO/IEC 13818-2 §6.2.5.1** with field
+  semantics from §6.3.17.1 and the non-scalable Annex B
+  Table B-2 / B-3 / B-4 codeword sets. The rest of
+  `macroblock_modes()` (motion-type / dct_type) and the macroblock
+  body remain out of scope.
+  * Table selection by `picture_coding_type` per Table 6-10 (no
+    `sequence_scalable_extension()` present): Table B-2 for
+    I-pictures, B-3 for P-pictures, B-4 for B-pictures.
+  * All 2 + 7 + 11 codewords walked MSB-first longest-first against
+    the spec's tabulated bit-strings, decoding the six §6.3.17.1
+    derived flags `macroblock_quant`, `macroblock_motion_forward`,
+    `macroblock_motion_backward`, `macroblock_pattern`,
+    `macroblock_intra`, and `spatial_temporal_weight_code_flag`
+    (always `0` for the non-scalable tables).
+  * Returns `MacroblockType { macroblock_quant,
+    macroblock_motion_forward, macroblock_motion_backward,
+    macroblock_pattern, macroblock_intra,
+    spatial_temporal_weight_code_flag, bit_position_after }` so
+    callers chain into the next `macroblock_modes()` field without
+    losing the partial-byte cursor.
+* Typed `MacroblockType` (re-exported at the crate root).
+* 13 new unit tests covering every Table B-2 / B-3 / B-4 row
+  (parsed individually), the longest-first prefix-disambiguation,
+  unknown-codeword and truncated-buffer rejection, and per-table
+  internal invariants (codes fit their width, every table is
+  prefix-free, row counts match Annex B).
+* 2 new black-box integration tests against the existing 352×240
+  fixture: the first I-picture macroblock's `macroblock_type`
+  decodes to plain `Intra` (single-bit Table B-2 code `'1'`,
+  `macroblock_intra = 1` and every other flag `0`) and advances
+  the cursor by exactly one bit past the increment.
+
+### What's NOT in rounds 1–7
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -229,9 +264,15 @@ be defended as clean-room. The rebuild starts here.
   `sequence_scalable_extension()` (§6.2.2.5)
 * Composite-display sub-fields inside
   `picture_coding_extension()` when `composite_display_flag = 1`
-* `macroblock_type` Tables B-2 / B-3 / B-4 (per picture coding type,
-  §6.2.5.1 / §6.3.17.2), `motion_vectors()`, `coded_block_pattern`,
-  block-residual VLC Tables B-5 .. B-16, and IDCT
+* The remainder of `macroblock_modes()` after `macroblock_type`:
+  `spatial_temporal_weight_code`, `frame_motion_type` /
+  `field_motion_type` (Tables 6-17 / 6-18), and `dct_type`
+  (§6.2.5.1)
+* The scalable `macroblock_type` Tables B-5 .. B-8 (spatial / SNR
+  scalability), which require `sequence_scalable_extension()`
+  parsing
+* `motion_vectors()` (Tables B-10 / B-11), `coded_block_pattern`
+  (Table B-9), block-residual VLC Tables B-12 .. B-16, and IDCT
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
   is still a no-op so the registry does not yet route to this crate
@@ -243,9 +284,9 @@ Every line in this crate's `src/` traces to:
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
   text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
   6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.3.3, 6.3.4,
-  6.3.5, 6.3.8, 6.3.10, 6.3.11, 6.3.16, 6.3.17.1, Tables 6-1 /
-  6-2 / 6-3 / 6-4 / 6-5 / 6-11 / 6-12 / 6-13 / 6-14, and Annex B
-  Table B-1.
+  6.3.5, 6.3.8, 6.3.10, 6.3.11, 6.3.16, 6.3.17.1, 6.2.5.1,
+  Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 /
+  6-14, and Annex B Tables B-1 / B-2 / B-3 / B-4.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —

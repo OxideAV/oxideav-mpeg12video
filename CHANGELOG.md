@@ -166,6 +166,37 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   immediately after the first slice header (expected `value = 1`,
   the single bit `'1'`) and confirms the fixture does not emit
   the MPEG-1-only stuffing code.
+- Clean-room rebuild round 7: parser for `macroblock_type` — the
+  leading VLC of `macroblock_modes()` (§6.2.5.1) with field
+  semantics from §6.3.17.1 and the non-scalable Annex B
+  Tables B-2 / B-3 / B-4.
+  - Table selection by `picture_coding_type` per Table 6-10
+    (no `sequence_scalable_extension()`): B-2 for I-pictures,
+    B-3 for P-pictures, B-4 for B-pictures.
+  - All 2 + 7 + 11 codewords walked MSB-first longest-first,
+    decoding the six §6.3.17.1 derived flags `macroblock_quant`,
+    `macroblock_motion_forward`, `macroblock_motion_backward`,
+    `macroblock_pattern`, `macroblock_intra`, and
+    `spatial_temporal_weight_code_flag` (always `0` for the
+    non-scalable tables).
+  - The rest of `macroblock_modes()`
+    (`spatial_temporal_weight_code`, `frame_motion_type` /
+    `field_motion_type`, `dct_type`) and the macroblock body
+    remain out of scope.
+- Typed `MacroblockType { macroblock_quant,
+  macroblock_motion_forward, macroblock_motion_backward,
+  macroblock_pattern, macroblock_intra,
+  spatial_temporal_weight_code_flag, bit_position_after }`
+  (re-exported at the crate root).
+- 13 new unit tests covering every Table B-2 / B-3 / B-4 row
+  (parsed individually), longest-first prefix disambiguation,
+  unknown-codeword and truncated-buffer rejection, and per-table
+  invariants (codes fit their declared width, every table is
+  prefix-free, row counts match Annex B).
+- 2 new black-box integration tests against the existing 352×240
+  fixture: the first I-picture macroblock's `macroblock_type`
+  decodes to plain `Intra` (single-bit Table B-2 code `'1'`) and
+  advances the cursor by exactly one bit past the increment.
 
 ### Erased
 
@@ -190,9 +221,12 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - Composite-display sub-fields (`v_axis` / `field_sequence` /
   `sub_carrier` / `burst_amplitude` / `sub_carrier_phase`) inside
   `picture_coding_extension()` when `composite_display_flag` is 1.
-- Macroblock-loop continuation past `macroblock_address_increment`:
-  Table B-2 / B-3 / B-4 `macroblock_type` per picture coding type
-  (§6.2.5.1 / §6.3.17.2 / Tables B-2 .. B-4), then
-  `motion_vectors()`, `coded_block_pattern`, and the residual block
-  VLC tables (B-5 .. B-16) plus IDCT.
+- Macroblock-loop continuation past `macroblock_type`: the rest of
+  `macroblock_modes()` (`spatial_temporal_weight_code`,
+  `frame_motion_type` / `field_motion_type` per Tables 6-17 / 6-18,
+  `dct_type`), then `motion_vectors()` (Tables B-10 / B-11),
+  `coded_block_pattern` (Table B-9), and the residual block VLC
+  tables (B-12 .. B-16) plus IDCT.
+- The scalable `macroblock_type` Tables B-5 .. B-8 once
+  `sequence_scalable_extension()` parsing lands.
 - `oxideav_core::Decoder` wiring once a complete picture round-trips.

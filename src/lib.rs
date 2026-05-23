@@ -45,12 +45,17 @@
 //!   walker plus the `macroblock_escape` chain and (when
 //!   [`mb_address_increment::MbAddressIncrementContext::mpeg1`] is
 //!   set) the MPEG-1 `macroblock_stuffing` no-op.
+//! * [`macroblock_type::MacroblockType`] — the `macroblock_type` VLC
+//!   that opens `macroblock_modes()` per §6.2.5.1 (field semantics
+//!   §6.3.17.1), decoding the six derived flags from the
+//!   non-scalable Annex B Tables B-2 (I), B-3 (P), and B-4 (B).
 
 #![warn(missing_debug_implementations)]
 
 use oxideav_core::RuntimeContext;
 
 pub mod gop_header;
+pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod picture_header;
 pub mod sequence_extension;
@@ -58,6 +63,7 @@ pub mod sequence_header;
 pub mod slice_header;
 
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
+pub use macroblock_type::MacroblockType;
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
