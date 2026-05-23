@@ -129,9 +129,10 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–4 only parse the sequence,
-/// group-of-pictures, and picture headers — they do not yet provide
-/// a [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`], so there
+/// No-op codec registration. Rounds 1–8 only parse the sequence,
+/// group-of-pictures, picture, and slice headers plus the leading
+/// macroblock-loop syntax — they do not yet provide a complete
+/// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`], so there
 /// is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
