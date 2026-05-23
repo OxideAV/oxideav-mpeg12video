@@ -4,14 +4,16 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–5 — structural sequence-layer
+//! **Status:** rebuild rounds 1–8 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
-//! `picture_header()` (+ `picture_coding_extension()`) layer, and
-//! the `slice()` header bits (everything before the macroblock loop).
-//! Macroblock decoding, IDCT, and motion compensation are not wired
-//! up yet; the public `register` symbol is still a no-op so that
-//! downstream consumers can depend on the crate without the decoder
-//! being inadvertently selected by the registry.
+//! `picture_header()` (+ `picture_coding_extension()`) layer, the
+//! `slice()` header bits, and the leading macroblock-loop syntax
+//! (`macroblock_address_increment`, `macroblock_type`,
+//! `coded_block_pattern()`). The block loop — DCT-coefficient VLCs,
+//! IDCT, and motion compensation — is not wired up yet; the public
+//! `register` symbol is still a no-op so that downstream consumers
+//! can depend on the crate without the decoder being inadvertently
+//! selected by the registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -49,11 +51,17 @@
 //!   that opens `macroblock_modes()` per §6.2.5.1 (field semantics
 //!   §6.3.17.1), decoding the six derived flags from the
 //!   non-scalable Annex B Tables B-2 (I), B-3 (P), and B-4 (B).
+//! * [`coded_block_pattern::CodedBlockPattern`] — the
+//!   `coded_block_pattern()` syntax per §6.2.5.3 (field semantics
+//!   §6.3.17.4): the Annex B Table B-9 `coded_block_pattern_420` VLC
+//!   plus the 4:2:2 / 4:4:4 fixed-length extensions, and the
+//!   §6.3.17.4 `pattern_code[12]` derivation.
 
 #![warn(missing_debug_implementations)]
 
 use oxideav_core::RuntimeContext;
 
+pub mod coded_block_pattern;
 pub mod gop_header;
 pub mod macroblock_type;
 pub mod mb_address_increment;
@@ -62,6 +70,7 @@ pub mod sequence_extension;
 pub mod sequence_header;
 pub mod slice_header;
 
+pub use coded_block_pattern::CodedBlockPattern;
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use macroblock_type::MacroblockType;
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
