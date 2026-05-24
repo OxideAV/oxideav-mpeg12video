@@ -4,19 +4,20 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–10 — structural sequence-layer
+//! **Status:** rebuild rounds 1–11 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
-//! `slice()` header bits, and the macroblock-loop syntax through the
-//! end of `macroblock_modes()`
+//! `slice()` header bits, the macroblock-loop syntax through the end
+//! of `macroblock_modes()`
 //! (`macroblock_address_increment`, `macroblock_type`, the
 //! macroblock-layer `quantizer_scale`, `coded_block_pattern()`, and
-//! the `frame_motion_type` / `field_motion_type` / `dct_type` tail).
-//! The block loop — DCT-coefficient VLCs,
-//! IDCT, and motion compensation — is not wired up yet; the public
-//! `register` symbol is still a no-op so that downstream consumers
-//! can depend on the crate without the decoder being inadvertently
-//! selected by the registry.
+//! the `frame_motion_type` / `field_motion_type` / `dct_type` tail),
+//! and the `motion_vectors()` / `motion_vector()` syntax with the
+//! Annex B Tables B-10 / B-11 VLCs that drive it. The residual block
+//! layer — Tables B-12..B-16, the IDCT, and motion compensation
+//! — is not wired up yet; the public `register` symbol is still a
+//! no-op so that downstream consumers can depend on the crate
+//! without the decoder being inadvertently selected by the registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -71,6 +72,13 @@
 //!   derived `motion_vector_count` / `mv_format` / `dmv`, and the
 //!   `dct_type` flag (Table 6-19), each gated by `picture_structure` /
 //!   `frame_pred_frame_dct` / the macroblock flags.
+//! * [`motion_vector::MotionVectors`] — the `motion_vectors(s)`
+//!   wrapper per §6.2.5.2 and [`motion_vector::MotionVector`] for the
+//!   inner `motion_vector(r, s)` per §6.2.5.2.1, including the
+//!   Annex B Table B-10 `motion_code` VLC, the f_code-driven
+//!   fixed-length `motion_residual`, the Table B-11 `dmvector` VLC,
+//!   and the `motion_vertical_field_select` presence gates
+//!   (§6.3.17.2 / §6.3.17.3).
 
 #![warn(missing_debug_implementations)]
 
@@ -81,6 +89,7 @@ pub mod gop_header;
 pub mod macroblock_modes;
 pub mod macroblock_type;
 pub mod mb_address_increment;
+pub mod motion_vector;
 pub mod picture_header;
 pub mod quantizer_scale;
 pub mod sequence_extension;
@@ -94,6 +103,9 @@ pub use macroblock_modes::{
 };
 pub use macroblock_type::MacroblockType;
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
+pub use motion_vector::{
+    MotionVector, MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,
+};
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,

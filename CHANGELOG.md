@@ -292,6 +292,51 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   macroblock decoding `frame_motion_type` + `dct_type` with exact
   bit accounting.
 
+- Clean-room rebuild round 11: parsers for the `motion_vectors(s)`
+  wrapper per ISO/IEC 13818-2 (ITU-T H.262) §6.2.5.2 and the inner
+  `motion_vector(r, s)` per §6.2.5.2.1, with field semantics from
+  §6.3.17.2 / §6.3.17.3 and the Annex B Tables B-10 (`motion_code`)
+  and B-11 (`dmvector`). The numerical reconstruction of
+  `vector'[r][s][t]` (§7.6.3.1, PMV state machine, wrap-around) stays
+  out of scope.
+  - Table B-10 `motion_code`: all 33 codewords (`-16..=+16`) walked
+    MSB-first longest-first, 1-/3-/4-/5-/7-/8-/10-/11-bit groups,
+    prefix-free.
+  - Table B-11 `dmvector[t]`: the 1-/2-bit `{0, +1, -1}` VLC.
+  - Fixed-length `motion_residual[r][s][t]` read iff `f_code != 1 &&
+    motion_code != 0`, width `r_size = f_code - 1` (1..=8 bits);
+    `f_code` outside §6.3.11's `1..=9` range rejected when a residual
+    would otherwise drive the cursor.
+  - `motion_vertical_field_select[r][s]` flag honoured per §6.2.5.2 —
+    suppressed when `motion_vector_count == 1 && (mv_format == frame
+    || dmv == 1)`, present otherwise (both rows when count == 2).
+  - Typed `MotionVector`, `MotionVectorEntry`, `MotionVectors`,
+    `MotionVectorsContext`, `MotionVectorsKind` (re-exported at the
+    crate root). `MotionVectors::parse(br, kind, &MotionType, &ctx)`
+    threads a parsed `frame_motion_type` / `field_motion_type` (round
+    10) and the `f_code[s][t]` matrix straight through.
+- 29 new unit tests covering every Table B-10 row (parsed
+  individually), the +16 / -16 extremes, the 33-unique-values
+  invariant, prefix-freeness and width-fitting, unknown-prefix /
+  truncated-buffer rejection on both VLC tables, Table B-11's three
+  values plus its truncated-second-bit short case, the
+  `motion_vector(r, s)` presence-matrix (no residual on f_code = 1 or
+  motion_code = 0, residual width = `f_code - 1`, dmvector suppressed
+  when `dmv = 0`), out-of-range `f_code` rejection, all four
+  `motion_vectors(s)` shapes (frame count-1 / field count-1 /
+  dual-prime count-1 / count-2), the Forward / Backward `f_code` pair
+  selection, `motion_vector_count` validation, and truncated-VFS-/
+  truncated-motion-code short paths.
+- 2 new black-box integration tests against the existing 352×240
+  fixture: the first I-picture is plain `Intra` so per §6.2.5.2 no
+  `motion_vectors()` element exists (the fixture's f_codes are pinned
+  to the §6.3.11 "unused" sentinel `15`), and a spliced P-picture
+  frame macroblock prefix that drives the full `macroblock_type` →
+  `frame_motion_type` → `dct_type` → `motion_vectors(0)` chain
+  (`motion_code = -1`, `motion_residual = 1` with `f_code = 2`,
+  `motion_code_vert = 0`) and asserts the 9-bit total cursor
+  accounting.
+
 ### Erased
 
 - Prior master history was force-erased on **2026-05-18** under
@@ -315,11 +360,11 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - Composite-display sub-fields (`v_axis` / `field_sequence` /
   `sub_carrier` / `burst_amplitude` / `sub_carrier_phase`) inside
   `picture_coding_extension()` when `composite_display_flag` is 1.
-- Macroblock-loop continuation: the rest of `macroblock_modes()`
-  (`spatial_temporal_weight_code`, `frame_motion_type` /
-  `field_motion_type` per Tables 6-17 / 6-18, `dct_type`), then
-  `motion_vectors()` (Tables B-10 / B-11), and the residual block
-  VLC tables (B-12 .. B-16) plus IDCT.
+- Macroblock-loop continuation: `motion_vector(r, s)` numerical
+  reconstruction per §7.6.3.1 (PMV-state machine, `delta` / `low` /
+  `high` / wrap-around, chroma scaling, dual-prime additional
+  arithmetic per §7.6.3.6), then the residual block VLC tables
+  (B-12 .. B-16) plus IDCT.
 - The scalable `macroblock_type` Tables B-5 .. B-8 once
   `sequence_scalable_extension()` parsing lands.
 - `oxideav_core::Decoder` wiring once a complete picture round-trips.

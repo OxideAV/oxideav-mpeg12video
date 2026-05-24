@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–10 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail).**
+**Clean-room rebuild — rounds 1–11 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + motion_vectors() / motion_vector() + Tables B-10 / B-11).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -384,7 +384,58 @@ be defended as clean-room. The rebuild starts here.
   that decodes `frame_motion_type` + `dct_type` with exact bit
   accounting.
 
-### What's NOT in rounds 1–10
+### What round 11 lands
+
+* Parsers for `motion_vectors(s)` per **ISO/IEC 13818-2 §6.2.5.2** and
+  the inner `motion_vector(r, s)` per **§6.2.5.2.1** with field semantics
+  from §6.3.17.2 / §6.3.17.3 and the Annex B Tables B-10
+  (`motion_code`) and B-11 (`dmvector`). The numerical reconstruction
+  of `vector'[r][s][t]` from the parsed pieces (§7.6.3.1) remains out of
+  scope — that needs the PMV state machine the next round will land.
+  * **Table B-10 `motion_code`**: all 33 variable-length codewords
+    (`-16..=+16`) walked MSB-first longest-first against the spec's
+    tabulated bit-strings — the 1-bit zero entry, 3-/4-/5-/7-/8-/10-/
+    11-bit codes on each sign, prefix-free and width-fitting.
+  * **Table B-11 `dmvector[t]`**: the 1-/2-bit `{0, +1, -1}` VLC.
+  * Fixed-length `motion_residual[r][s][t]` consumed when `f_code != 1
+    && motion_code != 0`, with `r_size = f_code - 1` driving the width
+    (1..=8 bits). `f_code ∉ {2..=9}` rejected as a §6.3.11 violation
+    when a residual would otherwise be read.
+  * `motion_vertical_field_select[r][s]` flag honoured per §6.2.5.2 —
+    suppressed when `motion_vector_count == 1 && (mv_format == frame ||
+    dmv == 1)`, present otherwise.
+  * `MotionVectors::parse(br, kind, &MotionType, &MotionVectorsContext)`
+    drives the wrapper from a parsed `frame_motion_type` /
+    `field_motion_type` (round 10) and the `f_code[s][t]` matrix the
+    caller carries from `picture_coding_extension()`. Returns
+    `MotionVectors { kind, entries, bit_position_after }` with one or
+    two `MotionVectorEntry { vertical_field_select, motion_vector }`
+    rows.
+* Typed `MotionVector`, `MotionVectorEntry`, `MotionVectors`,
+  `MotionVectorsContext`, `MotionVectorsKind` (re-exported at the crate
+  root).
+* 29 new unit tests covering every Table B-10 row (parsed individually),
+  the +16 / -16 extremes, the table's 33 unique values, prefix-freeness
+  and width-fitting invariants, unknown-prefix and truncated-buffer
+  rejection on both VLC tables, Table B-11's three values plus its
+  truncated-second-bit short case, the `motion_vector(r, s)`
+  presence-matrix (no residual on f_code = 1 or motion_code = 0,
+  residual width = `f_code - 1`, dmvector suppressed when `dmv = 0`),
+  out-of-range `f_code` rejection, all four `motion_vectors(s)` shapes
+  (frame count-1 / field count-1 / dual-prime count-1 / count-2), the
+  Forward / Backward `f_code` pair selection, `motion_vector_count`
+  validation, and truncated-VFS-/truncated-code short paths.
+* 2 new black-box integration tests against the existing 352×240
+  fixture: the first I-picture is plain `Intra` so per §6.2.5.2 no
+  `motion_vectors()` element exists — the test confirms the fixture's
+  f_codes are the §6.3.11 unused sentinel `15`; and a spliced
+  P-picture frame macroblock prefix that drives the full
+  `macroblock_type` → `frame_motion_type` → `dct_type` →
+  `motion_vectors(0)` chain (`motion_code = -1`, `motion_residual = 1`
+  with f_code = 2, `motion_code_vert = 0`) and asserts the 9-bit total
+  cursor accounting.
+
+### What's NOT in rounds 1–11
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -401,8 +452,10 @@ be defended as clean-room. The rebuild starts here.
 * The scalable `macroblock_type` Tables B-5 .. B-8 (spatial / SNR
   scalability), which require `sequence_scalable_extension()`
   parsing
-* `motion_vectors()` (Tables B-10 / B-11), block-residual VLC
-  Tables B-12 .. B-16, and IDCT
+* `motion_vector(r, s)` numerical reconstruction per §7.6.3.1
+  (PMV-state machine, `delta` / `low` / `high` / wrap-around, chroma
+  scaling, dual-prime additional arithmetic per §7.6.3.6)
+* Block-residual VLC Tables B-12 .. B-16, and IDCT
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
   is still a no-op so the registry does not yet route to this crate
@@ -413,11 +466,11 @@ Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
   text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
-  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.3,
-  6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11, 6.3.16, 6.3.17.1,
-  6.3.17.2, 6.3.17.4, Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 / 6-10 /
-  6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19, and Annex B Tables
-  B-1 / B-2 / B-3 / B-4 / B-9.
+  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.2,
+  6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11,
+  6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, Tables 6-1 / 6-2 /
+  6-3 / 6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 /
+  6-19, and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
