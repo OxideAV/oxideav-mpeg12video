@@ -255,6 +255,42 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `quantizer_scale` and the parser consumes zero bits; a spliced
   `macroblock_quant`-set `macroblock_type` then decodes a synthetic
   5-bit `quantizer_scale` with correct value and bit accounting.
+- Clean-room rebuild round 10: parser for the remainder of
+  `macroblock_modes()` after `macroblock_type` per ISO/IEC 13818-2
+  (ITU-T H.262) §6.2.5.1 with field semantics from §6.3.17.1 /
+  §6.3.17.2 and the meaning Tables 6-17, 6-18 and 6-19. Closes
+  `macroblock_modes()`; `motion_vectors()` and the block loop stay
+  out of scope.
+  - 2-bit `frame_motion_type` (Table 6-17) / `field_motion_type`
+    (Table 6-18) decoding, surfacing the derived `prediction_type`,
+    `motion_vector_count`, `mv_format`, and `dmv`; reserved code
+    `00` rejected; the two `Field-based` rows of Table 6-17 split by
+    a caller-supplied `spatial_temporal_weight_class`.
+  - §6.2.5.1 presence gates honoured: the motion-type code is read
+    only when a motion flag is set (omitted in frame pictures when
+    `frame_pred_frame_dct == 1`), and `dct_type` only when
+    `picture_structure == frame`, `frame_pred_frame_dct == 0`, and
+    the macroblock is intra or has a coded pattern. Absent fields
+    read zero bits.
+  - `spatial_temporal_weight_code` is not read (scalable-only,
+    `spatial_temporal_weight_code_flag` is always `0` for the
+    non-scalable tables); a `mb_type` claiming the flag is rejected.
+  - Typed `MacroblockModesTail { motion_type, dct_type,
+    bit_position_after }`, `MotionType`, `PredictionType`,
+    `MvFormat`, and `MacroblockModesContext` (re-exported at the
+    crate root).
+- 21 new unit tests covering every Table 6-17 / 6-18 row, the
+  per-class `Field-based` vector-count split, reserved-code
+  rejection, the motion-type / `dct_type` presence matrix, the
+  scalable-flag rejection, zero-bit absent paths, and truncated-
+  buffer handling.
+- 2 new black-box integration tests against the existing 352×240
+  fixture: a full slice → increment → type → quantizer_scale →
+  `macroblock_modes()` tail chain on the first I-picture macroblock
+  (motion-type absent; `dct_type` presence keyed to the fixture's
+  own `frame_pred_frame_dct`), plus a spliced P-picture frame
+  macroblock decoding `frame_motion_type` + `dct_type` with exact
+  bit accounting.
 
 ### Erased
 

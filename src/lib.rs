@@ -4,13 +4,15 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–9 — structural sequence-layer
+//! **Status:** rebuild rounds 1–10 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
-//! `slice()` header bits, and the leading macroblock-loop syntax
+//! `slice()` header bits, and the macroblock-loop syntax through the
+//! end of `macroblock_modes()`
 //! (`macroblock_address_increment`, `macroblock_type`, the
-//! macroblock-layer `quantizer_scale`, `coded_block_pattern()`). The
-//! block loop — DCT-coefficient VLCs,
+//! macroblock-layer `quantizer_scale`, `coded_block_pattern()`, and
+//! the `frame_motion_type` / `field_motion_type` / `dct_type` tail).
+//! The block loop — DCT-coefficient VLCs,
 //! IDCT, and motion compensation — is not wired up yet; the public
 //! `register` symbol is still a no-op so that downstream consumers
 //! can depend on the crate without the decoder being inadvertently
@@ -62,6 +64,13 @@
 //!   §6.3.17.4): the Annex B Table B-9 `coded_block_pattern_420` VLC
 //!   plus the 4:2:2 / 4:4:4 fixed-length extensions, and the
 //!   §6.3.17.4 `pattern_code[12]` derivation.
+//! * [`macroblock_modes::MacroblockModesTail`] — the remainder of
+//!   `macroblock_modes()` after `macroblock_type` per §6.2.5.1 (field
+//!   semantics §6.3.17.1): the `frame_motion_type` (Table 6-17) /
+//!   `field_motion_type` (Table 6-18) prediction-mode codes with their
+//!   derived `motion_vector_count` / `mv_format` / `dmv`, and the
+//!   `dct_type` flag (Table 6-19), each gated by `picture_structure` /
+//!   `frame_pred_frame_dct` / the macroblock flags.
 
 #![warn(missing_debug_implementations)]
 
@@ -69,6 +78,7 @@ use oxideav_core::RuntimeContext;
 
 pub mod coded_block_pattern;
 pub mod gop_header;
+pub mod macroblock_modes;
 pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod picture_header;
@@ -79,6 +89,9 @@ pub mod slice_header;
 
 pub use coded_block_pattern::CodedBlockPattern;
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
+pub use macroblock_modes::{
+    MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
+};
 pub use macroblock_type::MacroblockType;
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 pub use picture_header::{

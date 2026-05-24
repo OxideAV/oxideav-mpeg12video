@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–9 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern).**
+**Clean-room rebuild — rounds 1–10 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -329,7 +329,62 @@ be defended as clean-room. The rebuild starts here.
   `macroblock_quant`-set `macroblock_type` then decodes a synthetic
   5-bit `quantizer_scale` with correct value and bit accounting.
 
-### What's NOT in rounds 1–9
+### What round 10 lands
+
+* Parser for the remainder of `macroblock_modes()` after
+  `macroblock_type` per **ISO/IEC 13818-2 §6.2.5.1** with field
+  semantics from §6.3.17.1 and the meaning Tables 6-17, 6-18 and 6-19.
+  Round 10 closes `macroblock_modes()` itself; `motion_vectors()`
+  (Tables B-10 / B-11) and the residual block loop remain out of scope.
+  * The 2-bit `frame_motion_type` (frame pictures) decoded against
+    **Table 6-17** and the 2-bit `field_motion_type` (field pictures)
+    decoded against **Table 6-18**, each surfacing the derived
+    `prediction_type` (`Field-based` / `Frame-based` / `16x8 MC` /
+    `Dual-Prime`), `motion_vector_count`, `mv_format`
+    (`field` / `frame`), and `dmv` (§6.3.17.2). The reserved code `00`
+    is rejected in both tables. The two `Field-based` rows of Table
+    6-17 are disambiguated by the caller-supplied
+    `spatial_temporal_weight_class` (always `0` for the non-scalable
+    streams this crate can reach).
+  * The motion-type code's §6.2.5.1 presence gate
+    (`macroblock_motion_forward || macroblock_motion_backward`, omitted
+    in a frame picture when `frame_pred_frame_dct == 1`) is honoured —
+    when absent the parser reads zero bits and the decoder applies the
+    §6.3.17.1 "as if Frame-/Field-based" default (deferred to the
+    motion-vector round).
+  * The 1-bit `dct_type` flag (`1` = field DCT coded) read only when
+    `picture_structure == frame`, `frame_pred_frame_dct == 0`, and the
+    macroblock is intra or has a coded pattern (§6.2.5.1). When absent
+    the **Table 6-19** effective-value derivation is left to the
+    block-organisation round; the field is surfaced as `Option`.
+  * `spatial_temporal_weight_code` is not read: it is gated on
+    `spatial_temporal_weight_code_flag`, always `0` for the
+    non-scalable Tables B-2 / B-3 / B-4; a `mb_type` claiming the flag
+    is rejected so the cursor is never silently misaligned.
+  * Returns `MacroblockModesTail { motion_type, dct_type,
+    bit_position_after }` driven by a `MacroblockModesContext`
+    (picture_structure + frame_pred_frame_dct + weight class) so
+    callers chain into `coded_block_pattern()` / `motion_vectors()`
+    without losing the partial-byte cursor.
+* Typed `MacroblockModesTail`, `MotionType`, `PredictionType`,
+  `MvFormat`, and `MacroblockModesContext` (re-exported at the crate
+  root).
+* 21 new unit tests covering every Table 6-17 / 6-18 row, the
+  per-class `Field-based` vector-count split, reserved-code rejection
+  in both tables, the motion-type and `dct_type` presence matrix
+  (frame vs field picture, `frame_pred_frame_dct`, intra / pattern),
+  the scalable-flag rejection, zero-bit absent paths, and truncated-
+  buffer handling on both fields.
+* 2 new black-box integration tests against the existing 352×240
+  fixture: chains slice → `macroblock_address_increment` →
+  `macroblock_type` → `quantizer_scale` → `macroblock_modes()` tail on
+  the first I-picture macroblock and asserts the motion-type code is
+  absent (plain Intra) with `dct_type` presence keyed to the fixture's
+  own `frame_pred_frame_dct`; plus a spliced P-picture frame macroblock
+  that decodes `frame_motion_type` + `dct_type` with exact bit
+  accounting.
+
+### What's NOT in rounds 1–10
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -337,10 +392,12 @@ be defended as clean-room. The rebuild starts here.
   `sequence_scalable_extension()` (§6.2.2.5)
 * Composite-display sub-fields inside
   `picture_coding_extension()` when `composite_display_flag = 1`
-* The remainder of `macroblock_modes()` after `macroblock_type`:
-  `spatial_temporal_weight_code`, `frame_motion_type` /
-  `field_motion_type` (Tables 6-17 / 6-18), and `dct_type`
-  (§6.2.5.1)
+* `spatial_temporal_weight_code` (§6.2.5.1) — the scalable-only
+  field of `macroblock_modes()` gated on
+  `spatial_temporal_weight_code_flag`, plus the §6.3.17.1 /
+  Table 6-19 effective-value derivations for the absent
+  motion-type and `dct_type` cases (deferred to the motion-vector /
+  block rounds)
 * The scalable `macroblock_type` Tables B-5 .. B-8 (spatial / SNR
   scalability), which require `sequence_scalable_extension()`
   parsing
@@ -358,9 +415,9 @@ Every line in this crate's `src/` traces to:
   text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
   6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.3,
   6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11, 6.3.16, 6.3.17.1,
-  6.3.17.4, Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 / 6-10 / 6-11 /
-  6-12 / 6-13 / 6-14, and Annex B Tables B-1 / B-2 / B-3 / B-4 /
-  B-9.
+  6.3.17.2, 6.3.17.4, Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 / 6-10 /
+  6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19, and Annex B Tables
+  B-1 / B-2 / B-3 / B-4 / B-9.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
