@@ -224,6 +224,37 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   (`macroblock_pattern = 0`, so no `coded_block_pattern()` per
   §6.2.5.3), and the fixture's chroma is pinned to 4:2:0 before
   decoding a Table B-9 codeword against it.
+- Clean-room rebuild round 9: parser for the macroblock-layer
+  `quantizer_scale` per ISO/IEC 11172-2:1993 (MPEG-1 Video)
+  §2.4.2.7 (syntax) with field semantics from §2.4.3.6. Fills the
+  bitstream gap between round 7's `macroblock_type` and round 8's
+  `coded_block_pattern()` — `quantizer_scale` is read immediately
+  after `macroblock_type`, conditional on the `macroblock_quant`
+  flag the type carries.
+  - When `macroblock_quant` is set, a 5-bit `quantizer_scale` is
+    read and validated against the §2.4.3.6 range `1..=31` (the
+    value `0` is forbidden).
+  - When `macroblock_quant` is clear the field is absent: zero bits
+    are read and `quantizer_scale = None` is returned, matching the
+    §2.4.3.6 persistence rule (the decoder keeps the value
+    established at the slice layer or a prior macroblock).
+  - `QuantizerScale::parse_after_type(br, &MacroblockType)`
+    convenience threads the flag straight from a decoded
+    `macroblock_type`.
+  - Typed `QuantizerScale { quantizer_scale, bit_position_after }`
+    (re-exported at the crate root) plus `QUANTIZER_SCALE_MIN` /
+    `QUANTIZER_SCALE_MAX` constants.
+- 12 new unit tests covering the present / absent branches, every
+  legal value `1..=31`, forbidden-zero rejection, truncated- and
+  empty-buffer handling on both branches, `parse_after_type`
+  flag-threading for both flag states, the bound constants, and
+  bit-position accounting.
+- 2 new black-box integration tests against the existing 352×240
+  fixture: the first I-picture macroblock is plain `Intra`
+  (`macroblock_quant = 0`), so per §2.4.2.7 it carries no
+  `quantizer_scale` and the parser consumes zero bits; a spliced
+  `macroblock_quant`-set `macroblock_type` then decodes a synthetic
+  5-bit `quantizer_scale` with correct value and bit accounting.
 
 ### Erased
 

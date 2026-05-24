@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–8 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + coded_block_pattern).**
+**Clean-room rebuild — rounds 1–9 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -292,7 +292,44 @@ be defended as clean-room. The rebuild starts here.
   no `coded_block_pattern()`, and pins the fixture's chroma to
   4:2:0 then decodes a Table B-9 codeword against that format.
 
-### What's NOT in rounds 1–8
+### What round 9 lands
+
+* Parser for the macroblock-layer `quantizer_scale` per **ISO/IEC
+  11172-2:1993 (MPEG-1 Video) §2.4.2.7** (syntax) with field
+  semantics from **§2.4.3.6**. Within `macroblock()` the spec reads
+  this field immediately after `macroblock_type`, conditional on the
+  `macroblock_quant` flag the type carries. Round 9 fills exactly that
+  bitstream gap between round 7's `macroblock_type` and round 8's
+  `coded_block_pattern()`; the motion-vector fields and the residual
+  block loop remain out of scope.
+  * When `macroblock_quant` is set, a 5-bit `quantizer_scale` is read
+    as an unsigned integer and validated against the §2.4.3.6 range
+    `1..=31` (the value `0` is forbidden).
+  * When `macroblock_quant` is clear the field is absent: the parser
+    reads **zero** bits and returns `quantizer_scale = None`, so the
+    decoder keeps the value established at the slice layer (§2.4.2.6)
+    or a previous macroblock — the §2.4.3.6 persistence rule.
+  * Returns `QuantizerScale { quantizer_scale, bit_position_after }`
+    so callers chain into the motion-vector / `coded_block_pattern()`
+    fields without losing the partial-byte cursor.
+  * Convenience `QuantizerScale::parse_after_type(br, &MacroblockType)`
+    threads the flag straight from a decoded `macroblock_type` — the
+    two fields the spec reads back to back.
+* Typed `QuantizerScale` plus `QUANTIZER_SCALE_MIN` /
+  `QUANTIZER_SCALE_MAX` constants (re-exported at the crate root).
+* 12 new unit tests covering the present / absent branches, every
+  legal value `1..=31`, the forbidden-zero rejection, truncated- and
+  empty-buffer handling on both branches, the `parse_after_type`
+  flag-threading for both flag states, the bound constants, and
+  bit-position accounting.
+* 2 new black-box integration tests against the existing 352×240
+  fixture: the first I-picture macroblock is plain `Intra`
+  (`macroblock_quant = 0`), so per §2.4.2.7 it carries no
+  `quantizer_scale` and the parser consumes zero bits; a spliced
+  `macroblock_quant`-set `macroblock_type` then decodes a synthetic
+  5-bit `quantizer_scale` with correct value and bit accounting.
+
+### What's NOT in rounds 1–9
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -327,10 +364,13 @@ Every line in this crate's `src/` traces to:
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
-  ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.3.5, §D.5.5.1, §D.5.5.2,
-  and Annex B Table B.1 — referenced only for the
-  `macroblock_stuffing` semantics (a code MPEG-2 drops). The
-  MPEG-2 Table B-1 entries themselves trace to 13818-2.
+  ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.2.6, §2.4.2.7, §2.4.3.5,
+  §2.4.3.6, §D.5.5.1, §D.5.5.2, and Annex B Table B.1. Referenced
+  for the `macroblock_stuffing` semantics (a code MPEG-2 drops) and,
+  in round 9, for the macroblock-layer `quantizer_scale` field
+  (syntax §2.4.2.7, semantics §2.4.3.6 — the `1..=31` range and the
+  slice/macroblock persistence rule). The MPEG-2 Table B-1 entries
+  themselves trace to 13818-2.
 * `oxideav-core`'s published `BitReader` MSB-first API.
 * The `ffmpeg` CLI binary, used **only** as an opaque encoder for
   the integration-test fixture. Its source code was not consulted.

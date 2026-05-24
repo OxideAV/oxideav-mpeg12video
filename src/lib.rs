@@ -4,12 +4,13 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–8 — structural sequence-layer
+//! **Status:** rebuild rounds 1–9 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, and the leading macroblock-loop syntax
-//! (`macroblock_address_increment`, `macroblock_type`,
-//! `coded_block_pattern()`). The block loop — DCT-coefficient VLCs,
+//! (`macroblock_address_increment`, `macroblock_type`, the
+//! macroblock-layer `quantizer_scale`, `coded_block_pattern()`). The
+//! block loop — DCT-coefficient VLCs,
 //! IDCT, and motion compensation — is not wired up yet; the public
 //! `register` symbol is still a no-op so that downstream consumers
 //! can depend on the crate without the decoder being inadvertently
@@ -51,6 +52,11 @@
 //!   that opens `macroblock_modes()` per §6.2.5.1 (field semantics
 //!   §6.3.17.1), decoding the six derived flags from the
 //!   non-scalable Annex B Tables B-2 (I), B-3 (P), and B-4 (B).
+//! * [`quantizer_scale::QuantizerScale`] — the macroblock-layer
+//!   `quantizer_scale` per ISO/IEC 11172-2:1993 (MPEG-1) §2.4.2.7
+//!   (field semantics §2.4.3.6): the 5-bit field present when
+//!   `macroblock_quant` is set, in the range `1..=31` (zero
+//!   forbidden), with the absent-field no-op when the flag is clear.
 //! * [`coded_block_pattern::CodedBlockPattern`] — the
 //!   `coded_block_pattern()` syntax per §6.2.5.3 (field semantics
 //!   §6.3.17.4): the Annex B Table B-9 `coded_block_pattern_420` VLC
@@ -66,6 +72,7 @@ pub mod gop_header;
 pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod picture_header;
+pub mod quantizer_scale;
 pub mod sequence_extension;
 pub mod sequence_header;
 pub mod slice_header;
@@ -78,6 +85,7 @@ pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
 };
+pub use quantizer_scale::{QuantizerScale, QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 pub use sequence_extension::{
     ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension, EXTENSION_START_CODE,
     SEQUENCE_EXTENSION_ID,
@@ -129,7 +137,7 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–8 only parse the sequence,
+/// No-op codec registration. Rounds 1–9 only parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the leading
 /// macroblock-loop syntax — they do not yet provide a complete
 /// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`], so there
