@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–12 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.4 reset + §7.6.3.7 chroma scaling).**
+**Clean-room rebuild — rounds 1–13 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -496,7 +496,51 @@ be defended as clean-room. The rebuild starts here.
   (the second `delta = -1` added on top of the first vector's
   predictor), plus a §7.6.3.7 chroma scaling check on the 4:2:0 case.
 
-### What's NOT in rounds 1–12
+### What round 13 lands
+
+* `update_predictors(&mut Pmv, PmvUpdateContext)` per **ISO/IEC
+  13818-2 §7.6.3.3** — the once-per-macroblock "Predictors to Update"
+  pass that propagates the `[r = 0]` slot into the `[r = 1]` slot (or
+  resets every slot) so that prediction modes which decoded fewer
+  motion vectors than the maximum still leave a sensible `PMV[1]`
+  behind for downstream macroblocks. Tables 7-10 (frame pictures) and
+  7-11 (field pictures) are both implemented — the two tables share
+  the same right-hand "Predictors to Update" column row-for-row.
+* Typed `PmvUpdateContext` carries the macroblock-level inputs the
+  table consumes (`picture_structure`, `frame_motion_type` /
+  `field_motion_type` as `Option<PredictionType>`,
+  `macroblock_motion_forward` / `_backward` / `_intra`, and
+  `concealment_motion_vectors`). The intra path handles both the
+  `‡` row (`Frame-based`/`Field-based` assumed when motion-type is
+  absent) and the `◊` footnote (zero every slot when
+  `concealment_motion_vectors == 0`).
+* Typed `PmvUpdateOutcome` labels which Tables 7-10/7-11 row fired
+  (`IntraConcealmentCopyForwardFirst`, `IntraResetAll`,
+  `NonIntraCopyBoth`, `NonIntraCopyForward`, `NonIntraCopyBackward`,
+  `NonIntraZeroMotionReset` (§ footnote), `NoUpdate` (Field-based
+  in frame picture / 16x8 MC in field picture), `DualPrimeCopyForward`).
+  The label lets tests assert the right branch was taken without
+  poking at the post-update PMV state.
+* Spec-conformance checks reject the cells the spec leaves
+  unreachable: intra macroblocks with a motion flag set, Frame-based
+  in a field picture (Table 7-11 has no such row), 16x8 MC in a
+  frame picture, Dual-Prime with backward motion, Field-based or
+  16x8 MC rows with both motion flags zero, and non-intra
+  macroblocks with absent motion-type code.
+* 18 new unit tests covering: the intra concealment-MV copy +
+  no-concealment reset branches, intra-with-motion-flag rejection,
+  Frame-based fwd-only / bwd-only / both / zero-motion (§ footnote
+  reset) in frame pictures, Field-based row coverage in both frame
+  pictures (NoUpdate) and field pictures (matching Frame-based
+  shape), 16x8 MC in field pictures (NoUpdate), Dual-Prime forward
+  copy in both picture types, Dual-Prime backward-flag rejection,
+  cross-picture-type table rejection (Frame-based in field, 16x8 in
+  frame), absent-motion-type rejection for non-intra, and an
+  end-to-end chain that runs `reconstruct_motion_vector` then
+  `update_predictors` and verifies the reconstructed (3, -2) vector
+  propagates from `[0][0][:]` into `[1][0][:]`.
+
+### What's NOT in rounds 1–13
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -513,13 +557,14 @@ be defended as clean-room. The rebuild starts here.
 * The scalable `macroblock_type` Tables B-5 .. B-8 (spatial / SNR
   scalability), which require `sequence_scalable_extension()`
   parsing
-* §7.6.3.3 inter-vector PMV-copy table (Tables 7-9 / 7-10) — the
-  macroblock-loop driver's responsibility once that lands.
 * §7.6.3.6 dual-prime additional arithmetic (deriving the
   opposite-parity vector from the decoded forward vector). Dual-prime
   `motion_code` / `motion_residual` / `dmvector` parsing landed in
   round 11; round 12 reconstructs the parsed vector but does not yet
-  derive the opposite-parity vector.
+  derive the opposite-parity vector. Round 13 added the §7.6.3.3
+  inter-vector PMV update so the dual-prime row of Tables 7-10 / 7-11
+  fires correctly even though the §7.6.3.6 vector derivation itself
+  is still ahead.
 * §7.6.3.9 concealment motion vectors (intra macroblocks with the
   `concealment_motion_vectors` flag set).
 * Block-residual VLC Tables B-12 .. B-16, and IDCT
@@ -536,9 +581,10 @@ Every line in this crate's `src/` traces to:
   6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.2,
   6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11,
   6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, 7.6.3, 7.6.3.1,
-  7.6.3.2, 7.6.3.4, 7.6.3.7, Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 /
-  6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 / 7-7 / 7-8,
-  and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
+  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.7, Tables 6-1 / 6-2 / 6-3 / 6-4 /
+  6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 / 7-7 /
+  7-8 / 7-10 / 7-11, and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 /
+  B-10 / B-11.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —

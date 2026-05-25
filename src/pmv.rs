@@ -1,35 +1,42 @@
 //! Motion-vector reconstruction per ISO/IEC 13818-2 (Recommendation
-//! ITU-T H.262) §7.6.3.1, plus the §7.6.3.4 reset rules and the §7.6.3.7
-//! chrominance scaling.
+//! ITU-T H.262) §7.6.3.1, the §7.6.3.3 inter-vector PMV update table,
+//! the §7.6.3.4 reset rules and the §7.6.3.7 chrominance scaling.
 //!
 //! Round 11 left the macroblock body at "the bits the syntax says are
-//! present have been read into typed Option-tagged fields". Round 12 takes
-//! the next coherent step: it ties the parsed `motion_code` /
-//! `motion_residual` pairs together with the four motion-vector
-//! predictors `PMV[r][s][t]` to compute the reconstructed luminance
-//! motion vector `vector'[r][s][t]` (§7.6.3.1), with the spec's
-//! wrap-around arithmetic and PMV-update side-effect. The §7.6.3.7
-//! chrominance scaling that follows the luminance reconstruction is also
-//! implemented (4:2:0 / 4:2:2 / 4:4:4).
+//! present have been read into typed Option-tagged fields". Round 12
+//! tied the parsed `motion_code` / `motion_residual` pairs together
+//! with the four motion-vector predictors `PMV[r][s][t]` to compute
+//! the reconstructed luminance motion vector `vector'[r][s][t]`
+//! (§7.6.3.1) with the spec's wrap-around arithmetic and PMV-update
+//! side-effect, and added the §7.6.3.7 chrominance scaling.
+//!
+//! Round 13 covers **§7.6.3.3** — the "update other motion-vector
+//! predictors" table that fires once every macroblock decode and
+//! propagates the `[r = 0]` slot into the `[r = 1]` slot (or zeroes
+//! every slot) so that the §7.6.3.4 "fresh slot" invariant survives
+//! the prediction modes that decoded fewer vectors than the maximum.
+//! Table 7-10 covers frame pictures, Table 7-11 covers field pictures;
+//! both are implemented here.
 //!
 //! What this module does **not** cover:
 //!
-//! * The §7.6.3.3 inter-vector PMV-copy table (Tables 7-9 / 7-10).
-//!   That table fires after every macroblock decode and needs the
-//!   macroblock-loop driver to be in place; it's a small future round.
 //! * §7.6.3.6 dual-prime additional arithmetic (deriving the
 //!   opposite-parity vector from the decoded forward vector). Dual-prime
 //!   `motion_code` / `motion_residual` / `dmvector` parsing is in
 //!   round 11; the derived vector calculation is its own round once we
 //!   have a `dmv_decision` engine.
 //! * §7.6.3.9 concealment motion vectors (intra macroblocks with the
-//!   `concealment_motion_vectors` flag set).
+//!   `concealment_motion_vectors` flag set) — the table accounts for
+//!   the concealment-MV flag where Table 7-10/7-11 reference it (the
+//!   `◊` and `‡` footnotes), but actually *decoding* a concealment
+//!   motion vector from the bitstream is the macroblock-layer round's
+//!   responsibility.
 //!
 //! Spec citations refer to the 1995 base text of ISO/IEC 13818-2
-//! (Recommendation ITU-T H.262 (1995 E)) §§7.6.3, 7.6.3.1, 7.6.3.4,
-//! 7.6.3.7, and Table 7-7.
+//! (Recommendation ITU-T H.262 (1995 E)) §§7.6.3, 7.6.3.1, 7.6.3.3,
+//! 7.6.3.4, 7.6.3.7, and Tables 7-7, 7-10, 7-11.
 
-use crate::macroblock_modes::MvFormat;
+use crate::macroblock_modes::{MvFormat, PredictionType};
 use crate::motion_vector::MotionVector;
 use crate::picture_header::PictureStructure;
 use crate::sequence_extension::ChromaFormat;
@@ -423,9 +430,240 @@ pub fn scale_chroma(luma_horiz: i32, luma_vert: i32, chroma: ChromaFormat) -> Sc
     }
 }
 
+/// §7.6.3.3: the macroblock-level summary the PMV-update table consumes.
+///
+/// The table is keyed on:
+///
+/// * `picture_structure` — frame picture selects Table 7-10, field
+///   picture selects Table 7-11. The two tables differ only in the row
+///   names (`Frame-based` vs `16x8 MC`); the right-hand "Predictors to
+///   Update" column is identical row-for-row.
+/// * `prediction_type` — the `frame_motion_type` (frame pictures) or
+///   `field_motion_type` (field pictures) the macroblock decoded. When
+///   the motion-type code was *absent* from the bitstream this is
+///   `None`; the spec's footnote `‡` says the absent value is assumed
+///   "Frame-based" in a frame picture and "Field-based" in a field
+///   picture, and that the macroblock is necessarily intra (`fwd ==
+///   bwd == 0`, `intra == 1`).
+/// * `macroblock_motion_forward`, `macroblock_motion_backward`,
+///   `macroblock_intra` — the three derived flags from
+///   `macroblock_type` (Tables B-2 / B-3 / B-4) that key the three
+///   "fwd bwd intra" columns of Tables 7-10 / 7-11.
+/// * `concealment_motion_vectors` — gates the `◊` footnote, which
+///   says that when `concealment_motion_vectors == 0` the
+///   intra-`Frame-based`/`Field-based`‡ row zeroes *every* PMV slot
+///   instead of copying `[0][0][1:0]` into `[1][0][1:0]`. The spec
+///   directs the all-zero path back to §7.6.3.4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PmvUpdateContext {
+    /// Picture-level structure (frame / top / bottom), selecting between
+    /// Table 7-10 (frame pictures) and Table 7-11 (field pictures).
+    pub picture_structure: PictureStructure,
+    /// The `frame_motion_type` (frame picture) / `field_motion_type`
+    /// (field picture) the macroblock decoded; `None` if the motion-type
+    /// code was absent (`‡` row of the table).
+    pub prediction_type: Option<PredictionType>,
+    /// `macroblock_motion_forward` flag from `macroblock_type`.
+    pub macroblock_motion_forward: bool,
+    /// `macroblock_motion_backward` flag from `macroblock_type`.
+    pub macroblock_motion_backward: bool,
+    /// `macroblock_intra` flag from `macroblock_type`.
+    pub macroblock_intra: bool,
+    /// `concealment_motion_vectors` flag from `picture_coding_extension()`
+    /// (§6.3.11). Only consulted when the macroblock is intra.
+    pub concealment_motion_vectors: bool,
+}
+
+/// Outcome label for §7.6.3.3 update: which row of Table 7-10 / 7-11
+/// fired, so callers and tests can confirm the right branch was taken
+/// without re-reading the PMV.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PmvUpdateOutcome {
+    /// Intra macroblock with `concealment_motion_vectors == 1` (the
+    /// `◊` footnote *not* firing): `PMV[1][0][1:0] = PMV[0][0][1:0]`.
+    IntraConcealmentCopyForwardFirst,
+    /// Intra macroblock with `concealment_motion_vectors == 0`: every
+    /// PMV slot is reset to zero per the `◊` footnote (which redirects
+    /// to §7.6.3.4).
+    IntraResetAll,
+    /// Frame-based or Field-based non-intra with both forward and
+    /// backward motion: copy both `[0][0][1:0]` and `[0][1][1:0]` into
+    /// their `[1][.][.]` siblings.
+    NonIntraCopyBoth,
+    /// Frame-based or Field-based non-intra with forward motion only:
+    /// `PMV[1][0][1:0] = PMV[0][0][1:0]`.
+    NonIntraCopyForward,
+    /// Frame-based or Field-based non-intra with backward motion only:
+    /// `PMV[1][1][1:0] = PMV[0][1][1:0]`.
+    NonIntraCopyBackward,
+    /// Frame-based / Field-based non-intra row with `fwd == bwd == 0`
+    /// (the `§` footnote, only reachable in a P-picture): every PMV
+    /// slot is reset to zero per §7.6.3.4.
+    NonIntraZeroMotionReset,
+    /// Field-based (frame picture) / 16x8 MC (field picture) row: the
+    /// table prescribes "(none)" — every slot already holds a fresh
+    /// value, so no update fires.
+    NoUpdate,
+    /// Dual-Prime row: `PMV[1][0][1:0] = PMV[0][0][1:0]`. Only the
+    /// `fwd == 1, bwd == 0, intra == 0` cell of the dual-prime row is
+    /// reachable; the spec marks the other dual-prime cells as
+    /// unreachable.
+    DualPrimeCopyForward,
+}
+
+/// §7.6.3.3: apply the Tables 7-10 / 7-11 "Predictors to Update"
+/// column to `pmv` after a macroblock has finished decoding its motion
+/// vectors via [`reconstruct_motion_vector`].
+///
+/// Returns the [`PmvUpdateOutcome`] label describing which row fired,
+/// so tests and downstream macroblock-loop code can confirm the right
+/// branch was selected.
+///
+/// Errors:
+/// * [`Error::InvalidBitstream`] if the `(prediction_type, fwd, bwd,
+///   intra)` combination does not appear in Tables 7-10 / 7-11 — e.g.
+///   a `Field-based` row with `fwd == 1, bwd == 1, intra == 1`
+///   (intra excludes any motion flag).
+pub fn update_predictors(pmv: &mut Pmv, ctx: PmvUpdateContext) -> Result<PmvUpdateOutcome> {
+    // The intra path (with or without concealment MVs) is identical in
+    // frame and field pictures, so handle it before the structure split.
+    if ctx.macroblock_intra {
+        if ctx.macroblock_motion_forward || ctx.macroblock_motion_backward {
+            return Err(Error::InvalidBitstream(
+                "update_predictors: intra macroblock with a motion flag set (excluded by Tables B-2/B-3/B-4)",
+            ));
+        }
+        if ctx.concealment_motion_vectors {
+            // `‡`-row of the table: `Frame-based`/`Field-based` intra
+            // assumed because `frame_motion_type` / `field_motion_type`
+            // is absent from the bitstream for intra macroblocks. The
+            // PMV-copy operation is `PMV[1][0][1:0] = PMV[0][0][1:0]`.
+            copy_r0_to_r1(pmv, Direction::Forward);
+            return Ok(PmvUpdateOutcome::IntraConcealmentCopyForwardFirst);
+        } else {
+            // `◊` footnote: when concealment_motion_vectors == 0 the
+            // entire PMV state is zeroed (§7.6.3.4).
+            pmv.reset();
+            return Ok(PmvUpdateOutcome::IntraResetAll);
+        }
+    }
+
+    // Non-intra. The motion-type code must have been present (the `‡`
+    // row only applies to intra macroblocks). If it wasn't present the
+    // bitstream is malformed.
+    let prediction_type = ctx.prediction_type.ok_or(Error::InvalidBitstream(
+        "update_predictors: non-intra macroblock with absent motion_type (§6.3.17.1 forbids)",
+    ))?;
+
+    let in_frame_picture = ctx.picture_structure == PictureStructure::Frame;
+
+    // Cross-check the prediction_type against the picture structure: the
+    // spec partitions the rows by picture type — Frame-based exists only
+    // in frame pictures, 16x8 MC only in field pictures.
+    match prediction_type {
+        PredictionType::FrameBased if !in_frame_picture => {
+            return Err(Error::InvalidBitstream(
+                "update_predictors: Frame-based motion type in a field picture (Table 7-11 has no such row)",
+            ));
+        }
+        PredictionType::SixteenByEight if in_frame_picture => {
+            return Err(Error::InvalidBitstream(
+                "update_predictors: 16x8 MC motion type in a frame picture (Table 7-10 has no such row)",
+            ));
+        }
+        _ => {}
+    }
+
+    // The Frame-based (frame picture) and Field-based (field picture)
+    // rows share the same PMV-update structure; same goes for the
+    // Field-based (frame picture) and 16x8 MC (field picture) "(none)"
+    // rows. So branch on what the row *prescribes* rather than the
+    // motion-type name directly.
+    let row_does_copy = matches!(
+        (in_frame_picture, prediction_type),
+        (true, PredictionType::FrameBased) | (false, PredictionType::FieldBased)
+    );
+    let row_is_none = matches!(
+        (in_frame_picture, prediction_type),
+        (true, PredictionType::FieldBased) | (false, PredictionType::SixteenByEight)
+    );
+
+    match prediction_type {
+        PredictionType::DualPrime => {
+            // Dual-Prime row: only the (fwd=1, bwd=0, intra=0) cell is
+            // listed; the other dual-prime cells are unreachable.
+            if !ctx.macroblock_motion_forward || ctx.macroblock_motion_backward {
+                return Err(Error::InvalidBitstream(
+                    "update_predictors: Dual-Prime row only accepts (fwd=1, bwd=0) per Tables 7-10/7-11",
+                ));
+            }
+            copy_r0_to_r1(pmv, Direction::Forward);
+            Ok(PmvUpdateOutcome::DualPrimeCopyForward)
+        }
+        _ if row_is_none => {
+            // Field-based in a frame picture or 16x8 MC in a field
+            // picture: the spec lists "(none)" for every (fwd, bwd)
+            // combination — the row needs at least one motion flag set,
+            // and beyond that it leaves the PMV alone.
+            if !(ctx.macroblock_motion_forward || ctx.macroblock_motion_backward) {
+                return Err(Error::InvalidBitstream(
+                    "update_predictors: Field-based/16x8 row with both motion flags zero is not listed in Tables 7-10/7-11",
+                ));
+            }
+            Ok(PmvUpdateOutcome::NoUpdate)
+        }
+        _ if row_does_copy => {
+            // Frame-based in a frame picture or Field-based in a field
+            // picture: four sub-cases, one per (fwd, bwd) combo.
+            match (
+                ctx.macroblock_motion_forward,
+                ctx.macroblock_motion_backward,
+            ) {
+                (true, true) => {
+                    copy_r0_to_r1(pmv, Direction::Forward);
+                    copy_r0_to_r1(pmv, Direction::Backward);
+                    Ok(PmvUpdateOutcome::NonIntraCopyBoth)
+                }
+                (true, false) => {
+                    copy_r0_to_r1(pmv, Direction::Forward);
+                    Ok(PmvUpdateOutcome::NonIntraCopyForward)
+                }
+                (false, true) => {
+                    copy_r0_to_r1(pmv, Direction::Backward);
+                    Ok(PmvUpdateOutcome::NonIntraCopyBackward)
+                }
+                (false, false) => {
+                    // `§` footnote: only reachable in a P-picture. The
+                    // spec instructs the entire PMV to be zeroed
+                    // (§7.6.3.4 reset).
+                    pmv.reset();
+                    Ok(PmvUpdateOutcome::NonIntraZeroMotionReset)
+                }
+            }
+        }
+        // This arm is unreachable because (in_frame_picture,
+        // prediction_type) was either cross-checked above or matched by
+        // the `row_does_copy` / `row_is_none` branches.
+        _ => unreachable!(
+            "update_predictors: (picture_structure, prediction_type) classifier exhausted",
+        ),
+    }
+}
+
+/// Helper: copy `PMV[0][s][1:0]` into `PMV[1][s][1:0]` (both
+/// components). The Tables 7-10 / 7-11 shorthand `PMV[r][s][1:0] =
+/// PMV[u][v][1:0]` always assigns the full `[t = 0, t = 1]` pair.
+fn copy_r0_to_r1(pmv: &mut Pmv, s: Direction) {
+    let h = pmv.get(VectorIndex::First, s, Component::Horizontal);
+    let v = pmv.get(VectorIndex::First, s, Component::Vertical);
+    pmv.set(VectorIndex::Second, s, Component::Horizontal, h);
+    pmv.set(VectorIndex::Second, s, Component::Vertical, v);
+}
+
 #[cfg(test)]
 mod tests {
-    //! Hand-built bit-exact §7.6.3.1 / §7.6.3.4 / §7.6.3.7 round-trips.
+    //! Hand-built bit-exact §7.6.3.1 / §7.6.3.3 / §7.6.3.4 / §7.6.3.7
+    //! round-trips.
     use super::*;
 
     fn frame_picture() -> PictureStructure {
@@ -1084,6 +1322,539 @@ mod tests {
         let v = scale_chroma(-3, -5, ChromaFormat::Yuv420);
         assert_eq!(v.chroma_horiz, -1); // -3/2 = -1 toward zero
         assert_eq!(v.chroma_vert, -2); // -5/2 = -2 toward zero
+    }
+
+    // ---- §7.6.3.3 update_predictors ----
+
+    fn seeded_pmv() -> Pmv {
+        // Distinct, easy-to-eyeball values in every PMV slot so a copy
+        // can be told apart from a reset.
+        let mut p = Pmv::new();
+        // (r, s, t) → 100*r + 10*s + t
+        for r in [VectorIndex::First, VectorIndex::Second] {
+            for s in [Direction::Forward, Direction::Backward] {
+                for t in [Component::Horizontal, Component::Vertical] {
+                    let v = 100 * r.index() as i32 + 10 * s.index() as i32 + t.index() as i32;
+                    p.set(r, s, t, v);
+                }
+            }
+        }
+        p
+    }
+
+    fn ctx(
+        ps: PictureStructure,
+        pt: Option<PredictionType>,
+        fwd: bool,
+        bwd: bool,
+        intra: bool,
+        conceal: bool,
+    ) -> PmvUpdateContext {
+        PmvUpdateContext {
+            picture_structure: ps,
+            prediction_type: pt,
+            macroblock_motion_forward: fwd,
+            macroblock_motion_backward: bwd,
+            macroblock_intra: intra,
+            concealment_motion_vectors: conceal,
+        }
+    }
+
+    #[test]
+    fn update_intra_with_concealment_copies_forward_first_to_second() {
+        // Table 7-10 / 7-11 ‡-row, no `◊`: PMV[1][0][1:0] = PMV[0][0][1:0].
+        let mut p = seeded_pmv();
+        let out = update_predictors(&mut p, ctx(frame_picture(), None, false, false, true, true))
+            .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::IntraConcealmentCopyForwardFirst);
+        // [1][0][0] now == [0][0][0] (which was 100*0 + 10*0 + 0 = 0).
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Forward,
+                Component::Horizontal
+            ),
+            p.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal
+            )
+        );
+        assert_eq!(
+            p.get(VectorIndex::Second, Direction::Forward, Component::Vertical),
+            p.get(VectorIndex::First, Direction::Forward, Component::Vertical)
+        );
+        // Backward and other slots unchanged.
+        assert_eq!(
+            p.get(VectorIndex::First, Direction::Backward, Component::Vertical),
+            11
+        );
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Backward,
+                Component::Horizontal
+            ),
+            110
+        );
+    }
+
+    #[test]
+    fn update_intra_without_concealment_resets_all_slots() {
+        // ◊ footnote: PMV is set to zero (for all r, s, t) — §7.6.3.4.
+        let mut p = seeded_pmv();
+        let out = update_predictors(
+            &mut p,
+            ctx(top_field_picture(), None, false, false, true, false),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::IntraResetAll);
+        for r in [VectorIndex::First, VectorIndex::Second] {
+            for s in [Direction::Forward, Direction::Backward] {
+                for t in [Component::Horizontal, Component::Vertical] {
+                    assert_eq!(p.get(r, s, t), 0, "({r:?}, {s:?}, {t:?})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn update_intra_rejects_motion_flag_set() {
+        // Intra macroblocks have fwd == bwd == 0 in Tables B-2 / B-3 / B-4.
+        let mut p = seeded_pmv();
+        let err = update_predictors(&mut p, ctx(frame_picture(), None, true, false, true, true))
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn update_frame_based_fwd_only_copies_forward() {
+        // Table 7-10 Frame-based (1, 0, 0): PMV[1][0][1:0] = PMV[0][0][1:0].
+        let mut p = seeded_pmv();
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::FrameBased),
+                true,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NonIntraCopyForward);
+        // [1][0][..] copies from [0][0][..]; [1][1][..] unchanged (110, 111).
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Forward,
+                Component::Horizontal
+            ),
+            p.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal
+            )
+        );
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Backward,
+                Component::Horizontal
+            ),
+            110
+        );
+    }
+
+    #[test]
+    fn update_frame_based_bwd_only_copies_backward() {
+        // Table 7-10 Frame-based (0, 1, 0): PMV[1][1][1:0] = PMV[0][1][1:0].
+        let mut p = seeded_pmv();
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::FrameBased),
+                false,
+                true,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NonIntraCopyBackward);
+        // [1][1][..] copies from [0][1][..]; [1][0][..] unchanged (100, 101).
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Backward,
+                Component::Horizontal
+            ),
+            p.get(
+                VectorIndex::First,
+                Direction::Backward,
+                Component::Horizontal
+            )
+        );
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Forward,
+                Component::Horizontal
+            ),
+            100
+        );
+    }
+
+    #[test]
+    fn update_frame_based_both_copies_both() {
+        // Table 7-10 Frame-based (1, 1, 0): both copies.
+        let mut p = seeded_pmv();
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::FrameBased),
+                true,
+                true,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NonIntraCopyBoth);
+        // Both [1][0][..] and [1][1][..] copy from [0][.][..].
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Forward,
+                Component::Horizontal
+            ),
+            p.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal
+            )
+        );
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Backward,
+                Component::Horizontal
+            ),
+            p.get(
+                VectorIndex::First,
+                Direction::Backward,
+                Component::Horizontal
+            )
+        );
+    }
+
+    #[test]
+    fn update_frame_based_no_motion_resets_all() {
+        // Table 7-10 Frame-based (0, 0, 0): § footnote → PMV reset.
+        let mut p = seeded_pmv();
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::FrameBased),
+                false,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NonIntraZeroMotionReset);
+        for r in [VectorIndex::First, VectorIndex::Second] {
+            for s in [Direction::Forward, Direction::Backward] {
+                for t in [Component::Horizontal, Component::Vertical] {
+                    assert_eq!(p.get(r, s, t), 0, "({r:?}, {s:?}, {t:?})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn update_field_based_in_frame_picture_is_noop() {
+        // Table 7-10 Field-based rows all say "(none)" — PMV is left
+        // alone. The macroblock must still have at least one motion
+        // flag set.
+        let mut p = seeded_pmv();
+        let before = p;
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::FieldBased),
+                true,
+                true,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NoUpdate);
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn update_field_based_no_motion_is_rejected_in_frame_picture() {
+        // Table 7-10 Field-based has no `fwd==bwd==0` row.
+        let mut p = seeded_pmv();
+        let err = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::FieldBased),
+                false,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn update_field_based_in_field_picture_runs_copy_rows() {
+        // Table 7-11 Field-based has copy rows for (1,1), (1,0), (0,1)
+        // and a § zero-motion row, identical structure to Frame-based
+        // in Table 7-10.
+        let mut p = seeded_pmv();
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                top_field_picture(),
+                Some(PredictionType::FieldBased),
+                true,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NonIntraCopyForward);
+        assert_eq!(
+            p.get(
+                VectorIndex::Second,
+                Direction::Forward,
+                Component::Horizontal
+            ),
+            p.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal
+            )
+        );
+    }
+
+    #[test]
+    fn update_field_based_no_motion_resets_in_field_picture() {
+        // Table 7-11 Field-based (0, 0, 0): § footnote → reset.
+        let mut p = seeded_pmv();
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                top_field_picture(),
+                Some(PredictionType::FieldBased),
+                false,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NonIntraZeroMotionReset);
+        for r in [VectorIndex::First, VectorIndex::Second] {
+            for s in [Direction::Forward, Direction::Backward] {
+                for t in [Component::Horizontal, Component::Vertical] {
+                    assert_eq!(p.get(r, s, t), 0, "({r:?}, {s:?}, {t:?})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn update_sixteen_by_eight_in_field_picture_is_noop() {
+        // Table 7-11 16x8 MC: all three listed rows say "(none)".
+        let mut p = seeded_pmv();
+        let before = p;
+        let out = update_predictors(
+            &mut p,
+            ctx(
+                top_field_picture(),
+                Some(PredictionType::SixteenByEight),
+                false,
+                true,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NoUpdate);
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn update_dual_prime_copies_forward_in_both_picture_types() {
+        // Tables 7-10 / 7-11 Dual-Prime (1, 0, 0): PMV[1][0][1:0] =
+        // PMV[0][0][1:0]. Works in both frame and field pictures.
+        for ps in [frame_picture(), top_field_picture()] {
+            let mut p = seeded_pmv();
+            let out = update_predictors(
+                &mut p,
+                ctx(
+                    ps,
+                    Some(PredictionType::DualPrime),
+                    true,
+                    false,
+                    false,
+                    false,
+                ),
+            )
+            .unwrap();
+            assert_eq!(out, PmvUpdateOutcome::DualPrimeCopyForward);
+            assert_eq!(
+                p.get(
+                    VectorIndex::Second,
+                    Direction::Forward,
+                    Component::Horizontal
+                ),
+                p.get(
+                    VectorIndex::First,
+                    Direction::Forward,
+                    Component::Horizontal
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn update_dual_prime_rejects_backward_flag() {
+        // Tables 7-10 / 7-11 list only (fwd=1, bwd=0, intra=0) for
+        // Dual-Prime; other combinations are unreachable.
+        let mut p = seeded_pmv();
+        let err = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::DualPrime),
+                true,
+                true,
+                false,
+                false,
+            ),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn update_frame_based_rejected_in_field_picture() {
+        // Table 7-11 has no Frame-based row.
+        let mut p = seeded_pmv();
+        let err = update_predictors(
+            &mut p,
+            ctx(
+                top_field_picture(),
+                Some(PredictionType::FrameBased),
+                true,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn update_sixteen_by_eight_rejected_in_frame_picture() {
+        // Table 7-10 has no 16x8 MC row.
+        let mut p = seeded_pmv();
+        let err = update_predictors(
+            &mut p,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::SixteenByEight),
+                true,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn update_non_intra_without_motion_type_is_rejected() {
+        // §6.3.17.1: motion_type is required when at least one motion
+        // flag is set, and the macroblock is non-intra.
+        let mut p = seeded_pmv();
+        let err = update_predictors(
+            &mut p,
+            ctx(frame_picture(), None, true, false, false, false),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn update_after_reconstruct_chains_into_second_slot() {
+        // End-to-end: reconstruct a forward vector (puts (3, -2) in
+        // [0][0][..]) then run update_predictors(Frame-based, fwd-only)
+        // — the same (3, -2) should land in [1][0][..].
+        let mut pmv = Pmv::new();
+        let mv = MotionVector {
+            motion_code_horiz: 3,
+            motion_residual_horiz: None,
+            dmvector_horiz: None,
+            motion_code_vert: -2,
+            motion_residual_vert: None,
+            dmvector_vert: None,
+            bit_position_after: 0,
+        };
+        reconstruct_motion_vector(
+            &mut pmv,
+            &mv,
+            VectorIndex::First,
+            Direction::Forward,
+            1,
+            1,
+            MvFormat::Frame,
+            frame_picture(),
+        )
+        .unwrap();
+        let out = update_predictors(
+            &mut pmv,
+            ctx(
+                frame_picture(),
+                Some(PredictionType::FrameBased),
+                true,
+                false,
+                false,
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, PmvUpdateOutcome::NonIntraCopyForward);
+        assert_eq!(
+            pmv.get(
+                VectorIndex::Second,
+                Direction::Forward,
+                Component::Horizontal
+            ),
+            3
+        );
+        assert_eq!(
+            pmv.get(VectorIndex::Second, Direction::Forward, Component::Vertical),
+            -2
+        );
     }
 
     // ---- Index enums ----

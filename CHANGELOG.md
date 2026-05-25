@@ -8,6 +8,44 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 13: §7.6.3.3 inter-vector PMV update
+  (Tables 7-10 / 7-11), the once-per-macroblock pass that follows
+  motion-vector reconstruction and propagates the `[r = 0]` PMV slot
+  into the `[r = 1]` slot (or zeroes every slot) so prediction modes
+  with fewer-than-maximum vectors still leave a sensible `PMV[1]`
+  behind.
+  - `pmv::update_predictors(&mut Pmv, PmvUpdateContext)` driving
+    Tables 7-10 (frame pictures) and 7-11 (field pictures). The two
+    tables share the right-hand "Predictors to Update" column
+    row-for-row; the implementation branches on `picture_structure`
+    + `prediction_type` to pick the right row family then applies
+    the (fwd, bwd, intra) sub-cell.
+  - Intra path covers both the `‡` row (`Frame-based`/`Field-based`
+    assumed when `frame_motion_type` / `field_motion_type` is absent
+    from the bitstream) and the `◊` footnote (when
+    `concealment_motion_vectors == 0` the entire PMV is reset per
+    §7.6.3.4 instead of copying `[0][0][1:0]` into `[1][0][1:0]`).
+  - Non-intra Frame-based / Field-based / 16x8 MC / Dual-Prime row
+    coverage including the `§` zero-motion footnote (PMV reset, only
+    reachable in a P-picture) and the Dual-Prime forward-copy row.
+  - Cells the spec leaves unreachable are rejected:
+    `InvalidBitstream` for intra-with-motion-flag, Frame-based in a
+    field picture, 16x8 MC in a frame picture, Dual-Prime with
+    backward motion, Field-based / 16x8 with both motion flags zero,
+    and non-intra without motion-type code.
+  - `PmvUpdateOutcome` enum labels which row fired
+    (`IntraConcealmentCopyForwardFirst`, `IntraResetAll`,
+    `NonIntraCopyForward`, `NonIntraCopyBackward`,
+    `NonIntraCopyBoth`, `NonIntraZeroMotionReset`, `NoUpdate`,
+    `DualPrimeCopyForward`).
+  - 18 new unit tests pinning every row of Tables 7-10 / 7-11 to a
+    bit-exact PMV outcome, plus an end-to-end
+    `reconstruct_motion_vector → update_predictors` chain
+    confirming the reconstructed (3, -2) vector propagates from
+    `PMV[0][0][:]` into `PMV[1][0][:]`.
+  - Re-exports `update_predictors`, `PmvUpdateContext`,
+    `PmvUpdateOutcome` at the crate root alongside the existing
+    `Pmv` family.
 - Clean-room rebuild round 1: parser for the MPEG-2 (ITU-T H.262 /
   ISO/IEC 13818-2) `sequence_header()` syntax element (§6.2.2.1)
   with field semantics from §6.3.3:
