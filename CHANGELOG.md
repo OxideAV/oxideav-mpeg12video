@@ -337,6 +337,73 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `motion_code_vert = 0`) and asserts the 9-bit total cursor
   accounting.
 
+- Clean-room rebuild round 12: motion-vector reconstruction per
+  ISO/IEC 13818-2 (Recommendation ITU-T H.262) §7.6.3.1 plus
+  §7.6.3.4 reset rules and §7.6.3.7 chroma scaling. The bridge from
+  round 11's parsed `motion_code` / `motion_residual` / `dmvector`
+  fields to the spec's `vector'[r][s][t]` reconstructed luminance
+  motion vector.
+  - `compute_delta(motion_code, motion_residual, f_code)` derives
+    `delta` per the spec formula (`f = 1 << (f_code - 1)`, shortcut
+    `delta = motion_code` when `f == 1 || motion_code == 0`,
+    otherwise `sign(motion_code) * ((|motion_code| - 1) * f +
+    motion_residual + 1)`).
+  - `vector_range(f_code)` returns `(low, high, range) =
+    (-16*f, 16*f - 1, 32*f)`. Doubles per Table 7-8 entry across
+    `f_code ∈ {1..=9}`; out-of-range `f_code` rejected.
+  - `reconstruct_component(motion_code, motion_residual, f_code,
+    prior_pmv, mv_format, picture_structure, t)` runs the §7.6.3.1
+    procedure for one component: half-pred for the
+    `(mv_format == field && t == vertical && picture_structure ==
+    frame)` case using §4.3 floor-division (`div_euclid`), `vector' =
+    prediction + delta`, wrap into `[low, high]` via `± range`, and
+    `new_pmv = vector' * 2` for the half-pred case else `vector'`.
+    Bitstream conformance per §7.6.3.2 (`delta`, `vector'`, new PMV
+    all in range) enforced as a parse-time invariant.
+  - `reconstruct_motion_vector(pmv, &MotionVector, r, s, f_code_h,
+    f_code_v, mv_format, picture_structure)` chains the two
+    components and writes the new PMVs back into the supplied
+    `Pmv` slot.
+  - `Pmv { values: [[[i32; 2]; 2]; 2] }` carries the four
+    `PMV[r][s][t]` predictors in half-sample units (Table 7-7) with
+    `Pmv::get` / `set` typed by `VectorIndex` / `Direction` /
+    `Component`. `Pmv::reset()` for §7.6.3.4 (slice start /
+    non-concealment intra / P-picture non-intra without forward /
+    P-skipped). `Pmv::default()` and `Pmv::new()` zero every slot.
+  - `scale_chroma(luma_horiz, luma_vert, ChromaFormat) ->
+    ScaledMotionVector` per §7.6.3.7: 4:2:0 halves both components,
+    4:2:2 halves only horizontal, 4:4:4 is identity. Toward-zero
+    integer division per §4.3.
+  - Typed `Pmv`, `ReconstructedComponent { vector_prime, new_pmv,
+    delta, range }`, `ScaledMotionVector { luma_horiz, luma_vert,
+    chroma_horiz, chroma_vert }`, `Component { Horizontal,
+    Vertical }`, `Direction { Forward, Backward }`,
+    `VectorIndex { First, Second }` (re-exported at the crate root).
+- 29 new unit tests covering: `compute_delta`'s shortcut and
+  full-formula branches across `f_code ∈ {1..=9}` and motion-code
+  signs, `motion_residual` presence-required / presence-forbidden
+  rejection, out-of-range `f_code` rejection (0, 10, 15),
+  `vector_range` invariants (f_code=1 ⇒ ±16, f_code=9 ⇒ ±4096,
+  range doubles per step), end-to-end `reconstruct_motion_vector`
+  with no-wrap / wrap-low / wrap-high paths, vertical-half-pred
+  matrix (frame vs field picture, horizontal vs vertical component),
+  floor-division for negative PMV under half-pred, PMV slot
+  independence for `(r = 0 vs r = 1)` and `(forward vs backward)`,
+  delta-outside-range rejection, `Pmv::default` / `Pmv::reset` zero
+  every slot, chroma scaling for all three `ChromaFormat` values
+  plus toward-zero rounding on negative odd inputs, and Table 7-7
+  index enums.
+- 2 new black-box integration tests against the existing 352×240
+  fixture: confirms the fixture's I-picture is the §7.6.3 "PMV
+  unused" case (every f_code is the `15` sentinel; PMV stays zero
+  after the §7.6.3.4 reset), and a spliced two-macroblock
+  P-picture chain (`motion_code = +2, residual = 0` then
+  `motion_code = -1, residual = 0`, both with `f_code = 2`)
+  decodes through `MotionVector → reconstruct_motion_vector`
+  with PMV state evolving from `0 → 3 → 2` (second `delta = -1`
+  added on top of the first vector's predictor `PMV = 3`), and the
+  4:2:0 chroma scaling halves both components.
+
 ### Erased
 
 - Prior master history was force-erased on **2026-05-18** under
@@ -360,11 +427,13 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - Composite-display sub-fields (`v_axis` / `field_sequence` /
   `sub_carrier` / `burst_amplitude` / `sub_carrier_phase`) inside
   `picture_coding_extension()` when `composite_display_flag` is 1.
-- Macroblock-loop continuation: `motion_vector(r, s)` numerical
-  reconstruction per §7.6.3.1 (PMV-state machine, `delta` / `low` /
-  `high` / wrap-around, chroma scaling, dual-prime additional
-  arithmetic per §7.6.3.6), then the residual block VLC tables
-  (B-12 .. B-16) plus IDCT.
+- §7.6.3.3 inter-vector PMV-copy table (Tables 7-9 / 7-10) — the
+  macroblock-loop driver's responsibility once that lands.
+- §7.6.3.6 dual-prime additional arithmetic (deriving the
+  opposite-parity vector from the decoded forward vector).
+- §7.6.3.9 concealment motion vectors.
+- Residual block VLC tables (B-12 .. B-16) plus IDCT and motion
+  compensation.
 - The scalable `macroblock_type` Tables B-5 .. B-8 once
   `sequence_scalable_extension()` parsing lands.
 - `oxideav_core::Decoder` wiring once a complete picture round-trips.

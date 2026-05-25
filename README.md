@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–11 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + motion_vectors() / motion_vector() + Tables B-10 / B-11).**
+**Clean-room rebuild — rounds 1–12 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.4 reset + §7.6.3.7 chroma scaling).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -435,7 +435,68 @@ be defended as clean-room. The rebuild starts here.
   with f_code = 2, `motion_code_vert = 0`) and asserts the 9-bit total
   cursor accounting.
 
-### What's NOT in rounds 1–11
+### What round 12 lands
+
+* `vector'[r][s][t]` reconstruction per **ISO/IEC 13818-2 §7.6.3.1** —
+  the bridge from round 11's parsed motion-vector syntax to actual
+  luminance motion-compensation vectors. The Annex's worked formula is
+  implemented verbatim:
+  * `compute_delta(motion_code, motion_residual, f_code)` derives the
+    spec's `delta` (`f = 1 << (f_code - 1)`, `delta = motion_code` when
+    `f == 1 || motion_code == 0`, otherwise
+    `delta = sign(motion_code) * ((|motion_code| - 1) * f +
+    motion_residual + 1)`).
+  * `vector_range(f_code)` produces the `[low, high]` half-range
+    (`[-16*f, 16*f - 1]`) and `range = 32*f`. Verified against Table
+    7-8 across `f_code ∈ {1..=9}` (range doubles per step).
+  * `reconstruct_component(...)` combines `delta` with the prior
+    `PMV[r][s][t]`, applies the §7.6.3.1 vertical-half-pred rule
+    (`mv_format == field && t == 1 && picture_structure == frame ⇒
+    prediction = PMV / 2` using §4.3 floor-division, PMV-writeback =
+    `vector' * 2`), wraps the result into `[low, high]`, and returns
+    the new PMV value. §7.6.3.2 range-conformance is enforced as a
+    parse-time invariant.
+  * `reconstruct_motion_vector(pmv, &MotionVector, r, s, f_code_h,
+    f_code_v, mv_format, picture_structure)` runs the §7.6.3.1
+    procedure for both `t = 0` and `t = 1`, threading round 11's
+    parsed `MotionVector` straight in.
+* `Pmv` state container per **§7.6.3** (Table 7-7): the four PMV slots
+  indexed by `r ∈ {0, 1}`, `s ∈ {0, 1}`, `t ∈ {0, 1}`, with
+  `Pmv::new()` (zero-initialised) and `Pmv::reset()` for the §7.6.3.4
+  slice-start / non-concealment-intra / P-picture-non-intra-without-
+  forward / P-skipped reset rules.
+* `scale_chroma(luma_horiz, luma_vert, ChromaFormat)` per **§7.6.3.7**:
+  4:2:0 halves both, 4:2:2 halves only horizontal, 4:4:4 is identity.
+  Uses spec §4.3 toward-zero division.
+* Typed `Pmv`, `ReconstructedComponent`, `ScaledMotionVector`,
+  `Component`, `Direction`, `VectorIndex` (re-exported at the crate
+  root) plus the `compute_delta` / `vector_range` /
+  `reconstruct_component` / `reconstruct_motion_vector` /
+  `scale_chroma` free functions.
+* 29 new unit tests covering: `compute_delta`'s shortcut +
+  full-formula branches across `f_code ∈ {1..=9}` and motion_code
+  signs, `motion_residual` presence-required / presence-forbidden
+  rejection, out-of-range `f_code` rejection, `vector_range` doubling
+  per `f_code` step, end-to-end `reconstruct_motion_vector` with no
+  wrap / wrap-low / wrap-high paths, vertical-half-pred firing /
+  not-firing matrix (frame vs field picture, horizontal vs vertical
+  component), floor-division for negative PMV under half-pred, PMV
+  slot independence for `(r = 0 vs r = 1)` and `(forward vs
+  backward)`, delta-outside-range rejection, `Pmv::reset` clears every
+  slot, chroma scaling for all three `ChromaFormat` values plus
+  toward-zero rounding on negative odd inputs, and Table 7-7 index
+  enums.
+* 2 new black-box integration tests against the existing 352×240
+  fixture: confirms the fixture's I-picture is the §7.6.3 "PMV unused"
+  case (every f_code = 15 sentinel, PMV stays zero after the §7.6.3.4
+  reset), and a spliced two-macroblock P-picture chain
+  (`motion_code = +2, residual = 0` then `motion_code = -1,
+  residual = 0`, both with `f_code = 2`) decodes through `MotionVector
+  → reconstruct_motion_vector` with PMV state evolving from 0 → 3 → 2
+  (the second `delta = -1` added on top of the first vector's
+  predictor), plus a §7.6.3.7 chroma scaling check on the 4:2:0 case.
+
+### What's NOT in rounds 1–12
 
 * `quant_matrix_extension()` (§6.2.3.2),
   `picture_display_extension()` (§6.2.3.3),
@@ -452,9 +513,15 @@ be defended as clean-room. The rebuild starts here.
 * The scalable `macroblock_type` Tables B-5 .. B-8 (spatial / SNR
   scalability), which require `sequence_scalable_extension()`
   parsing
-* `motion_vector(r, s)` numerical reconstruction per §7.6.3.1
-  (PMV-state machine, `delta` / `low` / `high` / wrap-around, chroma
-  scaling, dual-prime additional arithmetic per §7.6.3.6)
+* §7.6.3.3 inter-vector PMV-copy table (Tables 7-9 / 7-10) — the
+  macroblock-loop driver's responsibility once that lands.
+* §7.6.3.6 dual-prime additional arithmetic (deriving the
+  opposite-parity vector from the decoded forward vector). Dual-prime
+  `motion_code` / `motion_residual` / `dmvector` parsing landed in
+  round 11; round 12 reconstructs the parsed vector but does not yet
+  derive the opposite-parity vector.
+* §7.6.3.9 concealment motion vectors (intra macroblocks with the
+  `concealment_motion_vectors` flag set).
 * Block-residual VLC Tables B-12 .. B-16, and IDCT
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
@@ -465,12 +532,13 @@ be defended as clean-room. The rebuild starts here.
 Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
-  text (Recommendation ITU-T H.262 (1995 E)) §§5.2.3, 6.2.2.1,
+  text (Recommendation ITU-T H.262 (1995 E)) §§4.3, 5.2.3, 6.2.2.1,
   6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.2,
   6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11,
-  6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, Tables 6-1 / 6-2 /
-  6-3 / 6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 /
-  6-19, and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
+  6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, 7.6.3, 7.6.3.1,
+  7.6.3.2, 7.6.3.4, 7.6.3.7, Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 /
+  6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 / 7-7 / 7-8,
+  and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —

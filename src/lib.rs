@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–11 — structural sequence-layer
+//! **Status:** rebuild rounds 1–12 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -12,12 +12,15 @@
 //! (`macroblock_address_increment`, `macroblock_type`, the
 //! macroblock-layer `quantizer_scale`, `coded_block_pattern()`, and
 //! the `frame_motion_type` / `field_motion_type` / `dct_type` tail),
-//! and the `motion_vectors()` / `motion_vector()` syntax with the
-//! Annex B Tables B-10 / B-11 VLCs that drive it. The residual block
-//! layer — Tables B-12..B-16, the IDCT, and motion compensation
-//! — is not wired up yet; the public `register` symbol is still a
-//! no-op so that downstream consumers can depend on the crate
-//! without the decoder being inadvertently selected by the registry.
+//! the `motion_vectors()` / `motion_vector()` syntax with the Annex B
+//! Tables B-10 / B-11 VLCs that drive it, and the §7.6.3.1
+//! `vector'[r][s][t]` reconstruction (PMV state, wrap-around
+//! arithmetic, vertical-half-pred rule) plus §7.6.3.4 reset and
+//! §7.6.3.7 chroma scaling. The residual block layer — Tables
+//! B-12..B-16, the IDCT, and motion compensation — is not wired up
+//! yet; the public `register` symbol is still a no-op so that
+//! downstream consumers can depend on the crate without the decoder
+//! being inadvertently selected by the registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -79,6 +82,13 @@
 //!   fixed-length `motion_residual`, the Table B-11 `dmvector` VLC,
 //!   and the `motion_vertical_field_select` presence gates
 //!   (§6.3.17.2 / §6.3.17.3).
+//! * [`pmv::Pmv`] — the §7.6.3 motion-vector predictor state and the
+//!   §7.6.3.1 `vector'[r][s][t]` reconstruction (`delta` derivation,
+//!   PMV-based prediction, half-pred for the field-in-frame vertical
+//!   case, wrap-around to `[low, high]`), §7.6.3.4 reset hooks, and
+//!   §7.6.3.7 chrominance scaling for 4:2:0 / 4:2:2 / 4:4:4. §7.6.3.3
+//!   inter-vector PMV-copy table and §7.6.3.6 dual-prime additional
+//!   arithmetic remain out of scope.
 
 #![warn(missing_debug_implementations)]
 
@@ -91,6 +101,7 @@ pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod motion_vector;
 pub mod picture_header;
+pub mod pmv;
 pub mod quantizer_scale;
 pub mod sequence_extension;
 pub mod sequence_header;
@@ -109,6 +120,10 @@ pub use motion_vector::{
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
+};
+pub use pmv::{
+    compute_delta, reconstruct_component, reconstruct_motion_vector, scale_chroma, vector_range,
+    Component, Direction, Pmv, ReconstructedComponent, ScaledMotionVector, VectorIndex,
 };
 pub use quantizer_scale::{QuantizerScale, QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 pub use sequence_extension::{
@@ -162,11 +177,14 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–9 only parse the sequence,
-/// group-of-pictures, picture, and slice headers plus the leading
-/// macroblock-loop syntax — they do not yet provide a complete
-/// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`], so there
-/// is nothing to install in the registry.
+/// No-op codec registration. Rounds 1–12 parse the sequence,
+/// group-of-pictures, picture, and slice headers plus the
+/// macroblock-loop syntax through the end of `motion_vectors()` and
+/// the §7.6.3.1 motion-vector reconstruction — they do not yet
+/// provide a complete [`oxideav_core::Decoder`] or
+/// [`oxideav_core::Encoder`] (the residual block layer + IDCT +
+/// motion compensation are still ahead), so there is nothing to
+/// install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
 oxideav_core::register!("mpeg12video", register);
