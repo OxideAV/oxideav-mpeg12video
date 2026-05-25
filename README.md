@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–15 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split).**
+**Clean-room rebuild — rounds 1–16 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]`).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -567,7 +567,12 @@ be defended as clean-room. The rebuild starts here.
   is still ahead.
 * §7.6.3.9 concealment motion vectors (intra macroblocks with the
   `concealment_motion_vectors` flag set).
-* Block-residual VLC Tables B-12 .. B-16, and IDCT
+* Residual `dct_coeff_first` / `dct_coeff_next` walker (MPEG-1
+  Annex B Tables B.5c..B.5e plus the B.5f escape; the equivalent
+  MPEG-2 Tables B-12..B-16). Round 16 lands the MPEG-1 DC prelude
+  (`dct_dc_size_*` Tables B.5a / B.5b + the §2.4.3.7 differential
+  formula + the §2.4.4.1 8x8 zig-zag `scan[m][n]`); the wider
+  run-length VLC and the IDCT itself remain ahead.
 * Encoder
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
   is still a no-op so the registry does not yet route to this crate
@@ -681,6 +686,58 @@ be defended as clean-room. The rebuild starts here.
   concern — it consumes a reference-picture buffer, which the
   decoder doesn't yet allocate.
 
+### What round 16 lands
+
+* The MPEG-1 intra-block **DC prelude** per **ISO/IEC 11172-2:1993
+  §2.4.2.8 / §2.4.3.7** — the per-block entry point of the residual
+  block layer.
+  * `block_dc::DcCoefficient::parse(br, component)` walks Annex B
+    **Table B.5a** (`dct_dc_size_luminance`, 9 codes 2..=7 bits
+    wide) when `component == Luminance`, else Annex B **Table B.5b**
+    (`dct_dc_size_chrominance`, 9 codes 2..=8 bits wide) for the
+    size VLC; then reads the `dct_dc_size`-wide
+    `dct_dc_differential` field MSB-first per §2.4.2.8 and applies
+    the §2.4.3.7 sign-extension formula:
+
+    ```text
+    if (raw & (1 << (size - 1)))
+        zz0 = raw ;
+    else
+        zz0 = ((-1) << size) | (raw + 1) ;
+    ```
+
+    to produce the signed `dct_zz[0]` in the range
+    `[-(2^size - 1), +(2^size - 1)]`. `size = 0` is the absent-
+    differential case (`zz0 = 0`).
+  * `block_dc::DcComponent { Luminance, Chrominance }` selects the
+    matching table.
+  * `block_dc::SCAN: [[u8; 8]; 8]` encodes the §2.4.4.1 page-32 8x8
+    `scan[m][n]` zig-zag matrix (`scan[0][0] = 0`,
+    `scan[0][7] = 28`, `scan[7][0] = 35`, `scan[7][7] = 63`) used
+    by every block-layer dequantiser as `i = SCAN[m][n]`.
+    `block_dc::INVERSE_SCAN: [(u8, u8); 64]` is the compile-time
+    inverse for encoders / trace tools.
+  * `block_dc::MAX_DC_SIZE = 8` documents the spec upper bound on
+    both tables.
+  * 23 new unit tests cover every B.5a / B.5b row, code-width
+    uniqueness, codes-fit-their-width invariants, the §2.4.3.7
+    page-30 worked example for `dc_size = 3` (`000 → -7, 001 → -6,
+    ... 111 → +7`), corner values for `dc_size = 1 / 2 / 8`
+    (`reconstruct(8, 0x00) == -255`, `reconstruct(8, 0xFF) == +255`,
+    `reconstruct(8, 0x80) == +128`, `reconstruct(8, 0x7F) == -128`),
+    truncated-buffer / garbage-prefix detection, luminance-vs-
+    chrominance table disambiguation on identical wire bits
+    (the bit-string `'00'` decodes as `dc_size = 1` against B.5a
+    but `dc_size = 0` against B.5b), full bit-position tracking
+    across size 0 (3 bits) and size 8 (7 code bits + 8 differential
+    bits), the §2.4.4.1 `SCAN` matrix's spec corners and the
+    classic zig-zag diagonal opening (`0, 1, 2, 3, 4, 5, 6, 7, 8,
+    9` mapping), and the `SCAN` / `INVERSE_SCAN` round-trip.
+* The remaining `dct_coeff_first` / `dct_coeff_next` walker
+  (Annex B Tables B.5c..B.5e plus the B.5f escape) is the
+  next-round concern — that's the wider run-length VLC the
+  block-layer dequantiser consumes after the DC field.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -697,16 +754,21 @@ Every line in this crate's `src/` traces to:
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
-  ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.2.6, §2.4.2.7, §2.4.3.4,
-  §2.4.3.5, §2.4.3.6, §2.4.4.2, §2.4.4.3, §D.5.5.1, §D.5.5.2, and
-  Annex B Table B.1 + Table B.4. Referenced for the
+  ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.2.6, §2.4.2.7, §2.4.2.8,
+  §2.4.3.4, §2.4.3.5, §2.4.3.6, §2.4.3.7, §2.4.4.1, §2.4.4.2,
+  §2.4.4.3, §D.5.5.1, §D.5.5.2, and Annex B Table B.1 + Table B.4
+  + Table B.5a + Table B.5b. Referenced for the
   `macroblock_stuffing` semantics (a code MPEG-2 drops); in round 9
   for the macroblock-layer `quantizer_scale` field (syntax §2.4.2.7,
   semantics §2.4.3.6 — the `1..=31` range and the slice/macroblock
-  persistence rule); and in round 14 for the MPEG-1 `motion_vector(s)`
+  persistence rule); in round 14 for the MPEG-1 `motion_vector(s)`
   element itself (§2.4.2.7 wire shape, §2.4.3.6 residual gate,
   §2.4.3.4 `forward_f_code` / `backward_f_code` `1..=7` range, and
-  Annex B Table B.4 motion-code VLC). The MPEG-2 Table B-1 entries
+  Annex B Table B.4 motion-code VLC); and in round 16 for the
+  intra-block DC prelude (Annex B Tables B.5a / B.5b
+  `dct_dc_size_*` VLCs, §2.4.2.8 / §2.4.3.7 `dct_dc_differential`
+  → `dct_zz[0]` sign-extension formula, and the §2.4.4.1 page-32
+  8x8 `scan[m][n]` zig-zag matrix). The MPEG-2 Table B-1 entries
   themselves trace to 13818-2.
 * `oxideav-core`'s published `BitReader` MSB-first API.
 * The `ffmpeg` CLI binary, used **only** as an opaque encoder for

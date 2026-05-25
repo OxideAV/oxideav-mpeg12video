@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–15 — structural sequence-layer
+//! **Status:** rebuild rounds 1–16 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -112,11 +112,23 @@
 //!   "no MV" reset) and [`mpeg1_reconstruct::reconstruct_absent`]
 //!   (the §2.4.4.3 B-picture PMV carry-over) close the two
 //!   spec-defined absence paths.
+//! * [`block_dc::DcCoefficient`] — the MPEG-1 intra-block DC
+//!   prelude per **ISO/IEC 11172-2:1993 §2.4.2.8 / §2.4.3.7**: the
+//!   Annex B Tables B.5a / B.5b VLC walker for
+//!   `dct_dc_size_luminance` / `dct_dc_size_chrominance` plus the
+//!   `dct_dc_differential` → `dct_zz[0]` reconstruction formula.
+//!   The companion [`block_dc::SCAN`] / [`block_dc::INVERSE_SCAN`]
+//!   constants encode the §2.4.4.1 8x8 zig-zag scan order shared
+//!   by every block-layer iterator. The wider `dct_coeff_first` /
+//!   `dct_coeff_next` walker (Tables B.5c..B.5e plus the B.5f
+//!   escape) is the next-round concern; this module is the
+//!   DC-prelude domino.
 
 #![warn(missing_debug_implementations)]
 
 use oxideav_core::RuntimeContext;
 
+pub mod block_dc;
 pub mod coded_block_pattern;
 pub mod gop_header;
 pub mod macroblock_modes;
@@ -132,6 +144,7 @@ pub mod sequence_extension;
 pub mod sequence_header;
 pub mod slice_header;
 
+pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
 pub use coded_block_pattern::CodedBlockPattern;
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use macroblock_modes::{
@@ -209,15 +222,19 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–15 parse the sequence,
+/// No-op codec registration. Rounds 1–16 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
-/// inter-vector PMV-copy update table, and the MPEG-1 §2.4.4.2 /
-/// §2.4.4.3 motion-vector reconstruction — they do not yet provide
-/// a complete [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`]
-/// (the residual block layer + IDCT + motion compensation are still
-/// ahead), so there is nothing to install in the registry.
+/// inter-vector PMV-copy update table, the MPEG-1 §2.4.4.2 /
+/// §2.4.4.3 motion-vector reconstruction, and the MPEG-1 §2.4.2.8 /
+/// §2.4.3.7 intra-block DC prelude (Tables B.5a / B.5b + the
+/// `dct_dc_differential` reconstruction plus the §2.4.4.1 zig-zag
+/// scan) — they do not yet provide a complete
+/// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`] (the
+/// `dct_coeff_first` / `dct_coeff_next` run-level VLC walker, the
+/// IDCT, and motion compensation are still ahead), so there is
+/// nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
 oxideav_core::register!("mpeg12video", register);

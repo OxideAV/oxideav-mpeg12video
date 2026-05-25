@@ -8,6 +8,39 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 16: MPEG-1 (ISO/IEC 11172-2:1993) intra-block
+  DC prelude — the entry point of the residual block layer.
+  - `block_dc::DcCoefficient::parse(br, component)` walks Annex B
+    Table B.5a (`dct_dc_size_luminance`) or Table B.5b
+    (`dct_dc_size_chrominance`) for the size VLC, then reads the
+    `dct_dc_size`-wide `dct_dc_differential` field MSB-first per
+    §2.4.2.8 and applies the §2.4.3.7 sign-extension formula
+    (`if (raw & (1 << (size-1))) zz0 = raw; else zz0 = ((-1) << size)
+    | (raw + 1)`) to produce the signed `dct_zz[0]` in the range
+    `[-(2^size - 1), +(2^size - 1)]`.
+  - `block_dc::DcComponent { Luminance, Chrominance }` selects the
+    matching VLC table.
+  - `block_dc::SCAN: [[u8; 8]; 8]` encodes the §2.4.4.1 page-32 8x8
+    zig-zag `scan[m][n]` matrix that maps a (zig-zag-ordered) cell
+    to its raster index `i` for the §2.4.4.1 dequantiser loop.
+    `block_dc::INVERSE_SCAN: [(u8, u8); 64]` is the compile-time
+    inverse for encoders / trace tools.
+  - `block_dc::MAX_DC_SIZE = 8` documents the spec upper bound
+    enforced by both tables.
+  - 23 unit tests cover: every B.5a / B.5b row, code-width
+    uniqueness, codes-fit-their-width invariants, the §2.4.3.7
+    page-30 worked example (`dc_size = 3`: `000 → -7, 001 → -6, ...
+    111 → +7`), the `dc_size = 1 / 2 / 8` corner values
+    (`reconstruct(8, 0x00) == -255`, `reconstruct(8, 0xFF) == +255`),
+    truncated-buffer / garbage-prefix detection, luminance-vs-
+    chrominance table disambiguation on identical wire bits
+    (`'00'` decodes as size 1 in B.5a but size 0 in B.5b), full
+    bit-position tracking on size 0 (3 bits) vs size 8 (15 bits),
+    and the §2.4.4.1 `SCAN` matrix's spec corners
+    (`scan[0][0] = 0`, `scan[7][7] = 63`), its zig-zag diagonal
+    opening (`0, 1, 2, 3, 4, 5, 6, 7, 8, 9` mapping), and the
+    `SCAN` / `INVERSE_SCAN` round-trip.
+
 - Clean-room rebuild round 15: MPEG-1 (ISO/IEC 11172-2:1993) §2.4.4.2
   / §2.4.4.3 motion-vector reconstruction — the bridge from the round
   14 parser's `(code, r)` pairs to the integer `right_for / down_for`
