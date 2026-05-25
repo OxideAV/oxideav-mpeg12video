@@ -8,6 +8,42 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 14: MPEG-1 (ISO/IEC 11172-2:1993)
+  `motion_vector(s)` parser per §2.4.2.7 with the §2.4.3.6 field
+  semantics, driven by Annex B Table B.4 (`motion_*_code` VLC). The
+  parser lands the four-field wire shape (`motion_horizontal_*_code`,
+  `motion_horizontal_*_r`, `motion_vertical_*_code`,
+  `motion_vertical_*_r`) for the forward and backward directions
+  selected by `Mpeg1MotionDirection`, with the residual gate
+  `<dir>_f != 1 && motion_*_code != 0` and the
+  `<dir>_r_size = <dir>_f_code - 1` width rule.
+  - `mpeg1_motion_vector::Mpeg1MotionVector::parse(br, direction,
+    f_code)` consumes the spec-mandated bits and returns a typed
+    record with the bit cursor position immediately after the
+    element.
+  - `mpeg1_motion_vector::Mpeg1MotionDirection { Forward, Backward }`
+    parameterises the parse on which `<dir>_f_code` /
+    `full_pel_<dir>_vector` family applies.
+  - Table B.4's 33 codeword → signed value rows are decoded via a
+    new `pub(crate) motion_vector::match_motion_code` accessor that
+    reuses the existing longest-first walker (MPEG-1 Table B.4 and
+    MPEG-2 Annex B Table B-10 share the same numerical mapping
+    row-for-row).
+  - `f_code` range guard: `1..=7` per §2.4.3.4; zero is rejected as
+    "forbidden", values `≥ 8` as outside the spec's range.
+  - 20 new unit tests pinning every Table B.4 row to its tabulated
+    bit width + signed value, plus the §2.4.3.6 presence matrix
+    (residual gated on `f_code != 1 && code != 0`), the widest
+    `r_size = 6` case for `f_code = 7`, mixed/zero/non-zero
+    component combos, truncated-residual short-buffer detection,
+    invalid-prefix detection, and the `Backward` direction tag.
+  - Re-exports `Mpeg1MotionDirection`, `Mpeg1MotionVector` at the
+    crate root.
+  - §2.4.4.2 / §2.4.4.3 reconstruction (`recon_right_for_*` /
+    `recon_down_for_*` with the `full_pel_*_vector` shift and the
+    "right_little / right_big" wrap-around) is deferred to the next
+    round, mirroring the MPEG-2 split between §6.2.5.2 (parser) and
+    §7.6.3.1 (reconstruction).
 - Clean-room rebuild round 13: §7.6.3.3 inter-vector PMV update
   (Tables 7-10 / 7-11), the once-per-macroblock pass that follows
   motion-vector reconstruction and propagates the `[r = 0]` PMV slot

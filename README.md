@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–13 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling).**
+**Clean-room rebuild — rounds 1–14 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -572,6 +572,52 @@ be defended as clean-room. The rebuild starts here.
 * `oxideav_core::Decoder` / `Encoder` trait wiring — `register()`
   is still a no-op so the registry does not yet route to this crate
 
+### What round 14 lands
+
+* Parser for `motion_vector(s)` per **ISO/IEC 11172-2:1993 (MPEG-1
+  Video) §2.4.2.7** with field semantics from §2.4.3.6, driven by
+  the Annex B **Table B.4** `motion_*_code` VLC. Unlike the MPEG-2
+  layer (which folds in `motion_vertical_field_select`, `mv_format`,
+  `dmv`, and `dmvector`), the MPEG-1 element is just the four-field
+  sequence `(horizontal_code, horizontal_r, vertical_code,
+  vertical_r)` parameterised on the matching `<dir>_f_code` from
+  the picture header.
+  * `Mpeg1MotionVector::parse(br, direction, f_code)` reads the
+    four fields and returns a typed record with the post-parse bit
+    position.
+  * `Mpeg1MotionDirection { Forward, Backward }` selects which of
+    `forward_f_code` / `backward_f_code` (and the matching
+    `full_pel_*_vector` flag, applied during §2.4.4.2 / §2.4.4.3
+    reconstruction in a later round) the parse is associated with.
+  * Residual presence rule from §2.4.3.6: `motion_*_r` is in the
+    bitstream iff `<dir>_f != 1 && motion_*_code != 0`. With
+    `<dir>_f = 1 << (<dir>_f_code - 1)`, this collapses to "skip the
+    residual iff `f_code == 1` or `code == 0`".
+  * Residual width: `<dir>_r_size = <dir>_f_code - 1` bits
+    (`1..=6`) per §2.4.4.2.
+  * `f_code` range guard: §2.4.3.4 constrains `forward_f_code` /
+    `backward_f_code` to `1..=7`; zero is rejected as "forbidden",
+    values `≥ 8` are rejected as outside the spec's range.
+  * Shared longest-first walker: MPEG-1 Table B.4 lists the same
+    33 codeword → signed-value rows as MPEG-2 Annex B Table B-10,
+    so a new `pub(crate) motion_vector::match_motion_code` accessor
+    re-uses the existing per-row constants instead of retyping them.
+    The per-row test in this module transcribes Table B.4
+    independently from page 43 of the 11172-2 spec to confirm the
+    mapping.
+  * 20 new unit tests covering every Table B.4 row (1- to 11-bit
+    codes, the `-16..=+16` signed value range), the four-corner
+    presence matrix (`f_code = 1` always-no-residual, `f_code = 7`
+    widest residual, mixed zero/non-zero components, both-zero
+    bare codes), the §2.4.3.4 `f_code` range guard, truncated
+    short-buffer and invalid-prefix detection, and the `Backward`
+    direction tag.
+* Reconstruction (§2.4.4.2 forward, §2.4.4.3 backward — the
+  `right_little` / `right_big` wrap-around with `recon_right_for_prev`
+  predictor state plus the `full_pel_forward_vector` shift) is the
+  next-round concern, mirroring the round 11 → 12 split on the
+  MPEG-2 side (parser → reconstruction).
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -588,12 +634,16 @@ Every line in this crate's `src/` traces to:
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
-  ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.2.6, §2.4.2.7, §2.4.3.5,
-  §2.4.3.6, §D.5.5.1, §D.5.5.2, and Annex B Table B.1. Referenced
-  for the `macroblock_stuffing` semantics (a code MPEG-2 drops) and,
-  in round 9, for the macroblock-layer `quantizer_scale` field
-  (syntax §2.4.2.7, semantics §2.4.3.6 — the `1..=31` range and the
-  slice/macroblock persistence rule). The MPEG-2 Table B-1 entries
+  ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.2.6, §2.4.2.7, §2.4.3.4,
+  §2.4.3.5, §2.4.3.6, §2.4.4.2, §2.4.4.3, §D.5.5.1, §D.5.5.2, and
+  Annex B Table B.1 + Table B.4. Referenced for the
+  `macroblock_stuffing` semantics (a code MPEG-2 drops); in round 9
+  for the macroblock-layer `quantizer_scale` field (syntax §2.4.2.7,
+  semantics §2.4.3.6 — the `1..=31` range and the slice/macroblock
+  persistence rule); and in round 14 for the MPEG-1 `motion_vector(s)`
+  element itself (§2.4.2.7 wire shape, §2.4.3.6 residual gate,
+  §2.4.3.4 `forward_f_code` / `backward_f_code` `1..=7` range, and
+  Annex B Table B.4 motion-code VLC). The MPEG-2 Table B-1 entries
   themselves trace to 13818-2.
 * `oxideav-core`'s published `BitReader` MSB-first API.
 * The `ffmpeg` CLI binary, used **only** as an opaque encoder for

@@ -243,6 +243,18 @@ const TABLE_B10: &[MotionCodeEntry] = &[
     },
 ];
 
+/// Walk Table B-10 longest-first and return the matching entry's signed
+/// `motion_code` value. Bits are consumed iff a match is found.
+///
+/// MPEG-1 Table B.4 of ISO/IEC 11172-2:1993 lists the same 33-entry
+/// codeword → signed-value mapping as MPEG-2 Annex B Table B-10. This
+/// `pub(crate)` accessor lets the MPEG-1 parser ([`crate::mpeg1_motion_vector`])
+/// reuse the walker by Table B.4 citation without duplicating the data
+/// constants.
+pub(crate) fn match_motion_code(br: &mut BitReader<'_>) -> Result<i8> {
+    match_b10(br).map(|entry| entry.value)
+}
+
 /// Walk Table B-10 longest-first and return the matching entry. Bits are
 /// consumed iff a match is found.
 fn match_b10(br: &mut BitReader<'_>) -> Result<MotionCodeEntry> {

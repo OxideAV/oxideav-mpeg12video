@@ -91,6 +91,15 @@
 //!   7-10 / 7-11), §7.6.3.4 reset hooks, and §7.6.3.7 chrominance
 //!   scaling for 4:2:0 / 4:2:2 / 4:4:4. §7.6.3.6 dual-prime
 //!   additional arithmetic remains out of scope.
+//! * [`mpeg1_motion_vector::Mpeg1MotionVector`] — the MPEG-1
+//!   (ISO/IEC 11172-2:1993) `motion_vector(s)` element per §2.4.2.7
+//!   with the §2.4.3.6 field semantics: the Annex B Table B.4
+//!   `motion_*_code` VLC and the `<dir>_f_code`-driven fixed-length
+//!   `motion_*_r` residual for both horizontal and vertical
+//!   components, parameterised on the forward/backward direction.
+//!   MPEG-1 has no `motion_vertical_field_select`, `mv_format`, or
+//!   `dmv` toggles, so the wire shape is the four `(code, r)` pairs
+//!   straight through.
 
 #![warn(missing_debug_implementations)]
 
@@ -102,6 +111,7 @@ pub mod macroblock_modes;
 pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod motion_vector;
+pub mod mpeg1_motion_vector;
 pub mod picture_header;
 pub mod pmv;
 pub mod quantizer_scale;
@@ -119,6 +129,7 @@ pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 pub use motion_vector::{
     MotionVector, MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,
 };
+pub use mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
