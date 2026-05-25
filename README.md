@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–14 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4).**
+**Clean-room rebuild — rounds 1–15 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -617,6 +617,69 @@ be defended as clean-room. The rebuild starts here.
   predictor state plus the `full_pel_forward_vector` shift) is the
   next-round concern, mirroring the round 11 → 12 split on the
   MPEG-2 side (parser → reconstruction).
+
+### What round 15 lands
+
+* MPEG-1 motion-vector reconstruction per **ISO/IEC 11172-2:1993
+  §2.4.4.2** (P-picture forward) and §2.4.4.3 (B-picture forward +
+  backward). This is the second domino of the MPEG-1 motion-vector
+  pipeline — the round 14 parser delivers `(code, r)` pairs; this
+  round folds them through the §2.4.4.2 predictor-update arithmetic
+  into the integer `right_for / down_for` offsets the §2.4.4.2
+  luminance / chrominance pel-prediction equations consume.
+  * `mpeg1_reconstruct::reconstruct(mv, ctx, &mut predictor, dir)`
+    runs the §2.4.4.2 four-step formula end-to-end:
+    1. `r_size = f_code - 1`, `f = 1 << r_size`.
+    2. `complement = (f == 1 || code == 0) ? 0 : f - 1 - r`.
+    3. `little = code * f`, then `little ∓= complement` (sign
+       toward zero); `big = little ∓ 32*f`.
+    4. `new_vector = prev + little`; pick `little` if it stays in
+       `[-16*f, 16*f-1]`, else use `prev + big`; write back to PMV;
+       apply the `full_pel_*_vector << 1` shift to the recon
+       output.
+  * `Mpeg1Predictor { recon_right_prev, recon_down_prev }` carries
+    the half-sample-unit PMV across macroblocks. `Mpeg1Predictor::
+    reset()` zeroes it for the start-of-slice / P-picture "no MV"
+    case.
+  * `mpeg1_reconstruct::reconstruct_zero(&mut predictor)` — the
+    §2.4.4.2 ¶3 P-picture "no forward MV data" path: zeroes both
+    the returned recon and the predictor.
+  * `mpeg1_reconstruct::reconstruct_absent(ctx, &predictor)` — the
+    §2.4.4.3 B-picture "no MV data" carry-over: recon =
+    predictor unchanged.
+  * `Mpeg1FrameMvContext { f_code, full_pel }` packages the two
+    picture-header fields (§2.4.2.3 / §2.4.3.4 / §2.4.3.5) the
+    reconstruction needs in addition to the parsed element.
+  * `Mpeg1ReconstructedMv` carries `recon_right` / `recon_down`
+    plus the §2.4.4.2 closing table's luminance (`right_for_luma =
+    recon_right >> 1`, `right_half_for_luma`) and chrominance
+    (`right_for_chroma = (recon_right / 2) >> 1`,
+    `right_half_for_chroma = recon_right / 2 - 2 * right_for_chroma`)
+    whole / half-pel splits. The spec deliberately uses arithmetic
+    `>>` for luma vs C-style `/` for chroma — the divergence on
+    negative `recon_*` values is preserved bit-exact.
+  * §2.4.4.2 conformance guards on `*_little != ±forward_f * 16`
+    are enforced (both seam values flagged as
+    `Error::InvalidBitstream`).
+  * 23 new unit tests covering: `f_code = 1` zero / non-zero
+    codes, `f_code = 2` complement-zero / complement-nonzero
+    paths, positive / negative codes, PMV accumulation across
+    consecutive macroblocks, wrap-around in both directions,
+    `full_pel` post-PMV shift, both seam guards, every input
+    validation site (direction mismatch, `f_code = 0` / `≥ 8`,
+    residual present-when-forbidden / absent-when-required), the
+    P-picture zero-reset and B-picture carry-over paths, and the
+    luma / chroma half-pel split for both positive and negative
+    `recon_*` values.
+  * 2 new black-box integration tests against a hand-assembled
+    two-macroblock bitstream — parse via
+    `Mpeg1MotionVector::parse` then reconstruct end-to-end,
+    asserting the PMV propagates from MB1 into MB2.
+* The §2.4.4.2 pel-prediction loop itself (the
+  `pel[i][j] = pel_past[i+down_for][j+right_for]` bilinear
+  half-pel filter at the top of page 35) is the next-round
+  concern — it consumes a reference-picture buffer, which the
+  decoder doesn't yet allocate.
 
 ## Clean-room provenance
 

@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–13 — structural sequence-layer
+//! **Status:** rebuild rounds 1–15 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -100,6 +100,18 @@
 //!   MPEG-1 has no `motion_vertical_field_select`, `mv_format`, or
 //!   `dmv` toggles, so the wire shape is the four `(code, r)` pairs
 //!   straight through.
+//! * [`mpeg1_reconstruct::reconstruct`] — the MPEG-1
+//!   (ISO/IEC 11172-2:1993) §2.4.4.2 / §2.4.4.3 motion-vector
+//!   reconstruction (`recon_right_for` / `recon_down_for` with the
+//!   `right_little` / `right_big` wrap-around arithmetic, the PMV
+//!   update via [`mpeg1_reconstruct::Mpeg1Predictor`], the
+//!   `full_pel_*_vector` post-PMV left-shift, and the §2.4.4.2
+//!   closing table that splits `recon_*` into the luminance and
+//!   chrominance whole/half-pel offsets). Companion helpers
+//!   [`mpeg1_reconstruct::reconstruct_zero`] (the §2.4.4.2 P-picture
+//!   "no MV" reset) and [`mpeg1_reconstruct::reconstruct_absent`]
+//!   (the §2.4.4.3 B-picture PMV carry-over) close the two
+//!   spec-defined absence paths.
 
 #![warn(missing_debug_implementations)]
 
@@ -112,6 +124,7 @@ pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod motion_vector;
 pub mod mpeg1_motion_vector;
+pub mod mpeg1_reconstruct;
 pub mod picture_header;
 pub mod pmv;
 pub mod quantizer_scale;
@@ -130,6 +143,11 @@ pub use motion_vector::{
     MotionVector, MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,
 };
 pub use mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
+pub use mpeg1_reconstruct::{
+    reconstruct as mpeg1_reconstruct, reconstruct_absent as mpeg1_reconstruct_absent,
+    reconstruct_zero as mpeg1_reconstruct_zero, Mpeg1FrameMvContext, Mpeg1Predictor,
+    Mpeg1ReconstructedMv,
+};
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
@@ -191,12 +209,13 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–13 parse the sequence,
+/// No-op codec registration. Rounds 1–15 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
-/// §7.6.3.1 motion-vector reconstruction, and the §7.6.3.3
-/// inter-vector PMV-copy update table — they do not yet provide a
-/// complete [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`]
+/// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
+/// inter-vector PMV-copy update table, and the MPEG-1 §2.4.4.2 /
+/// §2.4.4.3 motion-vector reconstruction — they do not yet provide
+/// a complete [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`]
 /// (the residual block layer + IDCT + motion compensation are still
 /// ahead), so there is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}

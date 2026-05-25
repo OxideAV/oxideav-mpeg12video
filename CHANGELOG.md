@@ -8,6 +8,61 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 15: MPEG-1 (ISO/IEC 11172-2:1993) §2.4.4.2
+  / §2.4.4.3 motion-vector reconstruction — the bridge from the round
+  14 parser's `(code, r)` pairs to the integer `right_for / down_for`
+  offsets the §2.4.4.2 pel-prediction equations consume.
+  - `mpeg1_reconstruct::reconstruct(mv, ctx, &mut predictor,
+    direction)` runs the §2.4.4.2 four-step formula (`r_size` / `f`
+    derivation, `complement_*_r` derivation, `*_little` / `*_big`
+    arithmetic, PMV update with wrap-around to `[-16*f, 16*f-1]`,
+    then the optional `full_pel_*_vector << 1` shift on the recon
+    output).
+  - `Mpeg1Predictor { recon_right_prev, recon_down_prev }` carries
+    the half-sample-unit PMV across consecutive predictive
+    macroblocks. `Mpeg1Predictor::reset()` zeroes it at the
+    start-of-slice and at the §2.4.4.2 ¶3 P-picture "no MV" case.
+  - `mpeg1_reconstruct::reconstruct_zero(&mut predictor)` — the
+    §2.4.4.2 ¶3 P-picture "no forward MV data" path: zeroes both
+    the returned recon and the predictor.
+  - `mpeg1_reconstruct::reconstruct_absent(ctx, &predictor)` — the
+    §2.4.4.3 B-picture "no MV data" carry-over: recon = predictor
+    unchanged (in contrast to the P-picture zero-reset).
+  - `Mpeg1FrameMvContext { f_code, full_pel }` packages the picture
+    header's `<dir>_f_code` and `full_pel_<dir>_vector` fields the
+    reconstruction needs in addition to the parsed element.
+  - `Mpeg1ReconstructedMv` exposes the §2.4.4.2 closing table's
+    split: `(recon_right, recon_down)` plus the luminance
+    (`right_for_luma = recon_right >> 1`, `right_half_for_luma`)
+    and chrominance (`right_for_chroma = (recon_right / 2) >> 1`,
+    `right_half_for_chroma = recon_right / 2 - 2 *
+    right_for_chroma`) whole / half-pel pairs. Luma uses arithmetic
+    `>>` (floored); chroma uses C-style `/` (truncated toward
+    zero) — the spec's bit-exact divergence on negative values is
+    preserved.
+  - §2.4.4.2 conformance guards on `*_little != ±forward_f * 16`
+    are enforced (both seam values rejected as
+    `Error::InvalidBitstream`).
+  - 23 new unit tests pinning every documented branch (`f_code`
+    1/2 paths, complement zero / nonzero, positive / negative
+    codes, PMV accumulation, wrap in both directions, `full_pel`
+    shift, both seam guards, all input-validation sites, the
+    P-picture zero-reset, the B-picture carry-over, and the luma
+    / chroma half-pel split for both positive and negative
+    `recon_*` values).
+  - 2 new black-box integration tests
+    (`tests/mpeg1_reconstruct_synthetic.rs`) against a
+    hand-assembled two-macroblock bitstream — parse via
+    `Mpeg1MotionVector::parse` then reconstruct end-to-end,
+    asserting PMV propagation.
+  - Re-exports `Mpeg1FrameMvContext`, `Mpeg1Predictor`,
+    `Mpeg1ReconstructedMv`, `mpeg1_reconstruct`,
+    `mpeg1_reconstruct_zero`, and `mpeg1_reconstruct_absent` at the
+    crate root.
+  - The §2.4.4.2 pel-prediction loop itself (the bilinear half-pel
+    filter against `pel_past[][]` / `pel_future[][]`) is the
+    next-round concern — it needs a reference-picture buffer the
+    decoder doesn't yet allocate.
 - Clean-room rebuild round 14: MPEG-1 (ISO/IEC 11172-2:1993)
   `motion_vector(s)` parser per §2.4.2.7 with the §2.4.3.6 field
   semantics, driven by Annex B Table B.4 (`motion_*_code` VLC). The
