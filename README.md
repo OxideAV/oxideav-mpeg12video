@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–17 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form).**
+**Clean-room rebuild — rounds 1–18 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -797,6 +797,103 @@ be defended as clean-room. The rebuild starts here.
   cannot exercise the MPEG-1 escape path — these tests assemble
   spec-defined bit-strings in-process instead.
 
+### What round 18 lands
+
+* The MPEG-1 §2.4.4.1 (intra) / §2.4.4.2 (non-intra) **dequantiser
+  bodies** per **ISO/IEC 11172-2:1993** (pages 32 / 35) — the pure
+  arithmetic stage between round 17's `dct_coeff_first` /
+  `dct_coeff_next` walker (which fills `dct_zz[]`) and the §A.1
+  IDCT (which the README "lacks" tail still names as the gating
+  blocker on IEEE P1180/D2).
+  * [`dequantize::dequantize_intra_block`] folds the four §2.4.4.1
+    block-loops (first luminance / subsequent luminance / Cb / Cr)
+    into a single entry point gated by an
+    [`dequantize::IntraBlockKind`] selector. The shared body is
+    `dct_recon[m][n] = (2 * dct_zz[scan[m][n]] * quantizer_scale *
+    intra_quant[m][n]) / 16` for every `(m, n)`, the `if (recon &
+    1) == 0 -> recon -= Sign(recon)` even-mismatch rule (spec
+    footnote: *"This has been found to prevent accumulation of
+    mismatch errors."*), and the `[-2048, 2047]` saturating clip.
+  * The DC element `dct_recon[0][0]` is then overwritten per the
+    spec's block-kind branch: `LuminanceFirst` / `ChrominanceCb` /
+    `ChrominanceCr` choose between `128*8 + dct_zz[0]*8` (when
+    `macroblock_address - past_intra_address > 1`) and
+    `dct_dc_<comp>_past + dct_zz[0]*8`; `LuminanceSubsequent` is
+    unconditional `dct_dc_y_past + dct_zz[0]*8`. The matching
+    `dct_dc_<comp>_past` field of
+    [`dequantize::IntraDcPredictors`] is then updated to the new
+    DC value.
+  * [`dequantize::IntraDcPredictors::at_slice_start`] returns the
+    slice-start state per §2.4.4.1: all three `dct_dc_*_past =
+    128*8 = 1024`, `past_intra_address = -2`.
+    [`dequantize::IntraDcPredictors::reset_dc_to_default`] zeros
+    the three `dct_dc_*_past` fields back to 1024 without touching
+    `past_intra_address` — the spec's per-non-intra-macroblock
+    reset (including skipped macroblocks).
+    [`dequantize::finalise_intra_macroblock`] performs the
+    macroblock close-out (`past_intra_address =
+    macroblock_address`).
+  * [`dequantize::dequantize_non_intra_block`] implements the
+    §2.4.4.2 page-35 body: the numerator becomes `(2*dct_zz[i] +
+    Sign(dct_zz[i])) * quantizer_scale * non_intra_quant[m][n]`,
+    the same even-mismatch + saturation pipeline follows, and a
+    final `if (dct_zz[i] == 0) dct_recon[m][n] = 0;` zeroing pass
+    forces zero coefficients all the way through. There is no DC
+    predictor for non-intra blocks.
+  * [`dequantize::DEFAULT_INTRA_QUANT`] and
+    [`dequantize::DEFAULT_NON_INTRA_QUANT`] expose the §2.4.3.2
+    page-25 default matrices used when the sequence header sets
+    the matching `load_*_quantizer_matrix == 0`.
+    `DEFAULT_INTRA_QUANT[0][0] == 8` matches the spec's
+    `intra_quant[0][0] = 8` requirement; every entry of
+    `DEFAULT_NON_INTRA_QUANT` is 16.
+  * Rejection sites: `quantizer_scale == 0` and
+    `quantizer_scale > 31` (§2.4.3.6, contractually impossible
+    given the upstream 5-bit field but enforced defensively), and
+    any zero entry in the active `intra_quant` /
+    `non_intra_quant` matrix (§2.4.3.2 *"The value zero is
+    forbidden."*).
+* 35 new unit tests cover: default-matrix corners
+  (`intra_quant[0][0] = 8`, all-16 non-intra), predictor reset
+  (slice-start, per-non-intra-macroblock); `Sign(...)` returning
+  -1 / 0 / +1; the mismatch-prevention rule no-op on odd values
+  and `+/- 1` correction on even values (positive and negative);
+  saturation at both bounds; intra rejection sites
+  (`quantizer_scale = 0`, `> 31`, zero quant entry); the slice-
+  start all-zero `dct_zz` walkthrough that fires the
+  `past_intra_address > 1` reset; the adjacent-macroblock branch
+  (`gap == 1`) using `dct_dc_y_past`; the gap branch using `1024`;
+  `LuminanceSubsequent` ignoring `past_intra_address`; Cb and Cr
+  using their own predictor chains without touching the others;
+  the per-macroblock `finalise_intra_macroblock` close-out; an AC
+  worked example (uniform quant + qs = 4, `dct_zz = +5`, `(0, 1)`
+  → 39); the negative-even subtract-sign case (`dct_zz = -3` →
+  -23); saturation to `+2047` / `-2048` via large `qs * q`
+  products; non-intra rejection of `quantizer_scale = 0` and zero
+  quant entries; non-intra all-zero `dct_zz` → all-zero recon; the
+  positive (`+3` → 55) and negative (`-3` → -55) non-intra worked
+  examples; non-intra saturation to both bounds; the zeroing-pass
+  override at zero coefficients neighbouring non-zero ones; the
+  full four-luma + Cb + Cr intra-macroblock walk-through that
+  advances each predictor in isolation; and a second-macroblock
+  walk that confirms the address-gap branch flips correctly.
+* 2 new black-box integration tests at
+  `tests/dequantize_synthetic.rs` chain the round-17
+  [`DctCoeffStep`] walker directly into the round-18 dequantiser:
+  one assembles a 13-bit non-intra block (FIRST + NEXT + EoB),
+  walks it into `dct_zz[]`, runs `dequantize_non_intra_block`, and
+  verifies both non-zero `recon` cells against the spec's closed
+  form and the §2.4.4.2 zeroing pass at every other cell; the
+  other assembles an intra AC body, sets `dct_zz[0]` from a
+  synthetic §2.4.3.7 DC prelude, runs
+  `dequantize_intra_block::LuminanceFirst` at slice start, and
+  pins both the `1024 + 40` reset-branch DC and the AC `47`
+  produced by the spec's body. The existing 352×240 fixture is an
+  MPEG-2 stream — its §7.4.2 dequantiser is differently shaped
+  (the `(2 * dct_zz[i] + k) * Wq / 32` MPEG-2 form rather than
+  the `2 * dct_zz[i] * Wq / 16` MPEG-1 form) and cannot exercise
+  this round's MPEG-1-only arithmetic.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -836,8 +933,19 @@ Every line in this crate's `src/` traces to:
   disambiguation, the Table B.5c note-2 `end_of_block`
   restriction, and the spec note that the MPEG-1 escape form is
   intentionally different from the ISO/IEC 13818-2 §7.2.2.3
-  fixed-length 12-bit scheme). The MPEG-2 Table B-1 entries
-  themselves trace to 13818-2.
+  fixed-length 12-bit scheme); and in round 18 for the §2.4.4.1
+  page-32 intra-block dequantiser (the four-block-loop arithmetic
+  body with the `dct_dc_y_past` / `dct_dc_cb_past` /
+  `dct_dc_cr_past` predictor chain, the `past_intra_address > 1`
+  reset branch, the `(128 * 8)` slice-start reset, the `Sign(...)`
+  even-mismatch-prevention footnote, and the `[-2048, 2047]`
+  saturation), the §2.4.4.2 page-35 non-intra dequantiser (the
+  `(2*dct_zz[i] + Sign(dct_zz[i]))` dead-zone numerator and the
+  `dct_zz[i] == 0 -> 0` zeroing pass), and the §2.4.3.2 page-25
+  default `intra_quant[m][n]` (`intra_quant[0][0] = 8`) and
+  default `non_intra_quant[m][n]` (uniform 16) matrices used when
+  `load_intra_quantizer_matrix` / `load_non_intra_quantizer_matrix`
+  is `0`. The MPEG-2 Table B-1 entries themselves trace to 13818-2.
 * `oxideav-core`'s published `BitReader` MSB-first API.
 * The `ffmpeg` CLI binary, used **only** as an opaque encoder for
   the integration-test fixture. Its source code was not consulted.

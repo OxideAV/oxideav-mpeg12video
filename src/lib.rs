@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–17 — structural sequence-layer
+//! **Status:** rebuild rounds 1–18 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -23,11 +23,19 @@
 //! MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` walker
 //! (Tables B.5c / B.5d / B.5e run-level VLCs + Table B.5f short and
 //! long escape encodings + the FIRST-vs-NEXT `(0, 1)` two-form
-//! disambiguation + `end_of_block` recognition). The IDCT and
-//! motion-compensation pel-prediction loops are still ahead; the
-//! public `register` symbol is still a no-op so that downstream
-//! consumers can depend on the crate without the decoder being
-//! inadvertently selected by the registry.
+//! disambiguation + `end_of_block` recognition), and the MPEG-1
+//! §2.4.4.1 / §2.4.4.2 dequantiser (the four intra-block loops
+//! with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past`
+//! predictor chain and the `past_intra_address > 1` reset branch,
+//! the non-intra `(2*dct_zz[i] + Sign(dct_zz[i]))` dead-zone
+//! arithmetic with the `dct_zz[i] == 0 -> 0` zeroing pass, the
+//! `Sign(...)` even-value mismatch-prevention rule, and the
+//! `[-2048, 2047]` saturation, driven by the §2.4.3.2 default
+//! `intra_quant[m][n]` and `non_intra_quant[m][n]` matrices). The
+//! IDCT and motion-compensation pel-prediction loops are still
+//! ahead; the public `register` symbol is still a no-op so that
+//! downstream consumers can depend on the crate without the
+//! decoder being inadvertently selected by the registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -133,8 +141,30 @@
 //!   encoding's short 14-bit and long 22-bit forms). Includes the
 //!   `(run = 0, level = 1)` FIRST / NEXT disambiguation
 //!   ([`dct_coeff::CoefficientPosition`]) and `end_of_block`
-//!   recognition; the §2.4.4.1 dequantiser that consumes the
-//!   `(run, signed_level)` stream is the next-round concern.
+//!   recognition.
+//! * [`dequantize::dequantize_intra_block`] /
+//!   [`dequantize::dequantize_non_intra_block`] — the MPEG-1
+//!   §2.4.4.1 (page 32) / §2.4.4.2 (page 35) dequantiser bodies
+//!   that consume the fully-populated `dct_zz[]` array from the
+//!   §2.4.3.7 walker and produce the `dct_recon[m][n]` matrix the
+//!   §A.1 IDCT operates on. The four §2.4.4.1 intra block-loops
+//!   (first-luma / subsequent-luma / Cb / Cr) are folded into a
+//!   single [`dequantize::IntraBlockKind`] selector that drives
+//!   the `(macroblock_address - past_intra_address) > 1` reset
+//!   branch against the [`dequantize::IntraDcPredictors`] chain;
+//!   [`dequantize::finalise_intra_macroblock`] performs the
+//!   per-macroblock `past_intra_address = macroblock_address`
+//!   close-out. The shared arithmetic body applies the `2 *
+//!   dct_zz[i] * quantizer_scale * intra_quant[m][n] / 16` (or, for
+//!   non-intra, the `(2 * dct_zz[i] + Sign(dct_zz[i])) *
+//!   quantizer_scale * non_intra_quant[m][n] / 16`) numerator, the
+//!   `if (recon & 1) == 0 -> recon -= Sign(recon)` even-mismatch
+//!   prevention rule, the `[-2048, 2047]` saturation, and (non-
+//!   intra only) the `if dct_zz[i] == 0 -> dct_recon[m][n] = 0`
+//!   zeroing pass. [`dequantize::DEFAULT_INTRA_QUANT`] and
+//!   [`dequantize::DEFAULT_NON_INTRA_QUANT`] expose the §2.4.3.2
+//!   page-25 default matrices used when the sequence header sets
+//!   the matching `load_*_quantizer_matrix == 0`.
 
 #![warn(missing_debug_implementations)]
 
@@ -143,6 +173,7 @@ use oxideav_core::RuntimeContext;
 pub mod block_dc;
 pub mod coded_block_pattern;
 pub mod dct_coeff;
+pub mod dequantize;
 pub mod gop_header;
 pub mod macroblock_modes;
 pub mod macroblock_type;
@@ -160,6 +191,11 @@ pub mod slice_header;
 pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
 pub use coded_block_pattern::CodedBlockPattern;
 pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
+pub use dequantize::{
+    dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
+    IntraDcPredictors, DCT_RECON_MAX, DCT_RECON_MIN, DC_PREDICTOR_RESET, DEFAULT_INTRA_QUANT,
+    DEFAULT_NON_INTRA_QUANT,
+};
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
@@ -236,7 +272,7 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–17 parse the sequence,
+/// No-op codec registration. Rounds 1–18 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
@@ -244,11 +280,17 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// §2.4.4.3 motion-vector reconstruction, the MPEG-1 §2.4.2.8 /
 /// §2.4.3.7 intra-block DC prelude (Tables B.5a / B.5b + the
 /// `dct_dc_differential` reconstruction plus the §2.4.4.1 zig-zag
-/// scan), and the MPEG-1 §2.4.3.7 `dct_coeff_first` /
+/// scan), the MPEG-1 §2.4.3.7 `dct_coeff_first` /
 /// `dct_coeff_next` run-level walker (Tables B.5c / B.5d / B.5e +
-/// the Table B.5f short and long escape encodings) — they do not
-/// yet provide a complete [`oxideav_core::Decoder`] or
-/// [`oxideav_core::Encoder`] (the §2.4.4.1 dequantiser, the IDCT,
+/// the Table B.5f short and long escape encodings), and the MPEG-1
+/// §2.4.4.1 / §2.4.4.2 dequantiser bodies (intra / non-intra
+/// arithmetic with the `dct_dc_*_past` predictor chain, the
+/// `past_intra_address > 1` reset branch, the `Sign(...)`
+/// even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2
+/// default `intra_quant` / `non_intra_quant` matrices, and the
+/// non-intra `dct_zz[i] == 0 -> 0` zeroing pass) — they do not yet
+/// provide a complete [`oxideav_core::Decoder`] or
+/// [`oxideav_core::Encoder`] (the IDCT,
 /// and motion compensation are still ahead), so there is nothing to
 /// install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}

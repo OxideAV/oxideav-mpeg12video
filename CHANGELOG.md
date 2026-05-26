@@ -8,6 +8,93 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 18: MPEG-1 (ISO/IEC 11172-2:1993)
+  §2.4.4.1 / §2.4.4.2 dequantiser bodies — the pure-math stage that
+  consumes the round-17 walker's `dct_zz[]` array and emits the
+  `dct_recon[m][n]` matrix the §A.1 IDCT operates on.
+  - `dequantize::dequantize_intra_block(dct_zz, quantizer_scale,
+    intra_quant, kind, predictors, macroblock_address)` folds the
+    four §2.4.4.1 (page 32) block-loops (`LuminanceFirst`,
+    `LuminanceSubsequent`, `ChrominanceCb`, `ChrominanceCr` via
+    `dequantize::IntraBlockKind`) into a single entry-point. The
+    shared body applies the `2 * dct_zz[scan[m][n]] *
+    quantizer_scale * intra_quant[m][n] / 16` numerator, the `if
+    (recon & 1) == 0 -> recon -= Sign(recon)` even-mismatch rule,
+    and the `[-2048, 2047]` saturating clip. The DC element
+    `dct_recon[0][0]` is then overwritten per the block-kind
+    branch: `LuminanceFirst` / `ChrominanceCb` / `ChrominanceCr`
+    pick between `128*8 + dct_zz[0]*8` (when `macroblock_address -
+    past_intra_address > 1`) and `dct_dc_<comp>_past +
+    dct_zz[0]*8`; `LuminanceSubsequent` is unconditional
+    `dct_dc_y_past + dct_zz[0]*8`. The matching `dct_dc_<comp>_past`
+    field of `IntraDcPredictors` is updated in place.
+  - `dequantize::IntraDcPredictors` holds the three per-component
+    `dct_dc_*_past` chains and `past_intra_address`.
+    `at_slice_start()` returns the §2.4.4.1 slice-start state (all
+    1024, `past_intra_address = -2`). `reset_dc_to_default()`
+    zeros the three predictors back to 1024 without touching
+    `past_intra_address` — the spec's per-non-intra-macroblock
+    reset (including skipped macroblocks).
+    `dequantize::finalise_intra_macroblock(predictors,
+    macroblock_address)` performs the per-macroblock
+    `past_intra_address = macroblock_address` close-out.
+  - `dequantize::dequantize_non_intra_block(dct_zz,
+    quantizer_scale, non_intra_quant)` implements the §2.4.4.2
+    page-35 body: numerator is `(2*dct_zz[i] + Sign(dct_zz[i])) *
+    quantizer_scale * non_intra_quant[m][n]`, then the same
+    even-mismatch + saturation pipeline, then a final `if
+    (dct_zz[i] == 0) dct_recon[m][n] = 0;` zeroing pass. There is
+    no DC predictor chain for non-intra blocks.
+  - `dequantize::DEFAULT_INTRA_QUANT` and
+    `dequantize::DEFAULT_NON_INTRA_QUANT` are the §2.4.3.2 page-25
+    default matrices used when the sequence header sets the
+    matching `load_*_quantizer_matrix == 0`.
+    `DEFAULT_INTRA_QUANT[0][0] == 8` matches the spec's
+    `intra_quant[0][0] = 8` requirement; every entry of
+    `DEFAULT_NON_INTRA_QUANT` is 16.
+  - Rejection sites: `quantizer_scale == 0` and `> 31` are
+    rejected with `Error::InvalidBitstream` (§2.4.3.6, defensive),
+    and any zero entry in the active `intra_quant` /
+    `non_intra_quant` matrix is rejected (§2.4.3.2 "The value zero
+    is forbidden.").
+  - Public re-exports from the crate root:
+    `dequantize_intra_block`, `dequantize_non_intra_block`,
+    `finalise_intra_macroblock`, `IntraBlockKind`,
+    `IntraDcPredictors`, `DCT_RECON_MAX`, `DCT_RECON_MIN`,
+    `DC_PREDICTOR_RESET`, `DEFAULT_INTRA_QUANT`,
+    `DEFAULT_NON_INTRA_QUANT`.
+- 35 new unit tests in `src/dequantize.rs::tests`: default
+  matrices (corners, `intra_quant[0][0] = 8`, all-16 non-intra),
+  predictor reset (slice-start, per-non-intra-macroblock),
+  `Sign(...)` primitive, even-mismatch rule (no-op on odd, ±1
+  correction on even of both signs, zero left alone), saturation
+  at both bounds, intra rejection of `quantizer_scale = 0` / `>
+  31` / `intra_quant[i][j] = 0`, the slice-start zero-`dct_zz`
+  walkthrough that fires the reset branch, the adjacent-vs-gap
+  `past_intra_address` branches for `LuminanceFirst`,
+  `LuminanceSubsequent` ignoring `past_intra_address`, Cb / Cr
+  predictor isolation, the `finalise_intra_macroblock` close-out,
+  intra AC worked examples (positive-even subtract-sign,
+  negative-even add-sign, saturation at both bounds), non-intra
+  rejection sites, all-zero `dct_zz` → all-zero recon, positive
+  and negative non-intra worked examples (`+3` → 55, `-3` → -55),
+  non-intra saturation, the zeroing-pass override at zero
+  neighbours, the full four-luma + Cb + Cr intra-macroblock walk
+  with isolated per-component predictor advance, and a
+  second-macroblock walk that confirms the address-gap branch
+  switches correctly between reset and chain.
+- 2 new black-box integration tests at
+  `tests/dequantize_synthetic.rs` chain the round-17
+  `DctCoeffStep` walker directly into the round-18 dequantiser:
+  one non-intra (FIRST `(0, +3)` + NEXT `(2, -1)` + EoB → spec
+  closed form `+55` / `-23` at the matching `INVERSE_SCAN` cells)
+  and one intra (synthetic `dct_zz[0] = +5` DC prelude + NEXT
+  `(0, +3)` + EoB → `1064` reset-branch DC and `+47` AC).
+- Crate-level docstring + `register()` docstring updated to
+  mention the round-18 dequantiser landing; the function is still
+  a no-op because the §A.1 IDCT and motion-compensation
+  pel-prediction loops are still ahead.
+
 - Clean-room rebuild round 17: MPEG-1 (ISO/IEC 11172-2:1993) residual
   block `dct_coeff_first` / `dct_coeff_next` walker — the
   zig-zag-coded run-level body that follows the round 16 DC prelude
