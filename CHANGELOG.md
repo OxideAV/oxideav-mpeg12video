@@ -8,6 +8,46 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 20: MPEG-2 (ISO/IEC 13818-2 / Recommendation
+  ITU-T H.262) §7.6.4 **Forming predictions** — the integer-and-half-pel
+  sample reader that turns a fully-reconstructed `vector'[r][s][1:0]`
+  into a `width × height` pel-prediction block.
+  - `forming_predictions::split_component(vector)` implements the
+    per-axis split: `int_vec = vector DIV 2`, `half_flag = (vector -
+    2 * int_vec) != 0`. `DIV` is the §4.1 floor-toward-minus-infinity
+    operator, so `(-3) DIV 2 = -2` (not `-1` as truncate-toward-zero
+    would give); the half-flag is set whenever the original component
+    is odd, including for negative odd vectors.
+  - `forming_predictions::HalfPattern` enumerates the four
+    `(half_flag[0], half_flag[1])` outcomes (`Integer`,
+    `HalfHorizontal`, `HalfVertical`, `HalfBoth`) that drive the
+    §7.6.4 page-88 four-arm sample-reading switch.
+  - `forming_predictions::predict_sample` / `predict_block` apply the
+    switch — single sample for the integer case, the `// 2` two-
+    sample average for horizontal-or-vertical half-pel, and the
+    `// 4` four-sample bilinear average for the diagonal half-pel
+    case. The §4.1 round-half-away-from-zero `//` operator on the
+    non-negative reference sums coincides with `(sum + d/2) / d`
+    integer division.
+  - `forming_predictions::ReferencePlane` is a borrowed view
+    `(data, width, height)` with a `BoundaryMode::PadEdge` clip-to-
+    nearest-in-bounds-sample rule for motion vectors that reach past
+    the picture edge; the H.262 base text leaves out-of-picture
+    behaviour undefined.
+  - `forming_predictions::BlockSize { width, height }` keeps the
+    block geometry dimensionless so the §7.6.5 prediction-mode table
+    (16×16 frame, 16×8 MC, 16×16 field, 8×8 / 8×16 / 16×16 chroma)
+    can drive this loop without per-mode duplication.
+  - 38 new unit tests cover the §4.1 `DIV` semantics across the
+    sign / parity / magnitude grid, the four `HalfPattern` outcomes
+    with their flag round-trip, `ReferencePlane` boundary clamping
+    in all four directions plus the corner case, the four-arm
+    sample switch with `// 2` and `// 4` rounding (including the
+    `(0,1,0,1) // 4 → 1` half-integer-tie case), negative-odd
+    vectors that exercise the `DIV`-vs-truncate difference, and
+    `predict_block` end-to-end on 2×2 / 4×2 / 3×1 / 1×3 / 4×1
+    geometries.
+
 - Clean-room rebuild round 19: MPEG-2 (ISO/IEC 13818-2 / Recommendation
   ITU-T H.262) §7.6.3.6 **dual-prime additional arithmetic** — derive
   the opposite-parity motion vector(s) `vector'[r][0][1:0]` from the

@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–19 — structural sequence-layer
+//! **Status:** rebuild rounds 1–20 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -37,11 +37,17 @@
 //! decoded same-parity vector and the inline `dmvector[0..1]` via
 //! Tables 7-12 (`m[parity_ref][parity_pred]`) / 7-13
 //! (`e[parity_ref][parity_pred]`) under the §4.1 `//` integer
-//! division-with-rounding-away-from-zero operator. The IDCT and
-//! motion-compensation pel-prediction loops are still ahead; the
-//! public `register` symbol is still a no-op so that downstream
-//! consumers can depend on the crate without the decoder being
-//! inadvertently selected by the registry.
+//! division-with-rounding-away-from-zero operator, and the §7.6.4
+//! forming-predictions pel reader (per-component `int_vec` /
+//! `half_flag` split with the §4.1 `DIV` floor-toward-minus-infinity
+//! operator, the four-way half-pel switch on
+//! `(half_flag[0], half_flag[1])`, and the bilinear two-sample /
+//! four-sample `// 2` / `// 4` averaging, driving a dimensionless
+//! `width x height` prediction block over a pad-to-edge reference
+//! plane). The IDCT itself is still ahead; the public `register`
+//! symbol is still a no-op so that downstream consumers can depend on
+//! the crate without the decoder being inadvertently selected by the
+//! registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -185,6 +191,20 @@
 //!   [`dequantize::DEFAULT_NON_INTRA_QUANT`] expose the §2.4.3.2
 //!   page-25 default matrices used when the sequence header sets
 //!   the matching `load_*_quantizer_matrix == 0`.
+//! * [`forming_predictions::predict_block`] /
+//!   [`forming_predictions::predict_sample`] — the §7.6.4 forming-
+//!   predictions pel reader per ISO/IEC 13818-2 (H.262) page 88: per-
+//!   component `int_vec[t] = vector[r][s][t] DIV 2` /
+//!   `half_flag[t] = (vector - 2*int_vec) != 0` split (with `DIV`
+//!   being the §4.1 floor-toward-minus-infinity operator),
+//!   [`forming_predictions::HalfPattern`] enumeration of the four
+//!   `(half_flag[0], half_flag[1])` outcomes, and the bilinear
+//!   `// 2` / `// 4` averaging of two or four reference samples
+//!   (§4.1 round-half-away-from-zero, identical to `(sum + d/2) / d`
+//!   on non-negative sums). [`forming_predictions::ReferencePlane`]
+//!   wraps a row-major sample buffer with a `PadEdge` boundary mode
+//!   so that motion vectors reaching past the picture edge clip to
+//!   the nearest in-bounds sample.
 
 #![warn(missing_debug_implementations)]
 
@@ -195,6 +215,7 @@ pub mod coded_block_pattern;
 pub mod dct_coeff;
 pub mod dequantize;
 pub mod dual_prime;
+pub mod forming_predictions;
 pub mod gop_header;
 pub mod macroblock_modes;
 pub mod macroblock_type;
@@ -220,6 +241,10 @@ pub use dequantize::{
 pub use dual_prime::{
     derive_all as derive_dual_prime_all, derive_opposite_parity_vector as derive_dual_prime_vector,
     dual_prime_picture, e_offset, m_factor, DerivedDualPrimeVector, DualPrimePicture, FieldParity,
+};
+pub use forming_predictions::{
+    predict_block, predict_sample, split_component, split_reconstructed, split_vector, BlockSize,
+    BoundaryMode, ComponentSplit, HalfPattern, ReferencePlane, SplitVector,
 };
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use macroblock_modes::{
@@ -297,7 +322,7 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–19 parse the sequence,
+/// No-op codec registration. Rounds 1–20 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
@@ -316,10 +341,15 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// non-intra `dct_zz[i] == 0 -> 0` zeroing pass), and the §7.6.3.6
 /// MPEG-2 dual-prime additional arithmetic (Tables 7-12 / 7-13 with
 /// the `//` rounding-away-from-zero operator, both single-vector
-/// field-picture and two-vector frame-picture derivations) — they do
-/// not yet provide a complete [`oxideav_core::Decoder`] or
-/// [`oxideav_core::Encoder`] (the IDCT, and motion compensation are
-/// still ahead), so there is nothing to install in the registry.
+/// field-picture and two-vector frame-picture derivations), and the
+/// §7.6.4 forming-predictions pel reader (per-component
+/// `int_vec[t]` / `half_flag[t]` split with the §4.1 `DIV` floor
+/// operator, the four-way half-pel switch on
+/// `(half_flag[0], half_flag[1])`, and the bilinear `// 2` / `// 4`
+/// averaging over a pad-to-edge reference plane) — they do not yet
+/// provide a complete [`oxideav_core::Decoder`] or
+/// [`oxideav_core::Encoder`] (the IDCT is still ahead), so there is
+/// nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
 oxideav_core::register!("mpeg12video", register);

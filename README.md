@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–19 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations).**
+**Clean-room rebuild — rounds 1–20 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -971,6 +971,68 @@ be defended as clean-room. The rebuild starts here.
   `PictureStructure` values; and the [`FieldParity`] `index` /
   `opposite` helpers.
 
+### What round 20 lands
+
+* §7.6.4 **Forming predictions** per **ISO/IEC 13818-2 (Recommendation
+  ITU-T H.262) page 88-89** — the integer-and-half-pel sample reader
+  that turns a fully-reconstructed `vector'[r][s][1:0]` (from round 12)
+  into a `width × height` pel-prediction block.
+  * [`forming_predictions::split_component`] /
+    [`forming_predictions::split_vector`] implement the per-axis
+    split:
+    ```text
+    int_vec[t]  = vector[r][s][t] DIV 2
+    half_flag[t] = (vector[r][s][t] - 2 * int_vec[t]) != 0
+    ```
+    `DIV` is the **§4.1 page 9** floor-toward-minus-infinity operator
+    (`3 DIV 2 = 1`, `-3 DIV 2 = -2`), so `(-3) DIV 2 = -2` (not `-1`
+    as Rust's `/` truncate-toward-zero would give); the half-flag is
+    set iff the original component is odd, including for negative
+    odd vectors.
+  * [`forming_predictions::HalfPattern`] enumerates the four
+    `(half_flag[0], half_flag[1])` outcomes — `Integer`,
+    `HalfHorizontal`, `HalfVertical`, `HalfBoth` — that drive the
+    page-88 four-arm `if` switch.
+  * [`forming_predictions::predict_sample`] / [`forming_predictions::predict_block`]
+    apply the §7.6.4 page-88 four-arm switch:
+    ```text
+    Integer       : pel_pred = pel_ref[y + iy][x + ix]
+    HalfHoriz     : pel_pred = (pel_ref[y+iy][x+ix] + pel_ref[y+iy][x+ix+1]) // 2
+    HalfVert      : pel_pred = (pel_ref[y+iy][x+ix] + pel_ref[y+iy+1][x+ix]) // 2
+    HalfBoth      : pel_pred = (sum of the 4 corners of the 2x2 neighbourhood) // 4
+    ```
+    The `// 2` / `// 4` averaging is the **§4.1 page 9** round-to-
+    nearest-with-half-integer-away-from-zero operator. On a non-
+    negative sum it reduces to `(sum + d/2) / d` integer division,
+    which the helpers express as `(a + b).div_ceil(2)` and `(sum +
+    2) >> 2`. Indexing follows the spec: `t = 0` is horizontal (x),
+    `t = 1` is vertical (y); positive vector components mean the
+    prediction sample lies right of / below the current sample.
+  * [`forming_predictions::ReferencePlane`] is a borrowed view
+    `(data, width, height)` over a single sample plane with a
+    [`forming_predictions::BoundaryMode::PadEdge`] clip-to-nearest-
+    in-bounds-sample rule for reads that fall past the picture edge
+    (the universally-implemented MPEG convention; the §7.6.4 base
+    text leaves out-of-picture behaviour undefined).
+  * [`forming_predictions::BlockSize`] keeps the block geometry
+    dimensionless — `(width, height)`. The §7.6.5 prediction-mode
+    table (16×16 frame, 16×8 MC, 16×16 field, 8×8 4:2:0 chroma,
+    8×16 4:2:2 chroma, …) drives this loop without per-mode
+    duplication.
+* 38 new unit tests cover: `DIV` floor on positives / negatives /
+  zero / odd / even / large magnitudes (`-1`, `-2`, `-3`, `1`, `2`,
+  `3`, `1023`, `-1023`); the four `HalfPattern` outcomes with their
+  flag round-trip; `ReferencePlane` in-bounds reads, four-direction
+  pad-edge clamps, corner clamps, and the dimensions-mismatch
+  rejection; `predict_sample` for the four patterns including
+  `// 2` rounding-up (`avg(10, 11) = 11`), even-sum no-tie
+  (`avg(10, 12) = 11`), `// 4` ties (`(0,1,0,1) -> 1`), negative
+  integer vector pad-edge fallback, and negative-odd vectors that
+  exercise the `DIV`-vs-truncate difference; and `predict_block`
+  end-to-end on 2×2, 4×2, 3×1, 1×3, 4×1 geometries (copy, integer
+  translation, half-horizontal, half-vertical, half-both, and
+  right-edge padding).
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -980,7 +1042,7 @@ Every line in this crate's `src/` traces to:
   6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.2,
   6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11,
   6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, 7.6.3, 7.6.3.1,
-  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.6, 7.6.3.7, Tables 6-1 / 6-2 / 6-3 /
+  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.6, 7.6.3.7, 7.6.4, Tables 6-1 / 6-2 / 6-3 /
   6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 /
   7-7 / 7-8 / 7-10 / 7-11 / 7-12 / 7-13 / 7-14, and Annex B Tables B-1 /
   B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
