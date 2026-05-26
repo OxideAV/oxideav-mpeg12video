@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–20 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane).**
+**Clean-room rebuild — rounds 1–21 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane + §7.6.7.1 / §7.6.7.4 combine-predictions bidirectional `(forward + backward) // 2` average + §7.6.5 Tables 7-13 / 7-14 forward-only / backward-only / `Skipped` direction selection + §7.6.8 add-prediction-and-coefficients reconstruction with the `d = saturate(f + p)` `[0, 255]` clamp and the intra `d = saturate(f)` shortcut).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1033,6 +1033,78 @@ be defended as clean-room. The rebuild starts here.
   translation, half-horizontal, half-vertical, half-both, and
   right-edge padding).
 
+### What round 21 lands
+
+* §7.6.7 **Combining predictions** + §7.6.8 **Adding prediction and
+  coefficient data** per **ISO/IEC 13818-2 (Recommendation ITU-T
+  H.262) pages 104–106** — the two pointwise stages that turn the
+  up-to-two §7.6.4 prediction blocks of a macroblock into the final
+  decoded sample plane.
+  * [`combine_predictions::average_predictions`] /
+    [`combine_predictions::average_predictions_in_place`] implement
+    the §7.6.7.1 page-105 formula:
+    ```text
+    pel_pred[y][x] = (pel_pred_forward[y][x] + pel_pred_backward[y][x]) // 2
+    ```
+    The `//` operator is the **§4.1 page 9** round-to-nearest /
+    half-integer-away-from-zero operator; on a non-negative
+    `u16` sum of two `u8` values it collapses to the canonical
+    `(sum + 1) >> 1` rounded-up form.
+  * [`combine_predictions::PredictionDirection`] enumerates the four
+    §7.6.5 Tables 7-13 / 7-14 selection cases — `Forward`,
+    `Backward`, `Bidirectional`, `Skipped` —
+    keyed on the §6.3.17.1 `macroblock_motion_forward` /
+    `macroblock_motion_backward` flags plus the §7.6.3.5
+    implicit-zero-MV `(0, 0)` case.
+    [`combine_predictions::combine_directional_predictions`] is the
+    driver: forward-only / backward-only branches pass-through, the
+    bidirectional branch calls `average_predictions`, and the
+    `Skipped` branch returns the caller-supplied implicit-zero-MV
+    forward block unchanged.
+  * [`combine_predictions::average_dual_prime_predictions`] is the
+    §7.6.7.4 alias of the same formula —
+    `(pel_pred_same_parity + pel_pred_opposite_parity) // 2`.
+    Arithmetic identical to the bidirectional average; the alias
+    exists for caller readability when wiring §7.6.3.6 dual-prime
+    vectors through the §7.6.4 reader.
+  * [`add_coefficients::saturate`] implements the two `if` clauses
+    of §7.6.8 page 106 (`d < 0 -> 0`, `d > 255 -> 255`) as a single
+    `i32::clamp` returning `u8`. Bit-equivalent to the spec's
+    two-branch form for any integer input.
+  * [`add_coefficients::add_prediction_and_coefficients`] and its
+    `..._in_place` variant pointwise add the §A.1 IDCT output
+    (`i16`) and the §7.6.7 prediction (`u8`) and saturate to
+    `[0, 255]`. The spec writes the loop over an 8×8 transform
+    block; the operation is intrinsically pointwise so the
+    signatures take `&[i16]` / `&[u8]` and work for any matching
+    block geometry the §7.6.5 / §A.1 chain produces.
+  * [`add_coefficients::add_intra_block`] is the intra shortcut:
+    `macroblock_intra == 1` has no prediction step, so the final
+    samples are `saturate(f)` across the IDCT output. Equivalent to
+    passing an all-zero prediction to
+    `add_prediction_and_coefficients`.
+* 34 new unit tests cover: the `// 2` averaging — no-tie (`(10,12)
+  → 11`), half-integer tie rounded up (`(10,11) → 11`, `(254,255) →
+  255`), u8 max (`(255,255) → 255`), and the symmetry across the
+  full `(x, x+1)` band; the four-way
+  `combine_directional_predictions` switch including the
+  length-mismatch rejection on the `Bidirectional` branch and the
+  argument-ignored behaviour of the single-direction branches; the
+  dual-prime alias's bit-equality with the bidirectional path; the
+  saturation arithmetic at both clamps (`-1 → 0`, `-256 → 0`,
+  `i32::MIN → 0`, `256 → 255`, `1000 → 255`, `i32::MAX → 255`); the
+  pointwise add on a 64-sample 8×8-shaped block plus both saturation
+  endpoints; the in-place add's exact match with the allocating
+  variant; the intra shortcut's exact match with the zero-prediction
+  path; and the empty-input degenerate case.
+* New `tests/combine_add_synthetic.rs` integration test (7 cases)
+  drives the full §7.6.4 → §7.6.7 → §7.6.8 chain on hand-crafted
+  reference planes and IDCT-stand-in `i16` values for the intra /
+  P-forward-only / B-bidirectional (with and without §7.6.8 clamp
+  engagement) / B-backward-only / skipped-macroblock / 8×8 paths.
+  Expected samples are hand-computed from the spec formulas, no
+  external decoder is consulted.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -1042,7 +1114,8 @@ Every line in this crate's `src/` traces to:
   6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.2,
   6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11,
   6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, 7.6.3, 7.6.3.1,
-  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.6, 7.6.3.7, 7.6.4, Tables 6-1 / 6-2 / 6-3 /
+  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.5, 7.6.3.6, 7.6.3.7, 7.6.4, 7.6.5,
+  7.6.7.1, 7.6.7.2, 7.6.7.4, 7.6.8, Tables 6-1 / 6-2 / 6-3 /
   6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 /
   7-7 / 7-8 / 7-10 / 7-11 / 7-12 / 7-13 / 7-14, and Annex B Tables B-1 /
   B-2 / B-3 / B-4 / B-9 / B-10 / B-11.

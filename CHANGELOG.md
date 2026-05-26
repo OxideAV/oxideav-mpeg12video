@@ -8,6 +8,60 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 21: MPEG-2 (ISO/IEC 13818-2 / Recommendation
+  ITU-T H.262) §7.6.7 **Combining predictions** + §7.6.8 **Adding
+  prediction and coefficient data** — the bidirectional-average step
+  that turns the up-to-two §7.6.4 forward / backward prediction blocks
+  into the final per-component prediction sample plane, plus the
+  prediction-plus-IDCT-plus-saturation reconstruction that produces the
+  final decoded samples.
+  - `combine_predictions::average_predictions(forward, backward)` and
+    its `..._in_place` variant implement the §7.6.7.1 page-105
+    formula `pel_pred[y][x] = (pel_pred_forward[y][x] +
+    pel_pred_backward[y][x]) // 2` over equal-length `Vec<u8>`
+    prediction blocks. The §4.1 `// 2` operator on the non-negative
+    sum of two `u8` values is the canonical `(sum + 1) >> 1`
+    rounded-up form.
+  - `combine_predictions::PredictionDirection { Forward, Backward,
+    Bidirectional, Skipped }` captures the four §7.6.5
+    Tables 7-13 / 7-14 selection cases, and
+    `combine_predictions::combine_directional_predictions(direction,
+    forward, backward)` is the driver that returns the combined
+    block (single-direction pass-through for `Forward` / `Backward`,
+    `average_predictions` for `Bidirectional`, forward pass-through
+    for the §7.6.3.5 implicit-zero-MV `Skipped` case).
+  - `combine_predictions::average_dual_prime_predictions(same_parity,
+    opposite_parity)` is the §7.6.7.4 alias of the same formula —
+    arithmetic identical to the bidirectional average, separate name
+    for caller readability when wiring §7.6.3.6 dual-prime vectors
+    through the §7.6.4 reader.
+  - `add_coefficients::saturate(value)` implements the two `if`
+    clauses of §7.6.8 page 106 (`d < 0 -> 0`, `d > 255 -> 255`) as a
+    single `i32::clamp` returning `u8`.
+  - `add_coefficients::add_prediction_and_coefficients(transform,
+    prediction)` and its `..._in_place` variant pointwise add the
+    §A.1 IDCT output (`i16`) and the §7.6.7 prediction (`u8`) and
+    saturate to `[0, 255]`. Geometry-agnostic — the spec writes the
+    loop over 8×8 but the operation is intrinsically pointwise.
+  - `add_coefficients::add_intra_block(transform)` is the
+    intra-macroblock shortcut: no prediction step has run for
+    `macroblock_intra == 1`, so the final samples are just
+    `saturate(f)` across the IDCT output, equivalent to passing an
+    all-zero prediction buffer.
+  - 34 new unit tests cover the `// 2` rounding on every relevant
+    case (no-tie, half-integer tie, u8 max), the four-way
+    `combine_directional_predictions` switch (including length-
+    mismatch rejection on the `Bidirectional` branch), the dual-prime
+    alias's bit-equality with the bidirectional path, the saturation
+    arithmetic at both clamps (`-1 -> 0`, `256 -> 255`, `i32::MIN /
+    MAX` extremes), the in-place add and the intra shortcut's
+    equivalence to the zero-prediction path. A new
+    `tests/combine_add_synthetic.rs` integration test (7 cases)
+    drives the full §7.6.4 → §7.6.7 → §7.6.8 chain on hand-crafted
+    references for the intra / P-forward / B-bidirectional /
+    B-backward / skipped / 8×8 paths, with hand-computed expected
+    samples (no external decoder oracle).
+
 - Clean-room rebuild round 20: MPEG-2 (ISO/IEC 13818-2 / Recommendation
   ITU-T H.262) §7.6.4 **Forming predictions** — the integer-and-half-pel
   sample reader that turns a fully-reconstructed `vector'[r][s][1:0]`

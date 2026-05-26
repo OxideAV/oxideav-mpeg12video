@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–20 — structural sequence-layer
+//! **Status:** rebuild rounds 1–21 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -205,13 +205,34 @@
 //!   wraps a row-major sample buffer with a `PadEdge` boundary mode
 //!   so that motion vectors reaching past the picture edge clip to
 //!   the nearest in-bounds sample.
+//! * [`combine_predictions::average_predictions`] /
+//!   [`combine_predictions::combine_directional_predictions`] —
+//!   the §7.6.7.1 / §7.6.7.2 / §7.6.7.4 combining step that turns
+//!   the up-to-two §7.6.4 prediction blocks into the final
+//!   per-component prediction plane: `pel_pred[y][x] =
+//!   (pel_pred_forward[y][x] + pel_pred_backward[y][x]) // 2` for
+//!   the bi-directional case, single-direction pass-through for
+//!   forward-only / backward-only B-frame rows of Tables 7-13 /
+//!   7-14, and the §7.6.3.5 implicit-zero-MV
+//!   [`combine_predictions::PredictionDirection::Skipped`] pass-through.
+//!   The dual-prime
+//!   [`combine_predictions::average_dual_prime_predictions`] alias
+//!   matches the §7.6.7.4 spelling.
+//! * [`add_coefficients::add_prediction_and_coefficients`] /
+//!   [`add_coefficients::add_intra_block`] — the §7.6.8 adding step:
+//!   `d[y][x] = saturate(f[y][x] + p[y][x])` with the `[0, 255]`
+//!   clamp, both for the inter / B-frame
+//!   `prediction + transform` case and for the intra shortcut where
+//!   the prediction is conceptually all-zero and `d = saturate(f)`.
 
 #![warn(missing_debug_implementations)]
 
 use oxideav_core::RuntimeContext;
 
+pub mod add_coefficients;
 pub mod block_dc;
 pub mod coded_block_pattern;
+pub mod combine_predictions;
 pub mod dct_coeff;
 pub mod dequantize;
 pub mod dual_prime;
@@ -230,8 +251,16 @@ pub mod sequence_extension;
 pub mod sequence_header;
 pub mod slice_header;
 
+pub use add_coefficients::{
+    add_intra_block, add_prediction_and_coefficients, add_prediction_and_coefficients_in_place,
+    saturate as saturate_decoded_sample,
+};
 pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
 pub use coded_block_pattern::CodedBlockPattern;
+pub use combine_predictions::{
+    average_dual_prime_predictions, average_predictions, average_predictions_in_place,
+    combine_directional_predictions, PredictionDirection,
+};
 pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
 pub use dequantize::{
     dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
@@ -322,7 +351,7 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–20 parse the sequence,
+/// No-op codec registration. Rounds 1–21 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
@@ -346,10 +375,16 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// `int_vec[t]` / `half_flag[t]` split with the §4.1 `DIV` floor
 /// operator, the four-way half-pel switch on
 /// `(half_flag[0], half_flag[1])`, and the bilinear `// 2` / `// 4`
-/// averaging over a pad-to-edge reference plane) — they do not yet
-/// provide a complete [`oxideav_core::Decoder`] or
-/// [`oxideav_core::Encoder`] (the IDCT is still ahead), so there is
-/// nothing to install in the registry.
+/// averaging over a pad-to-edge reference plane), the §7.6.7.1 /
+/// §7.6.7.4 combine-predictions step (bidirectional `(forward +
+/// backward) // 2` average, single-direction pass-through, and the
+/// dual-prime same-parity / opposite-parity alias of the same
+/// formula), and the §7.6.8 add-prediction-and-coefficients
+/// reconstruction step (`d = saturate(f + p)` with `[0, 255]` clamp,
+/// plus the intra shortcut `d = saturate(f)` for `macroblock_intra ==
+/// 1` blocks) — they do not yet provide a complete
+/// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`] (the IDCT
+/// is still ahead), so there is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
 oxideav_core::register!("mpeg12video", register);
