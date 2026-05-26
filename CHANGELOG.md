@@ -8,6 +8,57 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 17: MPEG-1 (ISO/IEC 11172-2:1993) residual
+  block `dct_coeff_first` / `dct_coeff_next` walker — the
+  zig-zag-coded run-level body that follows the round 16 DC prelude
+  (intra blocks) or replaces it (non-intra blocks).
+  - `dct_coeff::DctCoeffStep::parse(br, position)` walks Annex B
+    Tables B.5c / B.5d / B.5e (the run-level codebook) longest-first
+    across all code widths from 1 to 16 bits, matches the
+    `(run, level)` pair, then reads the trailing 1-bit sign `s` and
+    applies it to produce the signed `dct_zz[i]` coefficient to write
+    at the §2.4.3.7 zig-zag position (`i = run` for FIRST,
+    `i += run + 1` for NEXT).
+  - `dct_coeff::CoefficientPosition { First, Next }` disambiguates
+    the spec's two `(run = 0, level = 1)` codes: `dct_coeff_first`
+    uses the 2-bit `1s` form (legal only as the first coefficient of
+    a non-intra block); `dct_coeff_next` uses the 3-bit `11s` form.
+    The `end_of_block` codeword `10` is accepted only at `Next` per
+    Table B.5c note 2 — FIRST decoding `10` returns the `1s` form
+    instead.
+  - Table B.5f escape coverage: the 6-bit `000001` prefix is followed
+    by a 6-bit `run` (1..=63) and an 8-bit signed-level word; the
+    short form covers `level ∈ [-127, +127] \ {0}` directly, and the
+    long form (8-bit prefix `0x80` for negative or `0x00` for
+    positive plus a second 8-bit magnitude byte) extends the range to
+    `[-255, -128]` and `[+128, +255]`. The forbidden `-256` and the
+    forbidden long-form positive `< 128` (which the short form
+    already covers) are rejected. The escape encoding is
+    intentionally **not** the same as MPEG-2 Table B-16 — the spec
+    text in ISO/IEC 13818-2 §7.2.2.3 explicitly notes the change.
+  - `dct_coeff::DctCoeff` is the decoded symbol: either
+    `RunLevel { run, signed_level, escape }` (with the `escape`
+    field recording whether the symbol came through the Table B.5f
+    path) or `EndOfBlock`.
+  - `dct_coeff::MAX_RUN = 63` and `dct_coeff::MAX_LEVEL_MAG = 255`
+    document the spec bounds for both VLC and escape forms.
+  - 31 unit tests cover: every Table B.5c / B.5d / B.5e row parsed
+    and round-tripped with both signs (across all 112 ordinary
+    rows × 2 signs); per-width prefix-freeness and code-fit-width
+    invariants; FIRST-vs-NEXT `(0, 1)` disambiguation; EoB
+    recognition only at NEXT; Table B.5f short form including the
+    `±127` corner; Table B.5f long form for both signs (`-128`,
+    `-255`, `+128`, `+200`, `+255`); rejection of the forbidden
+    `-256` and forbidden long-form-positive-below-128 encodings;
+    truncated and empty buffer rejection; and bit-position
+    accounting across every code width from the 2-bit FIRST form to
+    the 17-bit B.5e maximum.
+  - 2 new black-box integration tests synthesise complete MPEG-1
+    residual block runs (FIRST + several NEXT including a B.5f
+    escape, then `end_of_block`) and confirm the §2.4.3.7
+    zig-zag-position update never exceeds 63 plus the running bit
+    cursor lines up exactly with the encoded bit lengths.
+
 - Clean-room rebuild round 16: MPEG-1 (ISO/IEC 11172-2:1993) intra-block
   DC prelude — the entry point of the residual block layer.
   - `block_dc::DcCoefficient::parse(br, component)` walks Annex B

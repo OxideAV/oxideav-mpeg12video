@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–16 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]`).**
+**Clean-room rebuild — rounds 1–17 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -738,6 +738,65 @@ be defended as clean-room. The rebuild starts here.
   next-round concern — that's the wider run-length VLC the
   block-layer dequantiser consumes after the DC field.
 
+### What round 17 lands
+
+* The MPEG-1 residual `dct_coeff_first` / `dct_coeff_next` walker
+  per **ISO/IEC 11172-2:1993 §2.4.2.8 / §2.4.3.7** — the
+  zig-zag-coded body of every block, fed by Annex B **Tables B.5c
+  / B.5d / B.5e** (the run-level codebook) and **Table B.5f** (the
+  escape encoding). This is the second half of the residual block
+  layer; round 16 landed the intra DC prelude and this round fills
+  the rest of the per-block syntax up to the §2.4.4 dequantiser.
+  * `dct_coeff::DctCoeffStep::parse(br, position)` walks the
+    longest-first codeword tree across all three sub-tables,
+    matches the `(run, level)` pair, then reads the trailing 1-bit
+    sign `s` and applies it to produce the signed `dct_zz[i]`
+    coefficient to write.
+  * `dct_coeff::CoefficientPosition { First, Next }`
+    disambiguates the spec's two `(run = 0, level = 1)` forms:
+    `dct_coeff_first` uses the 2-bit `1s` code (legal only as the
+    first coefficient of a non-intra block), `dct_coeff_next` uses
+    the 3-bit `11s` code. The `end_of_block` codeword `10` is
+    accepted only at `Next` per Table B.5c note 2.
+  * Table B.5f escape coverage: the 6-bit `000001` prefix is
+    followed by a 6-bit `run` and an 8-bit signed level word; the
+    short form covers `level ∈ [-127, +127] \ {0}` directly, and
+    the long form (8-bit prefix `0x80` for negative or `0x00` for
+    positive plus an 8-bit magnitude) extends the range to
+    `[-255, -128]` and `[+128, +255]`. The forbidden `-256`
+    (prefix `0x80` + magnitude `0x00`) and the forbidden long-form
+    positive `< 128` (prefix `0x00` + magnitude `< 0x80`) are
+    rejected — the spec explicitly notes the MPEG-1 escape
+    encoding differs from the later ISO/IEC 13818-2 §7.2.2.3
+    fixed-length scheme.
+  * `dct_coeff::DctCoeff` is the decoded symbol: either
+    `RunLevel { run, signed_level, escape }` or `EndOfBlock`. The
+    `escape` flag records whether the symbol came through the
+    Table B.5f path so trace tools can reconstruct the wire form.
+  * `dct_coeff::MAX_RUN = 63` and `dct_coeff::MAX_LEVEL_MAG = 255`
+    document the spec bounds for both VLC and escape forms.
+* 31 new unit tests cover: every Table B.5c / B.5d / B.5e row
+  parsed and round-tripped via the walker with both signs;
+  per-width prefix-freeness and code-width-fit invariants;
+  FIRST-vs-NEXT disambiguation of the `(0, 1)` two-code form;
+  `end_of_block` recognition only at NEXT; Table B.5f short form
+  for positive / negative levels and the `±127` corner; Table
+  B.5f long form for `-128` / `-255` and `+128` / `+200` / `+255`;
+  rejection of the forbidden `-256` long-form encoding and the
+  forbidden long-form positive `< 128` encoding; truncated /
+  empty buffer rejection; and full bit-position accounting across
+  every codeword width from the 2-bit FIRST form to the 17-bit
+  B.5e maximum.
+* 2 new black-box integration tests synthesise complete MPEG-1
+  residual block runs (FIRST + several NEXT including an escape,
+  then `end_of_block`) and confirm the §2.4.3.7 `i = run` /
+  `i += run + 1` zig-zag-position update never exceeds 63 plus
+  the running bit cursor lines up exactly with the encoded
+  bit lengths. The existing 352×240 fixture is an MPEG-2 stream
+  (it uses the differently-encoded MPEG-2 Table B-16 escape) and
+  cannot exercise the MPEG-1 escape path — these tests assemble
+  spec-defined bit-strings in-process instead.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -757,7 +816,8 @@ Every line in this crate's `src/` traces to:
   ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.2.6, §2.4.2.7, §2.4.2.8,
   §2.4.3.4, §2.4.3.5, §2.4.3.6, §2.4.3.7, §2.4.4.1, §2.4.4.2,
   §2.4.4.3, §D.5.5.1, §D.5.5.2, and Annex B Table B.1 + Table B.4
-  + Table B.5a + Table B.5b. Referenced for the
+  + Table B.5a + Table B.5b + Table B.5c + Table B.5d + Table B.5e
+  + Table B.5f. Referenced for the
   `macroblock_stuffing` semantics (a code MPEG-2 drops); in round 9
   for the macroblock-layer `quantizer_scale` field (syntax §2.4.2.7,
   semantics §2.4.3.6 — the `1..=31` range and the slice/macroblock
@@ -768,7 +828,15 @@ Every line in this crate's `src/` traces to:
   intra-block DC prelude (Annex B Tables B.5a / B.5b
   `dct_dc_size_*` VLCs, §2.4.2.8 / §2.4.3.7 `dct_dc_differential`
   → `dct_zz[0]` sign-extension formula, and the §2.4.4.1 page-32
-  8x8 `scan[m][n]` zig-zag matrix). The MPEG-2 Table B-1 entries
+  8x8 `scan[m][n]` zig-zag matrix); and in round 17 for the
+  residual-block `dct_coeff_first` / `dct_coeff_next` walker
+  (Annex B Tables B.5c / B.5d / B.5e run-level VLCs spanning code
+  widths 1..=16, Table B.5f escape encoding with its short 14-bit
+  and long 22-bit forms, the §2.4.3.7 `(0, 1)` FIRST-vs-NEXT
+  disambiguation, the Table B.5c note-2 `end_of_block`
+  restriction, and the spec note that the MPEG-1 escape form is
+  intentionally different from the ISO/IEC 13818-2 §7.2.2.3
+  fixed-length 12-bit scheme). The MPEG-2 Table B-1 entries
   themselves trace to 13818-2.
 * `oxideav-core`'s published `BitReader` MSB-first API.
 * The `ffmpeg` CLI binary, used **only** as an opaque encoder for

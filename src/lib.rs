@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–16 — structural sequence-layer
+//! **Status:** rebuild rounds 1–17 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -16,12 +16,18 @@
 //! Tables B-10 / B-11 VLCs that drive it, the §7.6.3.1
 //! `vector'[r][s][t]` reconstruction (PMV state, wrap-around
 //! arithmetic, vertical-half-pred rule), the §7.6.3.3 inter-vector
-//! PMV-copy update (Tables 7-10 / 7-11), §7.6.3.4 reset, and §7.6.3.7
-//! chroma scaling. The residual block layer — Tables B-12..B-16, the
-//! IDCT, and motion compensation — is not wired up yet; the public
-//! `register` symbol is still a no-op so that downstream consumers
-//! can depend on the crate without the decoder being inadvertently
-//! selected by the registry.
+//! PMV-copy update (Tables 7-10 / 7-11), §7.6.3.4 reset, §7.6.3.7
+//! chroma scaling, the MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC
+//! prelude (Tables B.5a / B.5b + the `dct_dc_differential`
+//! reconstruction plus the §2.4.4.1 zig-zag `scan[m][n]`), and the
+//! MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` walker
+//! (Tables B.5c / B.5d / B.5e run-level VLCs + Table B.5f short and
+//! long escape encodings + the FIRST-vs-NEXT `(0, 1)` two-form
+//! disambiguation + `end_of_block` recognition). The IDCT and
+//! motion-compensation pel-prediction loops are still ahead; the
+//! public `register` symbol is still a no-op so that downstream
+//! consumers can depend on the crate without the decoder being
+//! inadvertently selected by the registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -119,10 +125,16 @@
 //!   `dct_dc_differential` → `dct_zz[0]` reconstruction formula.
 //!   The companion [`block_dc::SCAN`] / [`block_dc::INVERSE_SCAN`]
 //!   constants encode the §2.4.4.1 8x8 zig-zag scan order shared
-//!   by every block-layer iterator. The wider `dct_coeff_first` /
-//!   `dct_coeff_next` walker (Tables B.5c..B.5e plus the B.5f
-//!   escape) is the next-round concern; this module is the
-//!   DC-prelude domino.
+//!   by every block-layer iterator.
+//! * [`dct_coeff::DctCoeffStep`] — the MPEG-1
+//!   (ISO/IEC 11172-2:1993) `dct_coeff_first` / `dct_coeff_next`
+//!   walker per §2.4.3.7 driven by Annex B Tables B.5c / B.5d /
+//!   B.5e (the run-level codebook) and Table B.5f (the escape
+//!   encoding's short 14-bit and long 22-bit forms). Includes the
+//!   `(run = 0, level = 1)` FIRST / NEXT disambiguation
+//!   ([`dct_coeff::CoefficientPosition`]) and `end_of_block`
+//!   recognition; the §2.4.4.1 dequantiser that consumes the
+//!   `(run, signed_level)` stream is the next-round concern.
 
 #![warn(missing_debug_implementations)]
 
@@ -130,6 +142,7 @@ use oxideav_core::RuntimeContext;
 
 pub mod block_dc;
 pub mod coded_block_pattern;
+pub mod dct_coeff;
 pub mod gop_header;
 pub mod macroblock_modes;
 pub mod macroblock_type;
@@ -146,6 +159,7 @@ pub mod slice_header;
 
 pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
 pub use coded_block_pattern::CodedBlockPattern;
+pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
@@ -222,19 +236,21 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–16 parse the sequence,
+/// No-op codec registration. Rounds 1–17 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
 /// inter-vector PMV-copy update table, the MPEG-1 §2.4.4.2 /
-/// §2.4.4.3 motion-vector reconstruction, and the MPEG-1 §2.4.2.8 /
+/// §2.4.4.3 motion-vector reconstruction, the MPEG-1 §2.4.2.8 /
 /// §2.4.3.7 intra-block DC prelude (Tables B.5a / B.5b + the
 /// `dct_dc_differential` reconstruction plus the §2.4.4.1 zig-zag
-/// scan) — they do not yet provide a complete
-/// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`] (the
-/// `dct_coeff_first` / `dct_coeff_next` run-level VLC walker, the
-/// IDCT, and motion compensation are still ahead), so there is
-/// nothing to install in the registry.
+/// scan), and the MPEG-1 §2.4.3.7 `dct_coeff_first` /
+/// `dct_coeff_next` run-level walker (Tables B.5c / B.5d / B.5e +
+/// the Table B.5f short and long escape encodings) — they do not
+/// yet provide a complete [`oxideav_core::Decoder`] or
+/// [`oxideav_core::Encoder`] (the §2.4.4.1 dequantiser, the IDCT,
+/// and motion compensation are still ahead), so there is nothing to
+/// install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
 oxideav_core::register!("mpeg12video", register);
