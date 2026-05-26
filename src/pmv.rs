@@ -21,10 +21,12 @@
 //! What this module does **not** cover:
 //!
 //! * §7.6.3.6 dual-prime additional arithmetic (deriving the
-//!   opposite-parity vector from the decoded forward vector). Dual-prime
-//!   `motion_code` / `motion_residual` / `dmvector` parsing is in
-//!   round 11; the derived vector calculation is its own round once we
-//!   have a `dmv_decision` engine.
+//!   opposite-parity vector from the decoded forward vector). The
+//!   bitstream-side `motion_code` / `motion_residual` / `dmvector`
+//!   parsing is in round 11; the derived `vector'[r][0][1:0]` for
+//!   `r ∈ {2, 3}` is computed by the round-19 [`crate::dual_prime`]
+//!   module and does not flow through the PMV slots here (Table 7-7
+//!   notes that `r = 2` and `r = 3` do not have PMV storage).
 //! * §7.6.3.9 concealment motion vectors (intra macroblocks with the
 //!   `concealment_motion_vectors` flag set) — the table accounts for
 //!   the concealment-MV flag where Table 7-10/7-11 reference it (the

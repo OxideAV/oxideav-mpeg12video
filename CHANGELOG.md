@@ -8,6 +8,58 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 19: MPEG-2 (ISO/IEC 13818-2 / Recommendation
+  ITU-T H.262) §7.6.3.6 **dual-prime additional arithmetic** — derive
+  the opposite-parity motion vector(s) `vector'[r][0][1:0]` from the
+  same-parity vector decoded by §7.6.3.1 and the inline `dmvector[0..1]`.
+  - `dual_prime::derive_opposite_parity_vector(picture, parity_ref,
+    parity_pred, vector_index, decoded_horiz, decoded_vert,
+    dmvector_horiz, dmvector_vert)` is the single-row entry point;
+    `dual_prime::derive_all(picture, decoded_horiz, decoded_vert,
+    dmvector_horiz, dmvector_vert)` is the picture-level driver that
+    yields one derived vector for a field picture (`r = 2`) or two
+    derived vectors for a frame picture (`r = 2` top, `r = 3` bottom)
+    per the §7.6.3.6 page-87 sentence "The top field shall use
+    `vector'[2][0][1:0]` for opposite parity prediction and the
+    bottom field shall use `vector'[3][0][1:0]`".
+  - `dual_prime::m_factor` encodes Table 7-12 (the
+    `picture_structure` / `top_field_first`-keyed field-distance
+    factor). Frame `tff=1` → `(m[1][0], m[0][1]) = (1, 3)`; `tff=0`
+    → `(3, 1)`. Top-field picture → only `m[1][0] = 1`; bottom-field
+    picture → only `m[0][1] = 1`. Diagonal cells `m[0][0]` /
+    `m[1][1]` are not on Table 7-12 (the same-parity vector is the
+    input, not derived) and the function errors when asked for them.
+  - `dual_prime::e_offset` encodes Table 7-13 (the unconditional
+    vertical-line adjustment between top / bottom fields, picture-
+    structure-independent): `e[0][0] = 0`, `e[0][1] = +1`,
+    `e[1][0] = -1`, `e[1][1] = 0`.
+  - The `//` operator (§4.1 page 9 "integer division with rounding
+    to the nearest integer; half-integer values rounded away from
+    zero") is honoured for the `(decoded * m) // 2` halving via a
+    private helper distinct from `i32::div` (the spec's `/`) and
+    `i32::div_euclid` (the spec's `DIV`).
+  - `dual_prime::DualPrimePicture` / `dual_prime::dual_prime_picture`
+    lower the parser-level `(PictureStructure, top_field_first)` pair
+    into a typed context the call site doesn't have to branch on.
+  - `dual_prime::FieldParity` (`Top` = 0, `Bottom` = 1) and
+    `dual_prime::DerivedDualPrimeVector` (`{parity_ref, parity_pred,
+    vector_index, horiz, vert}`) round out the surface.
+  - Rejection sites: `dmvector` component outside `{-1, 0, +1}`
+    (defensive guard around upstream Table B-11 parsing); any
+    `(parity_ref, parity_pred)` pair that isn't on Table 7-12 for the
+    active picture type.
+  - 19 new unit tests cover the §4.1 `//` examples (`3//2 = 2`,
+    `-3//2 = -2`, exact-divisible, `1//2`, `-1//2`, `5//2`, `-5//2`);
+    Table 7-12 all four rows; the off-row error paths; Table 7-13 all
+    four entries; §7.6.3.6 worked examples for both field-picture
+    parities, both frame-picture `tff` values, both `r = 2` and `r =
+    3` derivations, the `m = 3` triple-scaling, the swap on `tff =
+    0`, the rounding-away-from-zero `decoded = ±3` case under `m =
+    1`; out-of-range `dmvector` rejection; the `derive_all` driver's
+    one-vs-two output shape; the `dual_prime_picture` lowering for
+    all three `PictureStructure` values; and `FieldParity::index` /
+    `FieldParity::opposite`.
+
 - Clean-room rebuild round 18: MPEG-1 (ISO/IEC 11172-2:1993)
   §2.4.4.1 / §2.4.4.2 dequantiser bodies — the pure-math stage that
   consumes the round-17 walker's `dct_zz[]` array and emits the

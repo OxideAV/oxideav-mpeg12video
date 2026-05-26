@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–18 — structural sequence-layer
+//! **Status:** rebuild rounds 1–19 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -31,11 +31,17 @@
 //! arithmetic with the `dct_zz[i] == 0 -> 0` zeroing pass, the
 //! `Sign(...)` even-value mismatch-prevention rule, and the
 //! `[-2048, 2047]` saturation, driven by the §2.4.3.2 default
-//! `intra_quant[m][n]` and `non_intra_quant[m][n]` matrices). The
-//! IDCT and motion-compensation pel-prediction loops are still
-//! ahead; the public `register` symbol is still a no-op so that
-//! downstream consumers can depend on the crate without the
-//! decoder being inadvertently selected by the registry.
+//! `intra_quant[m][n]` and `non_intra_quant[m][n]` matrices), and
+//! the §7.6.3.6 MPEG-2 dual-prime additional arithmetic that derives
+//! the opposite-parity motion vector(s) `vector'[r][0][1:0]` from the
+//! decoded same-parity vector and the inline `dmvector[0..1]` via
+//! Tables 7-12 (`m[parity_ref][parity_pred]`) / 7-13
+//! (`e[parity_ref][parity_pred]`) under the §4.1 `//` integer
+//! division-with-rounding-away-from-zero operator. The IDCT and
+//! motion-compensation pel-prediction loops are still ahead; the
+//! public `register` symbol is still a no-op so that downstream
+//! consumers can depend on the crate without the decoder being
+//! inadvertently selected by the registry.
 //!
 //! The landed pieces so far are:
 //!
@@ -103,8 +109,22 @@
 //!   case, wrap-around to `[low, high]`), the §7.6.3.3 inter-vector
 //!   PMV-copy update table ([`pmv::update_predictors`] driving Tables
 //!   7-10 / 7-11), §7.6.3.4 reset hooks, and §7.6.3.7 chrominance
-//!   scaling for 4:2:0 / 4:2:2 / 4:4:4. §7.6.3.6 dual-prime
-//!   additional arithmetic remains out of scope.
+//!   scaling for 4:2:0 / 4:2:2 / 4:4:4. The §7.6.3.6 dual-prime
+//!   additional arithmetic itself lives in
+//!   [`dual_prime::derive_opposite_parity_vector`].
+//! * [`dual_prime::derive_opposite_parity_vector`] /
+//!   [`dual_prime::derive_all`] — §7.6.3.6 MPEG-2 dual-prime
+//!   additional arithmetic: derive the opposite-parity motion vector
+//!   `vector'[r][0][1:0]` (`r = 2` for a field picture; `r ∈ {2, 3}`
+//!   for a frame picture) from the decoded same-parity vector and the
+//!   inline `dmvector[0..1]` via Table 7-12
+//!   (`m[parity_ref][parity_pred]`, picture-structure /
+//!   `top_field_first`-keyed field-distance factor) and Table 7-13
+//!   (`e[parity_ref][parity_pred]`, vertical inter-field offset). The
+//!   §4.1 `//` integer-division-with-rounding-away-from-zero operator
+//!   is honoured for the `m`-scaling halving (`3//2 = 2`, `-3//2 =
+//!   -2`). The derived vectors do not flow through the PMV slots
+//!   (`r ∈ {2, 3}` are not PMV-backed per Table 7-7).
 //! * [`mpeg1_motion_vector::Mpeg1MotionVector`] — the MPEG-1
 //!   (ISO/IEC 11172-2:1993) `motion_vector(s)` element per §2.4.2.7
 //!   with the §2.4.3.6 field semantics: the Annex B Table B.4
@@ -174,6 +194,7 @@ pub mod block_dc;
 pub mod coded_block_pattern;
 pub mod dct_coeff;
 pub mod dequantize;
+pub mod dual_prime;
 pub mod gop_header;
 pub mod macroblock_modes;
 pub mod macroblock_type;
@@ -195,6 +216,10 @@ pub use dequantize::{
     dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
     IntraDcPredictors, DCT_RECON_MAX, DCT_RECON_MIN, DC_PREDICTOR_RESET, DEFAULT_INTRA_QUANT,
     DEFAULT_NON_INTRA_QUANT,
+};
+pub use dual_prime::{
+    derive_all as derive_dual_prime_all, derive_opposite_parity_vector as derive_dual_prime_vector,
+    dual_prime_picture, e_offset, m_factor, DerivedDualPrimeVector, DualPrimePicture, FieldParity,
 };
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use macroblock_modes::{
@@ -272,7 +297,7 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–18 parse the sequence,
+/// No-op codec registration. Rounds 1–19 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
@@ -288,11 +313,13 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// `past_intra_address > 1` reset branch, the `Sign(...)`
 /// even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2
 /// default `intra_quant` / `non_intra_quant` matrices, and the
-/// non-intra `dct_zz[i] == 0 -> 0` zeroing pass) — they do not yet
-/// provide a complete [`oxideav_core::Decoder`] or
-/// [`oxideav_core::Encoder`] (the IDCT,
-/// and motion compensation are still ahead), so there is nothing to
-/// install in the registry.
+/// non-intra `dct_zz[i] == 0 -> 0` zeroing pass), and the §7.6.3.6
+/// MPEG-2 dual-prime additional arithmetic (Tables 7-12 / 7-13 with
+/// the `//` rounding-away-from-zero operator, both single-vector
+/// field-picture and two-vector frame-picture derivations) — they do
+/// not yet provide a complete [`oxideav_core::Decoder`] or
+/// [`oxideav_core::Encoder`] (the IDCT, and motion compensation are
+/// still ahead), so there is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
 oxideav_core::register!("mpeg12video", register);

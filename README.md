@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–18 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass).**
+**Clean-room rebuild — rounds 1–19 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -894,19 +894,96 @@ be defended as clean-room. The rebuild starts here.
   the `2 * dct_zz[i] * Wq / 16` MPEG-1 form) and cannot exercise
   this round's MPEG-1-only arithmetic.
 
+### What round 19 lands
+
+* §7.6.3.6 MPEG-2 **dual-prime additional arithmetic** per
+  **ISO/IEC 13818-2 (Recommendation ITU-T H.262)** — derives the
+  opposite-parity motion vector(s) `vector'[r][0][1:0]` (`r = 2` for a
+  field picture; `r ∈ {2, 3}` for a frame picture) from the
+  same-parity vector decoded by round 12's
+  [`pmv::reconstruct_motion_vector`] and the inline `dmvector[0..1]`
+  decoded by round 11's [`motion_vector::MotionVector`].
+  * The two spec formulae (page 87, lines 5-7) are:
+    ```text
+    vector'[r][0][0] = ((vector'[0][0][0] * m[parity_ref][parity_pred]) // 2) + dmvector[0]
+    vector'[r][0][1] = ((vector'[0][0][1] * m[parity_ref][parity_pred]) // 2) + e[parity_ref][parity_pred] + dmvector[1]
+    ```
+  * [`dual_prime::m_factor`] encodes **Table 7-12** — the
+    `picture_structure` / `top_field_first`-keyed field-distance
+    factor. Frame pictures with `tff = 1` use `(m[1][0], m[0][1]) =
+    (1, 3)`; `tff = 0` swaps to `(3, 1)`. Field pictures only ever
+    consult the matching cross-parity entry (top-field row picks
+    `m[1][0] = 1`, bottom-field row picks `m[0][1] = 1`). Diagonal
+    cells `m[0][0]` / `m[1][1]` are not on Table 7-12 (the
+    same-parity vector is the input, not derived) and the function
+    errors when asked for them.
+  * [`dual_prime::e_offset`] encodes **Table 7-13** — the
+    unconditional vertical-line adjustment between fields:
+    `e[0][0] = 0`, `e[0][1] = +1`, `e[1][0] = -1`, `e[1][1] = 0`.
+    Independent of picture structure.
+  * The `//` halving in the formulae is **§4.1 page 9** "integer
+    division with rounding to the nearest integer; half-integer
+    values rounded away from zero" — distinct from `DIV` (toward
+    minus infinity) and `/` (toward zero). A private helper
+    `div_round_away_from_zero(a, 2) = (a + sign(a)) / 2` honours
+    `3//2 = 2` and `-3//2 = -2` per the spec examples; the same path
+    handles `5//2 = 3` / `-5//2 = -3` (the only other half-integer
+    cases reachable for `divisor = 2`).
+  * [`dual_prime::derive_opposite_parity_vector`] is the single-row
+    entry point; [`dual_prime::derive_all`] is the picture-level
+    driver that returns the `r = 2` derivation for a field picture
+    (its predicted parity drives `parity_ref = opposite`) or the
+    `[r = 2, r = 3]` pair for a frame picture (top-field prediction
+    in slot 0, bottom-field prediction in slot 1, per the §7.6.3.6
+    page-87 lines-13-14 sentence "The top field shall use
+    `vector'[2][0][1:0]` for opposite parity prediction and the
+    bottom field shall use `vector'[3][0][1:0]`").
+  * The derived `r ∈ {2, 3}` vectors do **not** flow back into the
+    [`pmv::Pmv`] slots — Table 7-7's note explicitly says only `r ∈
+    {0, 1}` have PMV storage; `r = 2` / `r = 3` are recomputed
+    per-macroblock by §7.6.3.6.
+  * Rejection sites: `dmvector` component outside `{-1, 0, +1}`
+    (defensive guard for upstream Table B-11 parsing); any
+    `(parity_ref, parity_pred)` pair that isn't on Table 7-12 for
+    the active picture type (errors `InvalidBitstream`).
+* [`dual_prime::dual_prime_picture`] lowers the parser-level
+  `(PictureStructure, top_field_first)` pair into a typed
+  [`dual_prime::DualPrimePicture`] so the call site in the
+  macroblock-loop driver doesn't reason about field-vs-frame branching
+  inline.
+* 19 new unit tests cover: §4.1 `//` examples (`3//2 = 2`, `-3//2 =
+  -2`, exact divisible, `1//2 = 1`, `-1//2 = -1`, `5//2 = 3`, `-5//2
+  = -3`); Table 7-12 all four `(picture_structure, tff)` rows; the
+  off-row error path for top / bottom field pictures and for the
+  diagonal-cells case; Table 7-13 all four entries; §7.6.3.6
+  worked-example arithmetic for a field-top derivation
+  `(0, 0)/(0, 0) → (0, -1)`, a field-bottom derivation
+  `(2, 2)/(0, 0) → (1, 2)`, a frame-tff=1 `r = 2` derivation
+  `(4, 6)/(1, -1) → (3, 1)`, a frame-tff=1 `r = 3` derivation
+  `(4, 6)/(0, 0) → (6, 10)` with the `m = 3` triple-scaling, and a
+  frame-tff=0 swap test that confirms `m` halves on the `r = 2` row
+  and triples on the `r = 3` row; the rounding-away-from-zero case
+  `decoded = ±3` honoured under `m = 1`; out-of-range `dmvector`
+  rejection (`-2`, `+2`, `+3`, `-5` on each axis); the
+  `derive_all` driver returning one vector for field pictures and
+  two vectors for frame pictures with the spec's r-index ordering;
+  the `dual_prime_picture` lowering for all three
+  `PictureStructure` values; and the [`FieldParity`] `index` /
+  `opposite` helpers.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
-  text (Recommendation ITU-T H.262 (1995 E)) §§4.3, 5.2.3, 6.2.2.1,
+  text (Recommendation ITU-T H.262 (1995 E)) §§4.1, 4.3, 5.2.3, 6.2.2.1,
   6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.2,
   6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11,
   6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, 7.6.3, 7.6.3.1,
-  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.7, Tables 6-1 / 6-2 / 6-3 / 6-4 /
-  6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 / 7-7 /
-  7-8 / 7-10 / 7-11, and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 /
-  B-10 / B-11.
+  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.6, 7.6.3.7, Tables 6-1 / 6-2 / 6-3 /
+  6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 /
+  7-7 / 7-8 / 7-10 / 7-11 / 7-12 / 7-13 / 7-14, and Annex B Tables B-1 /
+  B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
