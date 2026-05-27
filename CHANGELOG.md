@@ -8,6 +8,73 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 22: MPEG-2 (ISO/IEC 13818-2 / Recommendation
+  ITU-T H.262) §7.6 **Per-macroblock pipeline driver** — the composition
+  step that stitches the already-landed §7.6.5 / §7.6.6 case selection,
+  §7.6.7 combine-predictions, and §7.6.8 add-and-saturate endpoints into
+  a single "parsed-syntax + per-block predictions + per-block IDCT
+  output in → final per-coded-block decoded samples out" driver, keyed
+  off the parsed `MacroblockType` flags and the §6.3.17.4
+  `pattern_code[12]` derivation of `CodedBlockPattern`.
+  - `macroblock_pipeline::MacroblockKind { Intra, Inter(direction) }`
+    classifies the macroblock per §7.6.5 / §7.6.6 (intra flag
+    dominates motion flags; `(forward, backward) = (0, 0)` maps to
+    the `Skipped` direction for the §7.6.3.5 implicit zero-MV case),
+    and `MacroblockKind::from_macroblock_type` performs the
+    classification from a parsed `MacroblockType`.
+  - `macroblock_pipeline::BlockInputs` is the per-block payload —
+    `transform: &[i16]` plus `prediction_forward: &[u8]` /
+    `prediction_backward: &[u8]` — with `BlockInputs::intra` /
+    `::forward` / `::backward` / `::bidirectional` constructors that
+    leave the unused prediction side(s) empty.
+  - `macroblock_pipeline::decode_block(kind, inputs)` is the inner
+    driver: for `Intra` it calls `add_intra_block` (§7.6.8 `d =
+    saturate(f)` shortcut); for every inter case it calls
+    `combine_directional_predictions` then
+    `add_prediction_and_coefficients` for the `d = saturate(f + p)`
+    `[0, 255]` clamp.
+  - `macroblock_pipeline::decode_macroblock(kind, cbp, mt, chroma,
+    block_inputs)` is the outer driver: walks
+    `pattern_code[0 .. blocks_per_macroblock(chroma)]` and invokes
+    `decode_block` per coded slot, returning each `DecodedBlock` with
+    its §6.3.17.4 `block_index`. Uncoded slots and out-of-format
+    chroma slots are skipped.
+  - `macroblock_pipeline::blocks_per_macroblock(chroma)` returns the
+    §6.1.1.8 chroma-format block count per MB (6 for 4:2:0, 8 for
+    4:2:2, 12 for 4:4:4).
+  - `macroblock_pipeline::PipelineError { LengthMismatch,
+    MissingForwardPrediction, MissingBackwardPrediction,
+    MissingBidirectionalPrediction }` enumerates the four
+    caller-bug paths; the driver does not parse bitstreams so an
+    `InvalidBitstream` cannot originate here.
+  - The driver intentionally does **not** run the §A.1 IDCT (still
+    blocked by workspace issue #1110), the §7.6.4 pel reader, the
+    `coded_block_pattern()` bitstream walk, or the §6.2.5 macroblock
+    layer parsers; each of those is consumed as an input from the
+    already-landed pieces in their own modules.
+  - 22 new unit tests in `src/macroblock_pipeline.rs` cover the
+    `MacroblockKind` classifier (intra overrides motion, four-way
+    inter direction map), `decode_block`'s intra bit-equality with
+    `add_intra_block` and its prediction-side-ignored property, the
+    inter forward / backward / bidirectional / skipped combine-then-
+    add arithmetic on 2×2 blocks, the four caller-bug errors,
+    `blocks_per_macroblock` for all three chroma formats, and
+    `decode_macroblock`'s intra-everywhere walk (6 / 12 blocks per
+    MB), inter-only-cbp-bits-walked walk
+    (`cbp = 0b101010` → blocks 0 / 2 / 4), skipped-zero-pattern walk
+    (zero coded blocks), 4:2:2 walk (8 coded blocks driven by
+    `coded_block_pattern_1`), and the error-propagation-on-first-
+    failing-block path.
+  - 8 new integration tests in `tests/macroblock_pipeline_synthetic.rs`
+    drive the pipeline end-to-end on hand-built reference planes and
+    fabricated `i16` IDCT outputs for: 4:2:0 intra-everywhere
+    (6 blocks); P-forward-only zero-residual (prediction passes
+    through unchanged); B-bidirectional with the §7.6.8 clamp engaging
+    at both ends; B-backward-only on a single coded block; the
+    all-zero `pattern_code[]` skipped MB; the inner `decode_block`
+    on a canonical 8×8 intra block; `MissingForwardPrediction`
+    propagation; and `blocks_per_macroblock` chroma-format mapping.
+
 - Clean-room rebuild round 21: MPEG-2 (ISO/IEC 13818-2 / Recommendation
   ITU-T H.262) §7.6.7 **Combining predictions** + §7.6.8 **Adding
   prediction and coefficient data** — the bidirectional-average step

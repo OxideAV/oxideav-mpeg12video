@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–21 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane + §7.6.7.1 / §7.6.7.4 combine-predictions bidirectional `(forward + backward) // 2` average + §7.6.5 Tables 7-13 / 7-14 forward-only / backward-only / `Skipped` direction selection + §7.6.8 add-prediction-and-coefficients reconstruction with the `d = saturate(f + p)` `[0, 255]` clamp and the intra `d = saturate(f)` shortcut).**
+**Clean-room rebuild — rounds 1–22 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane + §7.6.7.1 / §7.6.7.4 combine-predictions bidirectional `(forward + backward) // 2` average + §7.6.5 Tables 7-13 / 7-14 forward-only / backward-only / `Skipped` direction selection + §7.6.8 add-prediction-and-coefficients reconstruction with the `d = saturate(f + p)` `[0, 255]` clamp and the intra `d = saturate(f)` shortcut + §7.6 per-macroblock pipeline driver that composes §7.6.7 + §7.6.8 onto a per-coded-block dispatch loop keyed off §6.3.17.4 `pattern_code[12]` and bounded by the §6.1.1.8 chroma-format block count `blocks_per_macroblock` of 6 / 8 / 12).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1105,20 +1105,101 @@ be defended as clean-room. The rebuild starts here.
   Expected samples are hand-computed from the spec formulas, no
   external decoder is consulted.
 
+### What round 22 lands
+
+* §7.6 **Per-macroblock pipeline driver** per **ISO/IEC 13818-2
+  (Recommendation ITU-T H.262) page 102** — the composition step that
+  stitches the already-landed §7.6.5 / §7.6.6 case selection, the
+  §7.6.7 combining endpoints, and the §7.6.8 add-and-saturate step
+  into a single "block in → decoded samples out" driver, keyed off
+  the parsed [`MacroblockType`] flags and the §6.3.17.4
+  `pattern_code[12]` derivation of [`CodedBlockPattern`].
+  * [`macroblock_pipeline::MacroblockKind`] is the §7.6.5 / §7.6.6
+    case (`Intra` vs `Inter(PredictionDirection)`) classified by
+    `MacroblockKind::from_macroblock_type`: intra flag dominates,
+    `(forward, backward)` map to `Forward` / `Backward` /
+    `Bidirectional` / `Skipped` (the last is the §7.6.3.5 implicit
+    zero-MV case).
+  * [`macroblock_pipeline::BlockInputs`] is the per-block payload —
+    post-IDCT transform plane plus the §7.6.4 prediction sides
+    (forward / backward) for the slot. Constructor helpers
+    `BlockInputs::intra` / `::forward` / `::backward` /
+    `::bidirectional` reflect the prediction subset each case needs.
+  * [`macroblock_pipeline::decode_block`] is the inner driver: for
+    the intra case it calls [`add_intra_block`] (the §7.6.8
+    `d = saturate(f)` shortcut, prediction conceptually zero); for
+    every inter case it calls [`combine_directional_predictions`]
+    then [`add_prediction_and_coefficients`]. Returns the
+    `[0, 255]`-clamped sample plane of the same length as the
+    transform.
+  * [`macroblock_pipeline::decode_macroblock`] is the outer driver:
+    walks `pattern_code[0 .. blocks_per_macroblock(chroma)]` and
+    invokes [`decode_block`] per coded slot, returning each
+    [`DecodedBlock`] with its §6.3.17.4 `block_index`. Uncoded
+    slots are skipped — the caller handles their `d = p` short-
+    circuit if it wants their samples too.
+  * [`macroblock_pipeline::blocks_per_macroblock`] returns the
+    §6.1.1.8 chroma-format block count per MB: 6 for 4:2:0,
+    8 for 4:2:2, 12 for 4:4:4. The walker uses this to bound
+    `pattern_code[]` iteration.
+  * [`macroblock_pipeline::PipelineError`] enumerates the four
+    caller-bug paths: `LengthMismatch` (transform vs prediction
+    slice length differs), `MissingForwardPrediction` /
+    `MissingBackwardPrediction` / `MissingBidirectionalPrediction`
+    (the inter direction needs a prediction side the caller didn't
+    supply). The driver itself doesn't parse bitstreams, so an
+    `InvalidBitstream` cannot originate here.
+* The driver explicitly does **not** run the §A.1 IDCT — the
+  transform plane enters pre-IDCT'd (the §A.1 implementation is
+  still blocked by workspace issue #1110). It also does not parse
+  the bitstream or form predictions — `BlockInputs` carry the
+  outputs of the §7.6.4 [`predict_block`] and the (caller-supplied)
+  IDCT. The driver's contract is intentionally narrow: it is the
+  per-coded-block dispatch loop that was missing between
+  "parsed syntax + per-block predictions and transforms in hand"
+  and "final per-block decoded samples out."
+* 22 new unit tests in `src/macroblock_pipeline.rs` cover:
+  the four-way `MacroblockKind::from_macroblock_type` classification
+  including the intra-overrides-motion case; `decode_block`'s intra
+  shortcut bit-equality with `add_intra_block` and its
+  prediction-side-ignored property; the inter forward / backward /
+  bidirectional / skipped paths' combine-then-add arithmetic on
+  hand-built 2×2 blocks; the four caller-bug errors
+  (`MissingForward`, `MissingBackward`, `MissingBidirectional`,
+  `LengthMismatch` on each single-side and the bidirectional path);
+  the `blocks_per_macroblock` map for all three chroma formats; and
+  the `decode_macroblock` walker's behaviour for the intra-everywhere
+  case (6 / 12 blocks per MB), the inter-only-cbp-bits-walked case
+  (`cbp = 0b101010` → blocks 0, 2, 4), the skipped-zero-pattern case
+  (zero coded blocks), the 4:2:2 walk (8 coded blocks with
+  `coded_block_pattern_1` feeding entries 6..7), and the
+  error-propagation-on-first-failing-block path.
+* New `tests/macroblock_pipeline_synthetic.rs` integration test
+  (8 cases) drives the full pipeline end-to-end on hand-crafted
+  reference planes and fabricated `i16` IDCT outputs for: 4:2:0
+  intra-everywhere (6 blocks); P-forward-only zero-residual (the
+  prediction passes through unchanged); B-bidirectional with the
+  §7.6.8 clamp engaging at both ends (`255` / `0`); B-backward-only
+  on a single coded block; the all-zero `pattern_code[]` skipped MB
+  (zero decoded blocks); the inner `decode_block` on a canonical 8×8
+  intra block matching the pointwise `saturate(f)` formula; the
+  caller-bug `MissingForwardPrediction` propagation; and the
+  `blocks_per_macroblock` chroma-format map.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
 
 * `docs/video/h262/is138182-1995.pdf` — ISO/IEC 13818-2:1995 base
-  text (Recommendation ITU-T H.262 (1995 E)) §§4.1, 4.3, 5.2.3, 6.2.2.1,
-  6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5, 6.2.5.1, 6.2.5.2,
-  6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8, 6.3.10, 6.3.11,
-  6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4, 7.6.3, 7.6.3.1,
-  7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.5, 7.6.3.6, 7.6.3.7, 7.6.4, 7.6.5,
-  7.6.7.1, 7.6.7.2, 7.6.7.4, 7.6.8, Tables 6-1 / 6-2 / 6-3 /
-  6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 / 6-14 / 6-17 / 6-18 / 6-19 /
-  7-7 / 7-8 / 7-10 / 7-11 / 7-12 / 7-13 / 7-14, and Annex B Tables B-1 /
-  B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
+  text (Recommendation ITU-T H.262 (1995 E)) §§4.1, 4.3, 5.2.3,
+  6.1.1.8, 6.2.2.1, 6.2.2.3, 6.2.2.6, 6.2.3, 6.2.3.1, 6.2.4, 6.2.5,
+  6.2.5.1, 6.2.5.2, 6.2.5.2.1, 6.2.5.3, 6.3.3, 6.3.4, 6.3.5, 6.3.8,
+  6.3.10, 6.3.11, 6.3.16, 6.3.17.1, 6.3.17.2, 6.3.17.3, 6.3.17.4,
+  7.6, 7.6.3, 7.6.3.1, 7.6.3.2, 7.6.3.3, 7.6.3.4, 7.6.3.5, 7.6.3.6,
+  7.6.3.7, 7.6.4, 7.6.5, 7.6.6, 7.6.7.1, 7.6.7.2, 7.6.7.4, 7.6.8,
+  Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 /
+  6-14 / 6-17 / 6-18 / 6-19 / 7-7 / 7-8 / 7-10 / 7-11 / 7-12 / 7-13 /
+  7-14, and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —

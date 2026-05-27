@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–21 — structural sequence-layer
+//! **Status:** rebuild rounds 1–22 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -224,6 +224,20 @@
 //!   clamp, both for the inter / B-frame
 //!   `prediction + transform` case and for the intra shortcut where
 //!   the prediction is conceptually all-zero and `d = saturate(f)`.
+//! * [`macroblock_pipeline::decode_block`] /
+//!   [`macroblock_pipeline::decode_macroblock`] — the §7.6 per-
+//!   macroblock driver that composes the already-landed §7.6.7
+//!   combine-predictions and §7.6.8 add-and-saturate endpoints into a
+//!   per-coded-block dispatch loop keyed off the §6.3.17.4
+//!   `pattern_code[12]` array. Consumes a
+//!   [`macroblock_pipeline::MacroblockKind`] (the §7.6.5 / §7.6.6
+//!   case), per-block [`macroblock_pipeline::BlockInputs`] (post-IDCT
+//!   transform plane + §7.6.4 prediction sides), and the
+//!   [`sequence_extension::ChromaFormat`] that bounds the walk to
+//!   [`macroblock_pipeline::blocks_per_macroblock`] blocks per MB
+//!   (6 for 4:2:0, 8 for 4:2:2, 12 for 4:4:4). Does NOT run the
+//!   §A.1 IDCT or the §7.6.4 pel reader — the IDCT in particular is
+//!   still blocked by issue #1110.
 
 #![warn(missing_debug_implementations)]
 
@@ -239,6 +253,7 @@ pub mod dual_prime;
 pub mod forming_predictions;
 pub mod gop_header;
 pub mod macroblock_modes;
+pub mod macroblock_pipeline;
 pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod motion_vector;
@@ -278,6 +293,11 @@ pub use forming_predictions::{
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
+};
+pub use macroblock_pipeline::{
+    blocks_per_macroblock, decode_block as pipeline_decode_block,
+    decode_macroblock as pipeline_decode_macroblock, BlockInputs, DecodedBlock, MacroblockKind,
+    PipelineError,
 };
 pub use macroblock_type::MacroblockType;
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
@@ -351,7 +371,7 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–21 parse the sequence,
+/// No-op codec registration. Rounds 1–22 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
@@ -382,7 +402,13 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// formula), and the §7.6.8 add-prediction-and-coefficients
 /// reconstruction step (`d = saturate(f + p)` with `[0, 255]` clamp,
 /// plus the intra shortcut `d = saturate(f)` for `macroblock_intra ==
-/// 1` blocks) — they do not yet provide a complete
+/// 1` blocks), and the §7.6 per-macroblock pipeline driver
+/// ([`macroblock_pipeline::decode_block`] /
+/// [`macroblock_pipeline::decode_macroblock`]) that composes the
+/// §7.6.7 + §7.6.8 endpoints onto a per-coded-block dispatch loop
+/// keyed off the §6.3.17.4 `pattern_code[12]` derivation and the
+/// [`ChromaFormat`]-bounded `blocks_per_macroblock` (6 / 8 / 12)
+/// walk — they do not yet provide a complete
 /// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`] (the IDCT
 /// is still ahead), so there is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
