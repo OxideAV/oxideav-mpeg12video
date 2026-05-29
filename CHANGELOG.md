@@ -8,6 +8,50 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 23: MPEG-2 (ISO/IEC 13818-2 / Recommendation
+  ITU-T H.262) §7.4 **inverse-quantisation pipeline** — the dequantiser
+  stage of Figure 7-1 between §7.3 inverse-scan and the §A.1 IDCT. Lives
+  in `src/mpeg2_dequantize.rs`; the MPEG-1 §2.4.4 dequantiser stays in
+  `src/dequantize.rs` (the two formulations diverge by spec).
+  - `mpeg2_dequantize::intra_dc_mult` — Table 7-4
+    `intra_dc_precision → intra_dc_mult` (8 / 4 / 2 / 1), with
+    `intra_dc_mult_from_extension` taking the parsed
+    `PictureCodingExtension` directly.
+  - `mpeg2_dequantize::DEFAULT_INTRA_WEIGHT` /
+    `DEFAULT_NON_INTRA_WEIGHT` — the §6.3.7 default `W[0]` / `W[1]`
+    matrices (the intra-default mirrors MPEG-1's `intra_quant`; the
+    non-intra-default is all-16).
+  - `mpeg2_dequantize::select_weighting_matrix_index(coding,
+    component, chroma_format)` — Table 7-5 weighting-matrix index
+    selection (`w ∈ {0, 1, 2, 3}`), folding the 4:2:0 chroma collapse
+    into the luma slot and the 4:2:2 / 4:4:4 split out into `w == 2`
+    (intra chroma) and `w == 3` (non-intra chroma).
+  - `mpeg2_dequantize::QUANTISER_SCALE_LINEAR` /
+    `QUANTISER_SCALE_NONLINEAR` — the Table 7-6 lookup arrays for
+    `q_scale_type == 0` (linear, `2..=62`) and `q_scale_type == 1`
+    (non-linear, `1..=112`); the safe accessor `quantiser_scale(code,
+    q_scale_type)` rejects code `0` (forbidden per Table 7-6) and any
+    value above the 5-bit range.
+  - `mpeg2_dequantize::inverse_quantise_block(qf, coding, weight,
+    quantiser_scale, intra_dc_mult)` composes §7.4.1 + §7.4.2.3 +
+    §7.4.3 + §7.4.4 into one call: §7.4.1 intra-DC short-circuit at
+    `(v, u) == (0, 0)` for `Intra`, §7.4.2.3 reconstruction `((2 *
+    QF + k) * W * quantiser_scale) / 32` (`k = 0` for intra, `k =
+    Sign(QF)` for non-intra) under the §4.1 round-toward-zero `/`
+    operator, §7.4.3 saturation to `[-2048, 2047]`, and §7.4.4
+    mismatch control (sum-parity LSB toggle on `F[7][7]`).
+    `F_SATURATION_MIN` / `F_SATURATION_MAX` surface the §7.4.3
+    clamp bounds; helper functions `sign` / `saturate` expose the
+    §4.1 `Sign(...)` and §7.4.3 clamp for callers that want to
+    replay the table outside `inverse_quantise_block`.
+  - 21 unit tests (Table 7-4 / Table 7-5 / Table 7-6 coverage,
+    `Sign`, `Saturate`, and synthetic intra + non-intra walks
+    through §7.4.5) + a 7-test integration suite
+    (`tests/mpeg2_dequantize_synthetic.rs`) that cross-checks the
+    public surface against an independently-coded reference loop
+    transcribed from the spec text.
+  - Does *not* run the §A.1 IDCT itself (`#1110` IDCT-precision spec
+    pending).
 - Clean-room rebuild round 22: MPEG-2 (ISO/IEC 13818-2 / Recommendation
   ITU-T H.262) §7.6 **Per-macroblock pipeline driver** — the composition
   step that stitches the already-landed §7.6.5 / §7.6.6 case selection,

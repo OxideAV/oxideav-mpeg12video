@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–22 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane + §7.6.7.1 / §7.6.7.4 combine-predictions bidirectional `(forward + backward) // 2` average + §7.6.5 Tables 7-13 / 7-14 forward-only / backward-only / `Skipped` direction selection + §7.6.8 add-prediction-and-coefficients reconstruction with the `d = saturate(f + p)` `[0, 255]` clamp and the intra `d = saturate(f)` shortcut + §7.6 per-macroblock pipeline driver that composes §7.6.7 + §7.6.8 onto a per-coded-block dispatch loop keyed off §6.3.17.4 `pattern_code[12]` and bounded by the §6.1.1.8 chroma-format block count `blocks_per_macroblock` of 6 / 8 / 12).**
+**Clean-room rebuild — rounds 1–23 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane + §7.6.7.1 / §7.6.7.4 combine-predictions bidirectional `(forward + backward) // 2` average + §7.6.5 Tables 7-13 / 7-14 forward-only / backward-only / `Skipped` direction selection + §7.6.8 add-prediction-and-coefficients reconstruction with the `d = saturate(f + p)` `[0, 255]` clamp and the intra `d = saturate(f)` shortcut + §7.6 per-macroblock pipeline driver that composes §7.6.7 + §7.6.8 onto a per-coded-block dispatch loop keyed off §6.3.17.4 `pattern_code[12]` and bounded by the §6.1.1.8 chroma-format block count `blocks_per_macroblock` of 6 / 8 / 12 + **MPEG-2 §7.4 inverse-quantisation pipeline** with Table 7-4 `intra_dc_mult` against `intra_dc_precision`, Table 7-5 weighting-matrix `(coding, component, chroma_format) → w` selection, Table 7-6 `quantiser_scale_code → quantiser_scale` lookup for both `q_scale_type` columns, §7.4.2.3 reconstruction `((2*QF + k) * W * quantiser_scale) / 32` with `k = 0` / `k = Sign(QF)`, §7.4.3 `[-2048, 2047]` saturation, and §7.4.4 sum-parity LSB-toggle mismatch control on `F[7][7]`).**
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1185,6 +1185,84 @@ be defended as clean-room. The rebuild starts here.
   intra block matching the pointwise `saturate(f)` formula; the
   caller-bug `MissingForwardPrediction` propagation; and the
   `blocks_per_macroblock` chroma-format map.
+
+### What round 23 lands
+
+* **MPEG-2 §7.4 inverse-quantisation pipeline** per **ISO/IEC 13818-2
+  / Recommendation ITU-T H.262 pages 73–76**, in a fresh
+  `src/mpeg2_dequantize.rs` module. This is the dequantiser stage
+  between §7.3 inverse-scan (already in hand via the §6.3.17.4
+  `pattern_code[]` walker) and the §A.1 IDCT (still blocked by
+  workspace issue #1110). The MPEG-1 §2.4.4 dequantiser in
+  `src/dequantize.rs` is left untouched — the two formulations
+  diverge on `k`, the saturation placement, and the mismatch
+  control, so they live in separate modules.
+  * §7.4.1 intra-DC: [`mpeg2_dequantize::intra_dc_mult`] encodes
+    Table 7-4 (`intra_dc_precision ∈ {0,1,2,3} → intra_dc_mult ∈
+    {8,4,2,1}`); the inverse-quantise pipeline short-circuits at
+    `(v, u) == (0, 0)` for `Intra` blocks and emits `intra_dc_mult
+    * QF[0][0]`.
+  * §7.4.2.1 weighting matrices:
+    [`mpeg2_dequantize::DEFAULT_INTRA_WEIGHT`] and
+    [`mpeg2_dequantize::DEFAULT_NON_INTRA_WEIGHT`] expose the §6.3.7
+    defaults (intra-default matches MPEG-1's `intra_quant`; non-
+    intra-default is all-16).
+    [`mpeg2_dequantize::select_weighting_matrix_index(coding,
+    component, chroma_format)`] encodes Table 7-5 — the 4:2:0
+    chroma collapse into the luma slot, and the 4:2:2 / 4:4:4 split
+    into `w == 2` (intra chroma) and `w == 3` (non-intra chroma).
+  * §7.4.2.2 quantiser_scale:
+    [`mpeg2_dequantize::QUANTISER_SCALE_LINEAR`] and
+    [`mpeg2_dequantize::QUANTISER_SCALE_NONLINEAR`] are the Table 7-6
+    lookup arrays (`q_scale_type == 0` linear `2..=62`,
+    `q_scale_type == 1` non-linear `1..=112`). The accessor
+    [`mpeg2_dequantize::quantiser_scale(code, q_scale_type)`] rejects
+    code `0` (forbidden per Table 7-6) and any value above the 5-bit
+    range.
+  * §7.4.2.3 reconstruction:
+    [`mpeg2_dequantize::inverse_quantise_block`] applies `F''[v][u]
+    = ((2 * QF[v][u] + k) * W[v][u] * quantiser_scale) / 32` with
+    `k = 0` for intra and `k = Sign(QF[v][u])` for non-intra, under
+    the §4.1 round-toward-zero `/` operator (Rust's signed-`/`
+    matches).
+  * §7.4.3 saturation: same `[-2048, 2047]` band as MPEG-1, but
+    applied after §7.4.2.3 on `F''` to yield `F'`.
+    [`mpeg2_dequantize::F_SATURATION_MIN`] /
+    [`mpeg2_dequantize::F_SATURATION_MAX`] expose the constants.
+  * §7.4.4 mismatch control: sums `F'[v][u]` over the block; if the
+    sum is even, toggles the LSB of `F'[7][7]` to flip parity. The
+    spec's Note 1 (XOR-of-LSBs equivalence) is mentioned in the
+    module doc as a future optimisation; we use the literal sum form
+    so the implementation tracks the printed pseudocode.
+  * §7.4.5 summary: `inverse_quantise_block` is the single
+    entrypoint composing §7.4.1 + §7.4.2.3 + §7.4.3 + §7.4.4,
+    returning `F[v][u]` directly. The §A.1 IDCT is the next stage
+    and is still blocked.
+* 21 new unit tests in `src/mpeg2_dequantize.rs` cover: every cell
+  of Table 7-4 plus its out-of-range rejection; Table 7-5 across
+  every `(coding, component, chroma_format)` triple including the
+  4:2:0 chroma-collapse and the 4:2:2 / 4:4:4 split; Table 7-6's
+  linear column (every code) and the spot-checked non-linear column
+  plus the full-table equivalence test (every legal code); the
+  forbidden `code == 0` and the out-of-range rejection; `Sign`
+  matching §4.1 across negative / zero / positive; `Saturate`
+  clamping at both ends; the §7.4.1 short-circuit on an all-zero
+  AC plane; the §7.4.4 mismatch flip on even sums; the §7.4.4
+  no-op on odd sums; intra AC arithmetic with default
+  `intra_quant`; non-intra arithmetic with positive and negative
+  `QF[v][u]` (driving both `k = +1` and `k = -1` branches);
+  saturation engagement at both `+2047` and `-2048`; and the
+  mismatch isolation that proves only `F[7][7]` is ever touched.
+* New `tests/mpeg2_dequantize_synthetic.rs` integration test
+  (7 cases) drives the public surface against an independently-
+  coded reference loop that transcribes §7.4.5 from the spec text:
+  intra-block end-to-end equivalence; non-intra-block end-to-end
+  equivalence; sweep of every legal `quantiser_scale_code` across
+  both `q_scale_type` columns; the full Table 7-4 walk; the
+  Table 7-5 walk; the Table 7-6 boundary slots; and the §7.4.3
+  clamp constants. No external decoder is consulted — the
+  reference loop is built from the §7.4 printed pseudocode in
+  ISO/IEC 13818-2.
 
 ## Clean-room provenance
 

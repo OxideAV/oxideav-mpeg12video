@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–22 — structural sequence-layer
+//! **Status:** rebuild rounds 1–23 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -238,6 +238,28 @@
 //!   (6 for 4:2:0, 8 for 4:2:2, 12 for 4:4:4). Does NOT run the
 //!   §A.1 IDCT or the §7.6.4 pel reader — the IDCT in particular is
 //!   still blocked by issue #1110.
+//! * [`mpeg2_dequantize::inverse_quantise_block`] — the §7.4
+//!   inverse-quantisation pipeline from ITU-T H.262 / ISO/IEC
+//!   13818-2 page 73 onward: §7.4.1 intra DC via the Table 7-4
+//!   `intra_dc_mult` lookup against `intra_dc_precision`, §7.4.2.1
+//!   weighting-matrix selection through
+//!   [`mpeg2_dequantize::select_weighting_matrix_index`]
+//!   (Table 7-5), §7.4.2.2 `quantiser_scale_code → quantiser_scale`
+//!   resolution via [`mpeg2_dequantize::quantiser_scale`] backed by
+//!   the [`mpeg2_dequantize::QUANTISER_SCALE_LINEAR`] /
+//!   [`mpeg2_dequantize::QUANTISER_SCALE_NONLINEAR`] Table 7-6
+//!   columns and keyed on `q_scale_type`, §7.4.2.3 reconstruction
+//!   (`F''[v][u] = ((2*QF + k) * W * quantiser_scale) / 32` with
+//!   `k = 0` for intra and `k = Sign(QF[v][u])` for non-intra under
+//!   the §4.1 round-toward-zero `/` operator), §7.4.3 saturation to
+//!   `[-2048, 2047]`, and §7.4.4 mismatch control (sum-parity LSB
+//!   toggle on `F[7][7]`). Companion constants
+//!   [`mpeg2_dequantize::DEFAULT_INTRA_WEIGHT`] and
+//!   [`mpeg2_dequantize::DEFAULT_NON_INTRA_WEIGHT`] expose the
+//!   §6.3.7 defaults; [`mpeg2_dequantize::F_SATURATION_MIN`] /
+//!   [`mpeg2_dequantize::F_SATURATION_MAX`] expose the §7.4.3
+//!   clamp bounds. The §A.1 IDCT itself remains blocked behind
+//!   issue #1110.
 
 #![warn(missing_debug_implementations)]
 
@@ -259,6 +281,7 @@ pub mod mb_address_increment;
 pub mod motion_vector;
 pub mod mpeg1_motion_vector;
 pub mod mpeg1_reconstruct;
+pub mod mpeg2_dequantize;
 pub mod picture_header;
 pub mod pmv;
 pub mod quantizer_scale;
@@ -309,6 +332,14 @@ pub use mpeg1_reconstruct::{
     reconstruct as mpeg1_reconstruct, reconstruct_absent as mpeg1_reconstruct_absent,
     reconstruct_zero as mpeg1_reconstruct_zero, Mpeg1FrameMvContext, Mpeg1Predictor,
     Mpeg1ReconstructedMv,
+};
+pub use mpeg2_dequantize::{
+    intra_dc_mult, intra_dc_mult_from_extension,
+    inverse_quantise_block as mpeg2_inverse_quantise_block, quantiser_scale,
+    saturate as mpeg2_saturate, select_weighting_matrix_index, sign as mpeg2_sign,
+    BlockCoding as Mpeg2BlockCoding, Component as Mpeg2Component, DEFAULT_INTRA_WEIGHT,
+    DEFAULT_NON_INTRA_WEIGHT, F_SATURATION_MAX, F_SATURATION_MIN, QUANTISER_SCALE_LINEAR,
+    QUANTISER_SCALE_NONLINEAR,
 };
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
@@ -371,7 +402,7 @@ impl std::error::Error for Error {}
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–22 parse the sequence,
+/// No-op codec registration. Rounds 1–23 parse the sequence,
 /// group-of-pictures, picture, and slice headers plus the
 /// macroblock-loop syntax through the end of `motion_vectors()`, the
 /// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
@@ -408,9 +439,17 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// §7.6.7 + §7.6.8 endpoints onto a per-coded-block dispatch loop
 /// keyed off the §6.3.17.4 `pattern_code[12]` derivation and the
 /// [`ChromaFormat`]-bounded `blocks_per_macroblock` (6 / 8 / 12)
-/// walk — they do not yet provide a complete
-/// [`oxideav_core::Decoder`] or [`oxideav_core::Encoder`] (the IDCT
-/// is still ahead), so there is nothing to install in the registry.
+/// walk, and the §7.4 MPEG-2 inverse-quantisation pipeline
+/// ([`mpeg2_dequantize::inverse_quantise_block`]) covering §7.4.1
+/// intra DC via Table 7-4 `intra_dc_mult`, §7.4.2.1 weighting-matrix
+/// selection (Table 7-5), §7.4.2.2 `quantiser_scale_code` via
+/// Table 7-6 (both `q_scale_type` columns), §7.4.2.3 reconstruction
+/// (`((2*QF + k) * W * quantiser_scale) / 32` with `k = 0` /
+/// `k = Sign(QF)`), §7.4.3 saturation to `[-2048, 2047]`, and §7.4.4
+/// mismatch control (sum-parity LSB toggle on `F[7][7]`) — they do
+/// not yet provide a complete [`oxideav_core::Decoder`] or
+/// [`oxideav_core::Encoder`] (the §A.1 IDCT is still ahead), so
+/// there is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
 oxideav_core::register!("mpeg12video", register);
