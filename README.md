@@ -5,7 +5,25 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–23 (sequence layer + GOP header + picture header + slice header + macroblock_address_increment + macroblock_type + macroblock-layer quantizer_scale + coded_block_pattern + macroblock_modes() motion-type / dct_type tail + MPEG-2 motion_vectors() / motion_vector() + Tables B-10 / B-11 + §7.6.3.1 PMV reconstruction with wrap-around + §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11) + §7.6.3.4 reset + §7.6.3.7 chroma scaling + MPEG-1 motion_vector(s) per §2.4.2.7 driven by Annex B Table B.4 + MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction with `right_little` / `right_big` wrap-around, `full_pel_*_vector` shift, and the luma / chroma whole/half-pel split + MPEG-1 §2.4.2.8 / §2.4.3.7 intra-block DC prelude with Annex B Tables B.5a / B.5b VLCs and the differential→`dct_zz[0]` reconstruction, plus the §2.4.4.1 8x8 zig-zag `scan[m][n]` + MPEG-1 §2.4.3.7 `dct_coeff_first` / `dct_coeff_next` run-level walker driven by Annex B Tables B.5c / B.5d / B.5e VLCs with the §2.4.3.7 `dct_coeff_first` vs `dct_coeff_next` `(0, 1)` disambiguation, `end_of_block` recognition, and Table B.5f escape encoding for the short 14-bit `[-127, +127] \ {0}` form and the long 22-bit `[-255, -128] ∪ [+128, +255]` form + MPEG-1 §2.4.4.1 / §2.4.4.2 intra and non-intra dequantiser bodies with the `dct_dc_y_past` / `dct_dc_cb_past` / `dct_dc_cr_past` predictor chain, the `past_intra_address > 1` reset branch, the `Sign(...)` even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2 default `intra_quant` / `non_intra_quant` matrices, and the non-intra `dct_zz[i] == 0 -> 0` zeroing pass + §7.6.3.6 MPEG-2 dual-prime additional arithmetic with Tables 7-12 / 7-13 driving the `(m * vector') // 2 + e + dmvector` formula under the §4.1 round-away-from-zero `//` operator for both single-vector field-picture and two-vector frame-picture derivations + §7.6.4 forming-predictions pel reader with the §4.1 `DIV` floor-toward-minus-infinity per-component `int_vec` / `half_flag` split and the four-way half-pel switch averaging two or four reference samples by the §4.1 `// 2` / `// 4` operator over a pad-to-edge reference plane + §7.6.7.1 / §7.6.7.4 combine-predictions bidirectional `(forward + backward) // 2` average + §7.6.5 Tables 7-13 / 7-14 forward-only / backward-only / `Skipped` direction selection + §7.6.8 add-prediction-and-coefficients reconstruction with the `d = saturate(f + p)` `[0, 255]` clamp and the intra `d = saturate(f)` shortcut + §7.6 per-macroblock pipeline driver that composes §7.6.7 + §7.6.8 onto a per-coded-block dispatch loop keyed off §6.3.17.4 `pattern_code[12]` and bounded by the §6.1.1.8 chroma-format block count `blocks_per_macroblock` of 6 / 8 / 12 + **MPEG-2 §7.4 inverse-quantisation pipeline** with Table 7-4 `intra_dc_mult` against `intra_dc_precision`, Table 7-5 weighting-matrix `(coding, component, chroma_format) → w` selection, Table 7-6 `quantiser_scale_code → quantiser_scale` lookup for both `q_scale_type` columns, §7.4.2.3 reconstruction `((2*QF + k) * W * quantiser_scale) / 32` with `k = 0` / `k = Sign(QF)`, §7.4.3 `[-2048, 2047]` saturation, and §7.4.4 sum-parity LSB-toggle mismatch control on `F[7][7]`).**
+**Clean-room rebuild — rounds 1–24.** Round 1–23 cover the bitstream
+parsing surface (sequence / GOP / picture / slice headers + the
+macroblock-layer syntax through `motion_vectors()` and
+`coded_block_pattern`), motion-vector reconstruction for both stream
+types (MPEG-1 §2.4.4.2/§2.4.4.3 and MPEG-2 §7.6.3.1/.3/.4/.7), MPEG-2
+dual-prime §7.6.3.6, the MPEG-1 intra DC prelude + zig-zag + run-level
+walker (§2.4.2.8 / §2.4.3.7 / §2.4.4.1, Annex B Tables B.5a–B.5f), the
+MPEG-1 intra/non-intra dequantiser (§2.4.4.1/.2 with the
+`dct_dc_*_past` predictor chain, even-mismatch fix and `[-2048, 2047]`
+saturation), the §7.6 motion-compensation pipeline (§7.6.4
+forming-predictions pel reader, §7.6.7 combine-predictions, §7.6.8
+add-coefficients with the `[0, 255]` clamp), and the MPEG-2 §7.4
+inverse-quantisation pipeline (Tables 7-4 / 7-5 / 7-6, §7.4.2.3
+reconstruction, §7.4.3 saturation, §7.4.4 sum-parity mismatch control
+on `F[7][7]`). Round 24 lands the **§A 8×8 inverse discrete cosine
+transform** with an IEEE Std 1180-1990 / P1180/D2 conformance harness
+exercising the four statistical metrics (`pmse`, `omse`, `pme`, `ome`)
+plus peak error against the bounds transcribed in
+`docs/video/mpeg12video/idct-accuracy-spec.md` §4.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1263,6 +1281,74 @@ be defended as clean-room. The rebuild starts here.
   clamp constants. No external decoder is consulted — the
   reference loop is built from the §7.4 printed pseudocode in
   ISO/IEC 13818-2.
+
+### What round 24 lands
+
+* **§A 8×8 inverse discrete cosine transform** per **ISO/IEC 11172-2
+  Annex A** ("8 by 8 Inverse discrete cosine transform", page 39,
+  invoking **IEEE Draft Standard P1180/D2, July 18, 1990**) and
+  **ISO/IEC 13818-2 Annex A** (same role, invoking **IEEE Std
+  1180-1990, December 6, 1990**), in a fresh `src/idct.rs` module.
+  This is the IDCT stage of Figure 7-1 between the round-23 §7.4
+  inverse-quantisation pipeline and the round-22 §7.6 macroblock
+  pipeline.
+  * Three-layer API matching the spec's clean separation of
+    reference / candidate / integer-output:
+    * `idct::idct_reference_f64` — the **double-precision direct
+      4-D reference**: evaluates `f[y][x] = (1/4) Σ_v Σ_u
+      C(u)·C(v)·F[v][u]·cos((2x+1)uπ/16)·cos((2y+1)vπ/16)` literally
+      using a cached cosine kernel. This is the closest practical
+      analogue to the "infinite-precision" reference IEEE 1180 / P1180
+      compare candidates against.
+    * `idct::idct_candidate_f64` — the **separable 1-D-pass
+      candidate**: eight 8-point row IDCTs followed by eight 8-point
+      column IDCTs (the `O(N³)` decomposition). Mathematically
+      identical to the direct reference; differs only in `f64`
+      rounding order.
+    * `idct::idct_8x8` / `idct_8x8_from_i32` — the **integer IDCT**
+      the downstream §7.6 pipeline consumes: calls
+      `idct_candidate_f64`, rounds with the §4.1 `Round(x)` operator
+      (ties away from zero), and saturates the 9-bit signed pel
+      range `[-256, +255]` per §7.5.
+  * Module constants surface the spec's input/output ranges:
+    `F_INPUT_MIN` / `F_INPUT_MAX` = `[-2048, 2047]` (the §7.4.3
+    12-bit signed input clamp the upstream dequantiser produces) and
+    `F_OUTPUT_MIN` / `F_OUTPUT_MAX` = `[-256, 255]` (the §7.5 9-bit
+    signed pel-grid output clamp). Helper functions
+    `saturate_idct_input` / `saturate_idct_output` apply each clamp.
+  * 11 unit tests in `src/idct.rs` cover: all-zero input → all-zero
+    output (the IEEE 1180 deterministic edge case); DC-only input
+    produces a flat block (positive and negative); the §7.5 output
+    saturation reaches `[-256, +255]` even for extremal coefficient
+    inputs; `saturate_output` / `saturate_input` clamp behaviour;
+    `idct_8x8_from_i32` saturates out-of-range coefficients; the
+    `idct_reference_f64` and `idct_candidate_f64` IDCT outputs agree
+    to within `1e-10` per pixel on an arbitrary input block.
+* New `tests/idct_p1180_conformance.rs` integration test
+  (8 cases) is the IEEE Std 1180-1990 / P1180/D2 **statistical
+  conformance harness** against the bounds transcribed in
+  `docs/video/mpeg12video/idct-accuracy-spec.md` §4. It exercises
+  the **four statistical metrics** the spec defines plus peak
+  error and the two mandatory deterministic edge cases:
+  | Metric | Bound | Role |
+  |--------|-------|------|
+  | Peak error `pe`        | `≤ 1`      | Max absolute integer-domain candidate ↔ reference error, any pixel, any block. |
+  | Peak per-position MSE `pmse` | `≤ 0.06`   | Worst per-position mean-square error across the 64 grid positions. |
+  | Overall MSE `omse`     | `≤ 0.02`   | Mean-square error averaged across all 64 positions. |
+  | Peak per-position mean error `pme` | `≤ 0.015`  | Worst absolute per-position mean error across the 64 positions. |
+  | Overall absolute mean error `ome`  | `≤ 0.0015` | Mean per-position bias averaged across all 64 positions. |
+  Six pseudo-random input conditions are exercised — three input-range
+  parameters `L ∈ {256, 5, 300}` and both signs per parameter set —
+  with `BLOCKS_PER_CONDITION = 1024` blocks each. Inputs are generated
+  from a deterministic 64-bit linear congruential generator seeded per
+  parameter set, so the harness is reproducible on every run. The
+  candidate-vs-reference comparison runs at `f64` precision (the
+  separable kernel vs. the direct 4-D summation, both clamped to the
+  §7.5 pel range before differencing) so the test isolates the
+  numerical precision of the separable kernel from the unavoidable
+  `± 0.5` LSB rounding noise of the final integer cast. The two
+  deterministic checks — all-zero input → all-zero output, DC-only
+  input → flat output — cover the spec-mandated exact cases.
 
 ## Clean-room provenance
 

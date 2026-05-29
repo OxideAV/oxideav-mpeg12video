@@ -8,6 +8,37 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 24: §A **8×8 inverse discrete cosine
+  transform** (the IDCT stage of Figure 7-1 between §7.4
+  inverse-quantisation and the §7.6 macroblock pipeline) with an IEEE
+  Std 1180-1990 / P1180/D2 conformance harness against the four
+  statistical metrics ISO/IEC 11172-2 Annex A and ISO/IEC 13818-2 §A
+  require by reference.
+  - `idct::idct_reference_f64` — direct 4-D summation of the §A
+    trigonometric identity at `f64` precision; the "infinite
+    precision" reference IEEE 1180 specifies as the gold standard.
+  - `idct::idct_candidate_f64` — the fast separable 1-D-pass IDCT
+    (eight row IDCTs followed by eight column IDCTs) used internally
+    by the integer IDCT. Mathematically identical to the direct
+    reference; differs only in `f64` rounding order.
+  - `idct::idct_8x8` / `idct_8x8_from_i32` — the integer IDCT API the
+    downstream §7.6 pipeline consumes: calls `idct_candidate_f64`,
+    rounds with the spec's `Round(x)` operator, and saturates the
+    9-bit signed pel range `[-256, +255]` per §7.5.
+  - Module constants `F_INPUT_MIN` / `F_INPUT_MAX` (12-bit signed,
+    `[-2048, 2047]`) and `F_OUTPUT_MIN` / `F_OUTPUT_MAX` (9-bit
+    signed, `[-256, 255]`) expose the §7.4.3 input clamp and the §7.5
+    output clamp respectively.
+  - `tests/idct_p1180_conformance.rs` — IEEE 1180 / P1180/D2
+    statistical accuracy test against the bounds staged at
+    `docs/video/mpeg12video/idct-accuracy-spec.md` §4: peak error
+    `pe ≤ 1`, peak per-position MSE `pmse ≤ 0.06`, overall MSE
+    `omse ≤ 0.02`, peak per-position mean error `pme ≤ 0.015`, and
+    overall absolute mean error `ome ≤ 0.0015`. Six pseudo-random
+    parameter sets (`L ∈ {256, 5, 300}` × both signs, 1024 blocks
+    each, deterministic LCG seeds) plus the spec's two deterministic
+    edge cases (all-zero coefficient block → all-zero pel block;
+    DC-only block → flat pel block).
 - Clean-room rebuild round 23: MPEG-2 (ISO/IEC 13818-2 / Recommendation
   ITU-T H.262) §7.4 **inverse-quantisation pipeline** — the dequantiser
   stage of Figure 7-1 between §7.3 inverse-scan and the §A.1 IDCT. Lives

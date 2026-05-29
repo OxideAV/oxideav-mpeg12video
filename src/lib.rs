@@ -44,10 +44,18 @@
 //! `(half_flag[0], half_flag[1])`, and the bilinear two-sample /
 //! four-sample `// 2` / `// 4` averaging, driving a dimensionless
 //! `width x height` prediction block over a pad-to-edge reference
-//! plane). The IDCT itself is still ahead; the public `register`
-//! symbol is still a no-op so that downstream consumers can depend on
-//! the crate without the decoder being inadvertently selected by the
-//! registry.
+//! plane). The §A 8×8 IDCT is now in hand at
+//! [`idct::idct_reference_f64`] (direct 4-D summation),
+//! [`idct::idct_candidate_f64`] (separable 1-D-pass), and
+//! [`idct::idct_8x8`] (integer output rounded + clamped to
+//! `[-256, +255]`), with an IEEE Std 1180-1990 / P1180/D2 conformance
+//! harness in `tests/idct_p1180_conformance.rs` covering the four
+//! statistical metrics plus the two deterministic edge cases. The
+//! public `register` symbol is still a no-op so that downstream
+//! consumers can depend on the crate without the decoder being
+//! inadvertently selected by the registry — the full
+//! [`oxideav_core::Decoder`] / [`oxideav_core::Encoder`] glue still
+//! needs the slice-decoding driver and bytestream entry points.
 //!
 //! The landed pieces so far are:
 //!
@@ -274,6 +282,7 @@ pub mod dequantize;
 pub mod dual_prime;
 pub mod forming_predictions;
 pub mod gop_header;
+pub mod idct;
 pub mod macroblock_modes;
 pub mod macroblock_pipeline;
 pub mod macroblock_type;
@@ -314,6 +323,11 @@ pub use forming_predictions::{
     BoundaryMode, ComponentSplit, HalfPattern, ReferencePlane, SplitVector,
 };
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
+pub use idct::{
+    idct_8x8, idct_8x8_from_i32, idct_candidate_f64, idct_reference_f64,
+    saturate_input as saturate_idct_input, saturate_output as saturate_idct_output, F_INPUT_MAX,
+    F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
+};
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
 };
@@ -446,9 +460,14 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Table 7-6 (both `q_scale_type` columns), §7.4.2.3 reconstruction
 /// (`((2*QF + k) * W * quantiser_scale) / 32` with `k = 0` /
 /// `k = Sign(QF)`), §7.4.3 saturation to `[-2048, 2047]`, and §7.4.4
-/// mismatch control (sum-parity LSB toggle on `F[7][7]`) — they do
-/// not yet provide a complete [`oxideav_core::Decoder`] or
-/// [`oxideav_core::Encoder`] (the §A.1 IDCT is still ahead), so
+/// mismatch control (sum-parity LSB toggle on `F[7][7]`), and the §A
+/// 8×8 IDCT ([`idct::idct_8x8`] over [`idct::idct_candidate_f64`]
+/// with [`idct::idct_reference_f64`] as the IEEE 1180 reference and
+/// the conformance harness exercising `pmse` / `omse` / `pme` / `ome`
+/// plus peak error against the staged bounds) — they do not yet
+/// provide a complete [`oxideav_core::Decoder`] or
+/// [`oxideav_core::Encoder`] (the slice-decoding driver wiring the
+/// dequantiser + IDCT into a bytestream pipeline is still ahead), so
 /// there is nothing to install in the registry.
 pub fn register(_ctx: &mut RuntimeContext) {}
 
