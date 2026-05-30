@@ -6,6 +6,38 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.11](https://github.com/OxideAV/oxideav-mpeg12video/releases/tag/v0.0.11) - 2026-05-30
+
+### Other
+
+- round 25: MPEG-2 residual VLC walker (Tables B-14 / B-15 / B-16)
+- round 24: §A 8×8 IDCT + IEEE 1180 / P1180/D2 conformance harness
+- round 23: MPEG-2 §7.4 inverse-quantisation pipeline
+- round 22: §7.6 per-macroblock pipeline driver
+- round 21: §7.6.7 combine-predictions + §7.6.8 add-and-saturate
+- round 20: §7.6.4 forming-predictions pel reader
+- round 19: §7.6.3.6 MPEG-2 dual-prime additional arithmetic
+- Round 18: MPEG-1 §2.4.4.1 / §2.4.4.2 dequantiser bodies
+- Round 17: MPEG-1 dct_coeff_first / dct_coeff_next walker (Tables B.5c..B.5f)
+- round 16: MPEG-1 intra-block DC prelude (§2.4.2.8 / §2.4.3.7) + zig-zag scan (§2.4.4.1)
+- round 15: MPEG-1 §2.4.4.2 / §2.4.4.3 motion-vector reconstruction
+- round 14: MPEG-1 motion_vector(s) per §2.4.2.7 + Annex B Table B.4
+- round 13: §7.6.3.3 inter-vector PMV update (Tables 7-10 / 7-11)
+- round 12: §7.6.3.1 motion-vector reconstruction + §7.6.3.4 reset + §7.6.3.7 chroma scaling
+- round 11: motion_vectors() / motion_vector() + Tables B-10 / B-11 (§6.2.5.2)
+- round 10: macroblock_modes() motion-type / dct_type tail (§6.2.5.1)
+- round 9: parse macroblock-layer quantizer_scale (MPEG-1 §2.4.2.7/§2.4.3.6)
+- refresh register() comment for the round 1–8 frontier
+- round 8: coded_block_pattern() parser (§6.2.5.3, Table B-9)
+- round 7: macroblock_type VLC (Annex B Tables B-2/B-3/B-4, §6.2.5.1)
+- round 6: parse §6.2.5 macroblock_address_increment with Annex B Table B-1 VLC
+- round 5: parse §6.2.4 slice() header bits (svp, q_scale, intra prelude)
+- round 4: parse §6.2.3 picture_header() + §6.2.3.1 picture_coding_extension()
+- round 3: parse §6.2.2.6 group_of_pictures_header() with 25-bit time_code
+- round 2: parse §6.2.2.3 sequence_extension() and compose full 14-bit dimensions
+- round 1: parse §6.2.2.1 sequence_header() for MPEG-2 / H.262
+- orphan rebuild: clean-room scaffold post 2026-05-18 audit
+
 ### Added
 
 - Clean-room rebuild round 25: MPEG-2 **residual VLC walker** for the
