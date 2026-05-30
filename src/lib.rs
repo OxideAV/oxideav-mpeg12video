@@ -301,6 +301,7 @@ pub mod mpeg1_motion_vector;
 pub mod mpeg1_reconstruct;
 pub mod mpeg2_dct_coeff;
 pub mod mpeg2_dequantize;
+pub mod mpeg2_inverse_scan;
 pub mod picture_header;
 pub mod pmv;
 pub mod quantizer_scale;
@@ -370,6 +371,12 @@ pub use mpeg2_dequantize::{
     BlockCoding as Mpeg2BlockCoding, Component as Mpeg2Component, DEFAULT_INTRA_WEIGHT,
     DEFAULT_NON_INTRA_WEIGHT, F_SATURATION_MAX, F_SATURATION_MIN, QUANTISER_SCALE_LINEAR,
     QUANTISER_SCALE_NONLINEAR,
+};
+pub use mpeg2_inverse_scan::{
+    apply_inverse_scan as mpeg2_apply_inverse_scan, inverse_scan_table as mpeg2_inverse_scan_table,
+    place_coefficient as mpeg2_place_coefficient, scan_table as mpeg2_scan_table,
+    ALTERNATE_INVERSE_SCAN as MPEG2_ALTERNATE_INVERSE_SCAN, ALTERNATE_SCAN as MPEG2_ALTERNATE_SCAN,
+    ZIGZAG_INVERSE_SCAN as MPEG2_ZIGZAG_INVERSE_SCAN,
 };
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,

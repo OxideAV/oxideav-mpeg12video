@@ -6,6 +6,30 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- round 26: MPEG-2 §7.3 inverse-scan — `ALTERNATE_SCAN`
+  (Figure 7-3 / `scan[1][v][u]`), `ALTERNATE_INVERSE_SCAN`,
+  `ZIGZAG_INVERSE_SCAN`, the `scan_table` / `inverse_scan_table`
+  flag-driven selectors per `alternate_scan`, the
+  `place_coefficient` per-sample writer that mates with the
+  round-25 `Mpeg2DctCoeffStep` walker, and the `apply_inverse_scan`
+  full §7.3 loop body for callers operating on a pre-flattened
+  `QFS[0..64]` list. Figure 7-2 stays single-sourced from the
+  MPEG-1 §2.4.4.1 `block_dc::SCAN` matrix; a unit test asserts the
+  cell-for-cell equality so any future drift on either side trips
+  immediately. Re-exports at the crate root as
+  `MPEG2_ALTERNATE_SCAN`, `MPEG2_ALTERNATE_INVERSE_SCAN`,
+  `MPEG2_ZIGZAG_INVERSE_SCAN`, `mpeg2_scan_table`,
+  `mpeg2_inverse_scan_table`, `mpeg2_place_coefficient`,
+  `mpeg2_apply_inverse_scan`. 21 new lib unit tests + 7 new
+  integration tests under
+  `tests/mpeg2_inverse_scan_synthetic.rs` pin Figures 7-2 / 7-3
+  against the printed page 80, the permutation invariant, the
+  forward · inverse round-trip in both scans, the §7.3.1
+  matrix-download flag invariant, and a synthetic walker replay
+  comparing per-coefficient placement against the full-loop body.
+
 ## [0.0.11](https://github.com/OxideAV/oxideav-mpeg12video/releases/tag/v0.0.11) - 2026-05-30
 
 ### Other

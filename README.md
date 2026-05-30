@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–25.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–26.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -30,7 +30,14 @@ macroblock_intra)` table selector, the §7.2.2.2 NOTE 2 / NOTE 3 FIRST
 / NEXT alternates for B-14's `(0, ±1)`, the table-dependent
 `end_of_block` codeword (B-14 `10`, B-15 `0110`), and the Table B-16
 escape encoding (`000001` prefix + 6-bit run + 12-bit signed_level
-with both `0x000` and `0x800` rejected).
+with both `0x000` and `0x800` rejected). Round 26 lands the **MPEG-2
+§7.3 inverse-scan** — `ALTERNATE_SCAN` (Figure 7-3) plus the
+`alternate_scan` flag-driven `scan_table` / `inverse_scan_table`
+selectors, the `place_coefficient` per-sample writer that mates with
+the round-25 walker, and the `apply_inverse_scan` full §7.3 loop body
+for callers operating on a pre-flattened `QFS[0..64]` list; Figure 7-2
+stays single-sourced from [`block_dc::SCAN`] with a permutation +
+equality test pinning the relationship.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1445,8 +1452,108 @@ be defended as clean-room. The rebuild starts here.
   pieces still missing from a complete §6.2.6 block iterator are
   (a) the §7.2.1 intra-DC prelude for MPEG-2 (Tables B-12 / B-13 — the
   MPEG-1 analogue B.5a / B.5b is in [`block_dc`]) and (b) the §7.3
-  inverse-scan (`alternate_scan` 0 / 1 from Figure 7-1 / Figure 7-2).
+  inverse-scan (`alternate_scan` 0 / 1 from Figure 7-2 / Figure 7-3).
   Both are noted as next-round work.
+
+### What round 26 lands
+
+* The **MPEG-2 §7.3 inverse-scan** body per **ISO/IEC 13818-2
+  (ITU-T H.262) §7.3** — the second of the two next-round
+  candidates flagged by round 25. The walker output from round 25
+  (`mpeg2_dct_coeff::DctCoeffStep`) emits `(run, signed_level)` pairs
+  along a `QFS[n]` cursor in `0..=63`; §7.3 maps that
+  one-dimensional list back into the two-dimensional `QF[v][u]` block
+  consumed by the §7.4 inverse-quantisation pipeline. The matrix
+  selection is driven by the `alternate_scan` flag carried in the
+  picture coding extension (already parsed by
+  [`picture_header::PictureCodingExtension::alternate_scan`]).
+  * `mpeg2_inverse_scan::ALTERNATE_SCAN` — the **Figure 7-3**
+    `scan[1][v][u]` matrix (alternate scan, `alternate_scan = 1`).
+    The matrix's distinguishing feature is that it walks down
+    column 0 first
+    (`scan[1][0..=3][0] = {0, 1, 2, 3}`,
+    `scan[1][4..=7][0] = {10, 11, 12, 13}`) — the contrasting
+    "across-then-down" first column of Figure 7-2
+    (`{0, 2, 3, 9, 10, 20, 21, 35}`) makes the two scans visually
+    obvious. The Figure 7-2 (`scan[0][v][u]`, zig-zag) matrix is
+    not re-encoded — it is identical cell-for-cell to the MPEG-1
+    §2.4.4.1 `scan[m][n]` matrix already in
+    [`block_dc::SCAN`], and a unit test
+    (`figure_7_2_equals_block_dc_scan_cell_for_cell`) asserts the
+    match so any future drift on either side trips a regression
+    immediately.
+  * `mpeg2_inverse_scan::ALTERNATE_INVERSE_SCAN` and
+    `mpeg2_inverse_scan::ZIGZAG_INVERSE_SCAN` — the inverse maps,
+    each `(u8, u8); 64` indexed as
+    `INVERSE[n] = (v, u)`. Both are derived at compile time from
+    their forward partners (and `ZIGZAG_INVERSE_SCAN` is asserted
+    against `block_dc::INVERSE_SCAN` in
+    `zigzag_inverse_scan_matches_block_dc_inverse_scan`).
+  * `mpeg2_inverse_scan::scan_table(alternate_scan: bool)` and
+    `mpeg2_inverse_scan::inverse_scan_table(alternate_scan: bool)`
+    — flag-driven selectors that return `&'static` refs to the
+    chosen matrix / inverse map, matching the §7.3 spelling
+    `scan[alternate_scan][v][u]`.
+  * `mpeg2_inverse_scan::place_coefficient(qf, index, value,
+    alternate_scan)` — the per-coefficient writer that mates with
+    round 25's `Mpeg2DctCoeffStep`: each `RunLevel` symbol
+    advances the cursor `n += 1 + run`, and `place_coefficient`
+    writes the level into `qf[v][u]` at the `(v, u)` named by the
+    selected inverse-scan map. Bounds-checked at `index < 64`.
+  * `mpeg2_inverse_scan::apply_inverse_scan(qfs, alternate_scan)`
+    — the direct transliteration of the §7.3 pseudo-code
+    `for (v) for (u) QF[v][u] = QFS[scan[alternate_scan][v][u]]`
+    for callers that have already accumulated a 64-entry flat list
+    (encoder forward pass, trace tools).
+  * §7.3.1 (matrix-download flag invariant) — the docstring on
+    `scan_table` reminds callers that quantisation-matrix downloads
+    always use `scan[0]` regardless of the picture-coding-extension
+    flag, so the caller passes `false` rather than the live bit.
+  * Re-exported at the crate root with explicit `MPEG2_…`
+    spellings (`MPEG2_ALTERNATE_SCAN`,
+    `MPEG2_ALTERNATE_INVERSE_SCAN`, `MPEG2_ZIGZAG_INVERSE_SCAN`,
+    `mpeg2_scan_table`, `mpeg2_inverse_scan_table`,
+    `mpeg2_place_coefficient`, `mpeg2_apply_inverse_scan`) so
+    downstream call sites spell out the MPEG-2-vs-MPEG-1
+    distinction at the use site.
+* **21 new lib unit tests** in `src/mpeg2_inverse_scan.rs` pin
+  the §7.3 invariants: both scans are permutations of `0..=63`;
+  Figure 7-2 == `block_dc::SCAN` cell-for-cell; the
+  `ZIGZAG_INVERSE_SCAN` constant equals `block_dc::INVERSE_SCAN`
+  entry-for-entry; Figure 7-3 corners (0,0)=0 / (0,7)=52 /
+  (7,0)=13 / (7,7)=63 and rows 0 / 7 match the printed page 80;
+  Figure 7-3 column 0 walks down `{0,1,2,3,10,11,12,13}`;
+  cells where scan[0] and scan[1] differ ((0,1) → 1 vs 4,
+  (1,0) → 2 vs 1) are pinned; the forward · inverse round-trip
+  closes for all 64 cells in both scans; the flag selectors
+  return value-equal tables for each branch; `place_coefficient`
+  writes only one cell with all 63 others untouched, agrees with
+  a hand-traced sample under both scan flags, and the index-0 /
+  index-63 corners match for both scans (DC at (0,0); the last
+  coefficient at (7,7)); a bad index panics with a clean
+  spec-named message; `apply_inverse_scan` round-trips a
+  synthetic QF block through QFS and back under both scan flags;
+  and `apply_inverse_scan` agrees with a loop of
+  `place_coefficient` calls for every index in
+  `-30..=33`.
+* **7 new integration tests** in
+  `tests/mpeg2_inverse_scan_synthetic.rs` re-pin Figures 7-2 / 7-3
+  cell-for-cell against an independent verbatim copy of the
+  spec page 80, confirm MPEG-1 `SCAN` and MPEG-2 `scan[0]` agree,
+  exercise the inverse-table round-trip across the public
+  re-exports, check the constant / function partners produce
+  identical data, and replay a synthetic §7.2.2 walker emission
+  stream through `place_coefficient` and through the full §7.3
+  loop body for both scan flags — confirming the two equivalent
+  expressions of the §7.3 pseudo-code agree at every step.
+
+  Round 26 closes the §7.3 inverse-scan gap noted at the end of
+  round 25. The §6.2.6 block-iterator skeleton can now combine
+  the §7.2.2 walker (round 25) and the §7.3 placement (this round)
+  to materialise a `QF[v][u]` block ready for the round-23
+  `mpeg2_inverse_quantise_block`. The remaining round-25 next-step
+  candidate (a) — the §7.2.1 MPEG-2 intra-DC prelude (Tables B-12
+  / B-13) — is now the obvious next-round work.
 
 ## Clean-room provenance
 
@@ -1465,7 +1572,10 @@ Every line in this crate's `src/` traces to:
   B-14 / B-15 / B-16. Round 25 also cites §7.2.2, §7.2.2.1 (Table 7-3),
   §7.2.2.2 (NOTE 2 / NOTE 3 FIRST / NEXT modification), §7.2.2.3
   (Table B-16 escape encoding distinct from MPEG-1's Table B.5f), and
-  §7.2.2.4 (decoder pseudo-code).
+  §7.2.2.4 (decoder pseudo-code). Round 26 adds §7.3 (inverse-scan
+  loop body and the `alternate_scan` flag dispatch), §7.3.1
+  (matrix-download fixed-flag invariant), and Figure 7-2 / Figure 7-3
+  (`scan[0][v][u]` / `scan[1][v][u]`) per the page-80 printout.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
