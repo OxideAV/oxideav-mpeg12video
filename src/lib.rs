@@ -51,6 +51,15 @@
 //! `[-256, +255]`), with an IEEE Std 1180-1990 / P1180/D2 conformance
 //! harness in `tests/idct_p1180_conformance.rs` covering the four
 //! statistical metrics plus the two deterministic edge cases. The
+//! MPEG-2 residual VLC walker per ISO/IEC 13818-2 §7.2.2 (Annex B
+//! Tables B-14 / B-15 / B-16) is now in
+//! [`mpeg2_dct_coeff::DctCoeffStep`], with the §7.2.2.1 Table 7-3
+//! `(intra_vlc_format, macroblock_intra)` table selector
+//! ([`mpeg2_dct_coeff::TableSelection::from_context`]), the §7.2.2.2
+//! NOTE 2 / NOTE 3 FIRST / NEXT disambiguation, the table-dependent
+//! `end_of_block` codeword (B-14 `10`, B-15 `0110`), and the Table
+//! B-16 escape (`000001` prefix + 6-bit run + 12-bit signed_level,
+//! `signed_level ∈ [-2047, +2047] \ {0}`). The
 //! public `register` symbol is still a no-op so that downstream
 //! consumers can depend on the crate without the decoder being
 //! inadvertently selected by the registry — the full
@@ -290,6 +299,7 @@ pub mod mb_address_increment;
 pub mod motion_vector;
 pub mod mpeg1_motion_vector;
 pub mod mpeg1_reconstruct;
+pub mod mpeg2_dct_coeff;
 pub mod mpeg2_dequantize;
 pub mod picture_header;
 pub mod pmv;
@@ -346,6 +356,12 @@ pub use mpeg1_reconstruct::{
     reconstruct as mpeg1_reconstruct, reconstruct_absent as mpeg1_reconstruct_absent,
     reconstruct_zero as mpeg1_reconstruct_zero, Mpeg1FrameMvContext, Mpeg1Predictor,
     Mpeg1ReconstructedMv,
+};
+pub use mpeg2_dct_coeff::{
+    CoefficientPosition as Mpeg2CoefficientPosition, DctCoeff as Mpeg2DctCoeff,
+    DctCoeffStep as Mpeg2DctCoeffStep, TableSelection as Mpeg2VlcTable,
+    ESCAPE_SIGNED_LEVEL_MAX as MPEG2_ESCAPE_SIGNED_LEVEL_MAX,
+    ESCAPE_SIGNED_LEVEL_MIN as MPEG2_ESCAPE_SIGNED_LEVEL_MIN, MAX_RUN as MPEG2_DCT_MAX_RUN,
 };
 pub use mpeg2_dequantize::{
     intra_dc_mult, intra_dc_mult_from_extension,

@@ -8,6 +8,56 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clean-room rebuild round 25: MPEG-2 **residual VLC walker** for the
+  §6.2.6 block-layer `dct_coeff_first` / `dct_coeff_next` body per
+  ISO/IEC 13818-2 (ITU-T H.262) §7.2.2 (Annex B Tables **B-14** / **B-15**
+  / **B-16**). The MPEG-1 §2.4.3.7 walker in
+  [`dct_coeff::DctCoeffStep`] only handled the older Tables B.5c..B.5f
+  shape; this round lands the MPEG-2 sibling that §7.2.2.3 explicitly
+  notes is different — both in escape encoding and in the per-table
+  `end_of_block` codeword.
+  - `mpeg2_dct_coeff::TableSelection::from_context(intra_vlc_format,
+    macroblock_intra)` — §7.2.2.1 Table 7-3 selector with the four-row
+    resolution: `TableZero` (B-14) for `intra_vlc_format = 0` and for
+    every non-intra block; `TableOne` (B-15) only when
+    `intra_vlc_format = 1` and `macroblock_intra = 1`.
+  - `mpeg2_dct_coeff::DctCoeffStep::parse(br, table, position)` — the
+    actual walker. Implements §7.2.2.2 NOTE 2 / NOTE 3 — the FIRST-only
+    `1s` (1-bit) and NEXT-only `11s` (2-bit) alternates for B-14's
+    `(run = 0, level = ±1)`, both honouring the §7.2.2 sign-bit
+    contract. Honours the table-dependent `end_of_block` codeword
+    (`10` for B-14, `0110` for B-15) and the §7.2.2.3 escape prefix
+    `000001` (6 bits).
+  - `mpeg2_dct_coeff::CoefficientPosition` enum (`First` / `Next`)
+    captures the §7.2.2.2 modification: §7.2.2.2's note clarifies that
+    Table B-14 is only modified for the FIRST coefficient of a
+    **non-intra** block, since the first coefficient of an intra block
+    is the §7.2.1 DC value handled by [`block_dc`]. B-15 therefore
+    always enters at `Next`.
+  - Table B-16 escape payload: 6-bit `run` (`0..=63`) + 12-bit signed
+    `signed_level` (`[-2047, +2047] \ {0}`, two's-complement wire word
+    with `0x000` and `0x800` both rejected as the spec's forbidden
+    values).
+  - Coverage: 24 new unit tests against ISO/IEC 13818-2 Annex B and
+    §7.2.2 — Table 7-3 selector matrix, table row counts (B-14 = 112,
+    B-15 = 111), per-width codeword bit-width invariants, per-width
+    uniqueness, prefix-freeness at FIRST and NEXT for both tables
+    (including escape + EoB), round-trip of every B-14 row (224 cases
+    counting both signs), round-trip of every B-15 row (222 cases),
+    the FIRST-only and NEXT-only `(0, ±1)` disambiguation, both
+    table-dependent EoB codewords, Table B-16 escape round-trip
+    (positive + negative extremes including `±2047`), the forbidden
+    `signed_level = 0` and `signed_level = -2048` wire words, the
+    short-buffer error path, the unrecognised-prefix error path, and
+    end-to-end block walks against both tables (B-14 non-intra:
+    FIRST → NEXT → escape → EoB; B-15 intra: NEXT → NEXT → escape →
+    EoB).
+
+  Spec citations refer to ISO/IEC 13818-2 (ITU-T H.262) §§7.2.2,
+  7.2.2.1 (Table 7-3), 7.2.2.2 (FIRST / NEXT modification), 7.2.2.3
+  (escape, Table B-16), 7.2.2.4 (decoder pseudo-code), and Annex B
+  Tables B-14 and B-15.
+
 - Clean-room rebuild round 24: §A **8×8 inverse discrete cosine
   transform** (the IDCT stage of Figure 7-1 between §7.4
   inverse-quantisation and the §7.6 macroblock pipeline) with an IEEE

@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–24.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–25.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -23,7 +23,14 @@ on `F[7][7]`). Round 24 lands the **§A 8×8 inverse discrete cosine
 transform** with an IEEE Std 1180-1990 / P1180/D2 conformance harness
 exercising the four statistical metrics (`pmse`, `omse`, `pme`, `ome`)
 plus peak error against the bounds transcribed in
-`docs/video/mpeg12video/idct-accuracy-spec.md` §4.
+`docs/video/mpeg12video/idct-accuracy-spec.md` §4. Round 25 lands the
+**MPEG-2 residual VLC walker** per §7.2.2 with Annex B Tables B-14 /
+B-15 / B-16 — the §7.2.2.1 Table 7-3 `(intra_vlc_format,
+macroblock_intra)` table selector, the §7.2.2.2 NOTE 2 / NOTE 3 FIRST
+/ NEXT alternates for B-14's `(0, ±1)`, the table-dependent
+`end_of_block` codeword (B-14 `10`, B-15 `0110`), and the Table B-16
+escape encoding (`000001` prefix + 6-bit run + 12-bit signed_level
+with both `0x000` and `0x800` rejected).
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1350,6 +1357,97 @@ be defended as clean-room. The rebuild starts here.
   deterministic checks — all-zero input → all-zero output, DC-only
   input → flat output — cover the spec-mandated exact cases.
 
+### What round 25 lands
+
+* The **MPEG-2 residual VLC walker** — the §6.2.6 block-layer
+  `dct_coeff_first` / `dct_coeff_next` body — per **ISO/IEC 13818-2
+  (ITU-T H.262) §7.2.2** with field semantics from §6.2.6 / §7.2.2.4
+  and Annex B **Tables B-14** / **B-15** / **B-16**. The MPEG-1
+  walker in [`dct_coeff::DctCoeffStep`] from round 17 covers only
+  Tables B.5c..B.5f; §7.2.2.3 explicitly notes that the MPEG-2 escape
+  encoding is different and §7.2.2.1 introduces a second VLC table
+  selected by the `intra_vlc_format` picture-coding-extension flag.
+  Both gaps close in this round.
+  * `mpeg2_dct_coeff::TableSelection::from_context(intra_vlc_format,
+    macroblock_intra)` — the **§7.2.2.1 Table 7-3** selector with the
+    four-row truth table:
+    | `intra_vlc_format` | intra | non-intra |
+    |---|---|---|
+    | 0 | B-14 | B-14 |
+    | 1 | B-15 | B-14 |
+    So Table B-15 is reached **only** when `intra_vlc_format = 1`
+    **and** the macroblock is intra; every other row stays on
+    Table B-14.
+  * `mpeg2_dct_coeff::DctCoeffStep::parse(br, table, position)` —
+    the actual walker. Implements **§7.2.2.2** NOTE 2 / NOTE 3 — the
+    FIRST-only `1s` (1-bit) and the NEXT-only `11s` (2-bit)
+    alternates for B-14's `(run = 0, level = ±1)`. The §7.2.2.2 note
+    clarifies that this modification is only meaningful when B-14
+    decodes a **non-intra** block, since the first coefficient of
+    an intra block is the §7.2.1 DC value handled by
+    [`block_dc::DcCoefficient`] — so the walker always starts at the
+    second coefficient for intra blocks. B-15 is therefore always
+    entered at NEXT and has no NOTE 2 / NOTE 3 split (its `(0, 1)`
+    row is the unambiguous 2-bit `10s`).
+  * The table-dependent `end_of_block` codeword:
+    * Table B-14: 2-bit `10` (same encoding as MPEG-1 Table B.5c,
+      modelled separately because it has no sign bit).
+    * Table B-15: 4-bit `0110`. The wider EoB is one of the key
+      shape differences between the two MPEG-2 tables.
+  * The §7.2.2.3 **Table B-16 escape** payload:
+    * 6-bit `escape_prefix` = `000001` (shared with both VLC tables).
+    * 6-bit `run` (`0..=63`).
+    * 12-bit `signed_level` in two's complement. The spec range is
+      `[-2047, +2047] \ {0}` — both the all-zeros wire word
+      (`signed_level = 0`) and the `0x800` wire word (which would
+      represent `-2048`) are explicitly forbidden per the listed
+      `1000 0000 0001` (-2047) lower bound. The walker rejects both.
+  * `mpeg2_dct_coeff::CoefficientPosition` (`First` / `Next`),
+    `mpeg2_dct_coeff::DctCoeff::{RunLevel, EndOfBlock}`, and
+    `mpeg2_dct_coeff::DctCoeffStep` mirror the MPEG-1 walker's
+    shape so the downstream slice-decoder driver can dispatch on
+    the picture-extension flag without two parallel decoded-symbol
+    types. Re-exported at the crate root as `Mpeg2VlcTable`,
+    `Mpeg2CoefficientPosition`, `Mpeg2DctCoeff`, and
+    `Mpeg2DctCoeffStep` so downstream callers spell out the
+    MPEG-2-vs-MPEG-1 distinction at the use site.
+* **24 new unit tests** in `src/mpeg2_dct_coeff.rs` pin Tables B-14
+  / B-15 / B-16 and the §7.2.2 walker semantics:
+  * Selector — every row of §7.2.2.1 Table 7-3.
+  * Table shape — B-14 has exactly 112 codeword rows (32 + 32 + 32 +
+    16, both NOTE 2 / NOTE 3 alternates for `(0, 1)` counted), B-15
+    has exactly 111 (31 + 32 + 32 + 16, no alternate). Every code
+    fits its declared width; codes within each width are unique;
+    the full per-table codebook (codewords + EoB + escape) is
+    prefix-free at FIRST and NEXT.
+  * Round-trips — every B-14 row at NEXT (with both signs, ≈224
+    cases) and every B-15 row at NEXT (≈222 cases) emit-then-parse
+    back to the same `(run, signed_level)`. The B-14 FIRST-only
+    `1s` form and the NEXT-only `11s` form are exercised separately
+    against `Position::First` / `Position::Next`.
+  * EoB — both `10` (B-14) and `0110` (B-15) decode to
+    `DctCoeff::EndOfBlock`.
+  * Escape — Table B-16 round-trip across positive and negative
+    extremes (including `±2047`), the forbidden `signed_level = 0`
+    wire word, and the forbidden wire word `0x800` (= -2048). Run
+    field exercises `0..=63`.
+  * Block walks — B-14 non-intra: `FIRST (0, +3)` → `NEXT (2, -1)` →
+    `NEXT escape (4, +1500)` → `NEXT EoB`; B-15 intra:
+    `NEXT (0, +1)` → `NEXT (0, +2)` → `NEXT escape (20, -1234)` →
+    `NEXT EoB`. Both walks confirm the per-step bit-position
+    accounting and the cross-step state for the §7.2.2.4
+    pseudo-code.
+  * Error paths — empty buffer returns `Error::ShortHeader`; a 24-zero
+    prefix returns `Error::InvalidBitstream` (no Table B-14 codeword,
+    no escape, no EoB).
+
+  Round 25 closes the headline residual-VLC gap. The downstream
+  pieces still missing from a complete §6.2.6 block iterator are
+  (a) the §7.2.1 intra-DC prelude for MPEG-2 (Tables B-12 / B-13 — the
+  MPEG-1 analogue B.5a / B.5b is in [`block_dc`]) and (b) the §7.3
+  inverse-scan (`alternate_scan` 0 / 1 from Figure 7-1 / Figure 7-2).
+  Both are noted as next-round work.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -1363,7 +1461,11 @@ Every line in this crate's `src/` traces to:
   7.6.3.7, 7.6.4, 7.6.5, 7.6.6, 7.6.7.1, 7.6.7.2, 7.6.7.4, 7.6.8,
   Tables 6-1 / 6-2 / 6-3 / 6-4 / 6-5 / 6-10 / 6-11 / 6-12 / 6-13 /
   6-14 / 6-17 / 6-18 / 6-19 / 7-7 / 7-8 / 7-10 / 7-11 / 7-12 / 7-13 /
-  7-14, and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 / B-10 / B-11.
+  7-14, and Annex B Tables B-1 / B-2 / B-3 / B-4 / B-9 / B-10 / B-11 /
+  B-14 / B-15 / B-16. Round 25 also cites §7.2.2, §7.2.2.1 (Table 7-3),
+  §7.2.2.2 (NOTE 2 / NOTE 3 FIRST / NEXT modification), §7.2.2.3
+  (Table B-16 escape encoding distinct from MPEG-1's Table B.5f), and
+  §7.2.2.4 (decoder pseudo-code).
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
