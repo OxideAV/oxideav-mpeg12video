@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–26.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–27.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -37,7 +37,15 @@ selectors, the `place_coefficient` per-sample writer that mates with
 the round-25 walker, and the `apply_inverse_scan` full §7.3 loop body
 for callers operating on a pre-flattened `QFS[0..64]` list; Figure 7-2
 stays single-sourced from [`block_dc::SCAN`] with a permutation +
-equality test pinning the relationship.
+equality test pinning the relationship. Round 27 lands the **MPEG-2
+§7.2.1 intra-block DC prelude** — Annex B Tables B-12 / B-13
+(`dct_dc_size_luminance` / `dct_dc_size_chrominance` sized to
+`0..=11` to accommodate `intra_dc_precision = 3`), the §7.2.1
+`dc_dct_differential` → `dct_diff` `half_range` reconstruction, the
+three-cell per-component DC predictor `dc_dct_pred[cc]` with
+Table 7-2 reset values (`{128, 256, 512, 1024}` for
+`intra_dc_precision ∈ {0,1,2,3}`), and the §7.2.1 `QFS[0] ∈ [0,
+2^(8 + intra_dc_precision) - 1]` bitstream constraint enforcement.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1555,6 +1563,114 @@ be defended as clean-room. The rebuild starts here.
   candidate (a) — the §7.2.1 MPEG-2 intra-DC prelude (Tables B-12
   / B-13) — is now the obvious next-round work.
 
+### What round 27 lands
+
+* The **MPEG-2 §7.2.1 intra-block DC prelude** per **ISO/IEC
+  13818-2 (ITU-T H.262) §7.2.1** — the very gap flagged as the
+  remaining round-25 next-step candidate at the end of the round-26
+  notes. With this in hand the §6.2.6 block-iterator skeleton can
+  consume the DC-coefficient prelude (this round) and chain it
+  into the §7.2.2 residual walker (round 25) + §7.3 inverse-scan
+  placement (round 26) + §7.4 inverse-quantisation pipeline
+  (round 23) — i.e. the full intra-block path from bitstream to a
+  ready-to-IDCT `F[v][u]` matrix is now spec-complete on the
+  MPEG-2 side.
+  * `mpeg2_block_dc::TABLE_B12` — **Annex B Table B-12**
+    (`dct_dc_size_luminance`) sized to `0..=11`. The first 9 rows
+    (sizes `0..=8`) are bit-exact MPEG-1's Table B.5a; sizes 9, 10,
+    and 11 extend the prefix with `1111 1110`, `1111 1111 0`, and
+    `1111 1111 1` to accommodate the wider DC differentials needed
+    when `intra_dc_precision != 0`. A unit test
+    (`b12_first_9_rows_match_b5a`) drives every size-0..=8 codeword
+    through both the MPEG-1 `block_dc::DcCoefficient::parse` and
+    the new MPEG-2 walker to pin the equivalence.
+  * `mpeg2_block_dc::TABLE_B13` — **Annex B Table B-13**
+    (`dct_dc_size_chrominance`), similarly sized to `0..=11` with
+    the new long-prefix entries `1111 1111 0` / `1111 1111 10` /
+    `1111 1111 11`. The first 9 rows match Table B.5b bit-for-bit
+    and a parallel test (`b13_first_9_rows_match_b5b`) pins the
+    equivalence.
+  * `mpeg2_block_dc::DcComponent` — table-selector enum (`Luminance`
+    for `cc == 0` / `Chrominance` for `cc != 0`), distinct from the
+    per-component predictor routing because Cb and Cr share Table
+    B-13 but each have their own predictor cell.
+  * `mpeg2_block_dc::ColourComponent` — `Y` / `Cb` / `Cr` per
+    Table 7-1, projects to `DcComponent` via
+    `colour.dc_component()` for table selection.
+  * `mpeg2_block_dc::DcPredictors` — the per-component
+    `dc_dct_pred[Y / Cb / Cr]` predictor state, primed via
+    `DcPredictors::new(intra_dc_precision)` to the §7.2.1 reset
+    value and resettable via `DcPredictors::reset()` per the §7.2.1
+    three-trigger contract (start of slice, non-intra macroblock,
+    skipped macroblock).
+  * `mpeg2_block_dc::dc_pred_reset_value(intra_dc_precision)` —
+    direct **Table 7-2** lookup returning `{128, 256, 512, 1024}`
+    for `intra_dc_precision ∈ {0, 1, 2, 3}`; rejects values
+    outside `0..=3` (Table 6-13 only defines those four).
+  * `mpeg2_block_dc::qfs_zero_max(intra_dc_precision)` —
+    `2^(8 + intra_dc_precision) - 1` per the §7.2.1 bitstream
+    constraint *"QFS[0] shall lie in the range 0 to ((2^(8 +
+    intra_dc_precision)) - 1)"*. Returns `{255, 511, 1023, 2047}`.
+  * `mpeg2_block_dc::decode_dc_block(br, predictors, colour)` —
+    end-to-end driver: pulls the `dct_dc_size` VLC (Table B-12 /
+    Table B-13 selected by `colour.dc_component()`), reads the
+    `dct_dc_size`-bit `dc_dct_differential`, reconstructs
+    `dct_diff` per §7.2.1 (the `half_range = 2^(dct_dc_size - 1)`
+    threshold-test form, which is mathematically equivalent to
+    MPEG-1's §2.4.3.7 MSB-test form — a unit test
+    `mpeg2_recon_matches_mpeg1_for_sizes_1_through_8` walks every
+    `(size, raw)` pair within the MPEG-1 range to pin it), adds
+    the §7.2.1 predictor `dc_dct_pred[cc]`, asserts the §7.2.1
+    `[0, qfs_zero_max(precision)]` bitstream constraint on the
+    resulting `QFS[0]`, then updates the predictor cell for the
+    component. Returns a typed `DcCoefficient` record carrying the
+    raw bits, the signed `dct_diff`, the final `QFS[0]`, and the
+    post-consume bit position.
+  * Re-exported at the crate root with explicit `Mpeg2…` /
+    `MPEG2_…` spellings (`Mpeg2DcComponent`, `Mpeg2DcPredictors`,
+    `Mpeg2DcCoefficient`, `Mpeg2ColourComponent`,
+    `MPEG2_MAX_DC_SIZE`, `mpeg2_decode_dc_block`,
+    `mpeg2_dc_pred_reset_value`, `mpeg2_qfs_zero_max`) so the
+    MPEG-2-vs-MPEG-1 distinction stays explicit at call sites.
+* **29 new lib unit tests** in `src/mpeg2_block_dc.rs` pin
+  Tables B-12 / B-13's `0..=11` cardinality + uniqueness per
+  width + width-correctness, the bit-exact match with MPEG-1's
+  B.5a / B.5b on the first 9 rows, the §7.2.1 reconstruction
+  formula's equivalence to MPEG-1 §2.4.3.7 across every
+  `(size ≤ 8, raw)` pair, the page-77 spec-example
+  reconstruction table at `dct_dc_size = 3` (raw `000..=111` →
+  dct_diff `-7..=+7`), the size-11 corner values (-2047, -2046,
+  -1024, 1024, 2047), Table 7-2 reset values (128 / 256 / 512 /
+  1024), the `qfs_zero_max` matching `2^(8 + precision) - 1`
+  (255 / 511 / 1023 / 2047), the predictor lifecycle (`new`
+  primes all three to reset; `reset` returns all three to
+  Table 7-2 value), the Y / Cb / Cr per-component routing
+  (independent predictor cells, Y-Y chain preserves Cb / Cr at
+  reset), the §7.2.1 bitstream constraint enforcement (negative
+  QFS[0] rejected, above-max QFS[0] rejected,
+  precision = 3 widens the window), the bit-position accounting
+  for size 0 (3 code bits, 0 differential) and size 11 (9 code
+  bits, 11 differential), and the `ColourComponent` → `DcComponent`
+  projection.
+* **7 new integration tests** in
+  `tests/mpeg2_block_dc_synthetic.rs` re-pin Table 7-2 across all
+  four `intra_dc_precision` values through the public re-exports,
+  exercise a Y-Y-Cb-Cr four-block predictor chain confirming the
+  per-component independence at the public-API level, walk a
+  reset cycle, drive a size-9 underflow rejection at
+  `intra_dc_precision = 1`, and round-trip the long-prefix
+  size-10 (B-13) and size-11 (B-12) codewords through
+  `mpeg2_decode_dc_block`.
+
+  Round 27 closes the round-25 / round-26 next-step candidate
+  (a). With the §7.2.1 prelude + §7.2.2 residual walker + §7.3
+  inverse scan all spec-complete on the MPEG-2 side, the
+  §6.2.6 block-iterator skeleton now has all three of its
+  intra-block building blocks ready, and the remaining gap on
+  the MPEG-2 path is the §6.2.6 driver itself (which chains
+  prelude → walker → scan → §7.4 inverse-quantise → §A IDCT into
+  a per-block decode entry-point).
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -1576,6 +1692,15 @@ Every line in this crate's `src/` traces to:
   loop body and the `alternate_scan` flag dispatch), §7.3.1
   (matrix-download fixed-flag invariant), and Figure 7-2 / Figure 7-3
   (`scan[0][v][u]` / `scan[1][v][u]`) per the page-80 printout.
+  Round 27 adds §7.2.1 (DC coefficients in intra blocks: the
+  `dct_dc_size` VLC dispatch, the `dc_dct_differential` →
+  `dct_diff` `half_range` reconstruction, the per-component
+  `dc_dct_pred[cc]` predictor add + Table 7-1 routing, the
+  three-trigger reset contract, and the `QFS[0]` bitstream
+  constraint), Table 7-2 (`intra_dc_precision` → reset value
+  `{128, 256, 512, 1024}`), and Annex B Tables B-12 / B-13
+  (`dct_dc_size_luminance` / `dct_dc_size_chrominance` extended to
+  `0..=11`).
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —

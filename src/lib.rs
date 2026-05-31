@@ -299,6 +299,7 @@ pub mod mb_address_increment;
 pub mod motion_vector;
 pub mod mpeg1_motion_vector;
 pub mod mpeg1_reconstruct;
+pub mod mpeg2_block_dc;
 pub mod mpeg2_dct_coeff;
 pub mod mpeg2_dequantize;
 pub mod mpeg2_inverse_scan;
@@ -357,6 +358,12 @@ pub use mpeg1_reconstruct::{
     reconstruct as mpeg1_reconstruct, reconstruct_absent as mpeg1_reconstruct_absent,
     reconstruct_zero as mpeg1_reconstruct_zero, Mpeg1FrameMvContext, Mpeg1Predictor,
     Mpeg1ReconstructedMv,
+};
+pub use mpeg2_block_dc::{
+    dc_pred_reset_value as mpeg2_dc_pred_reset_value, decode_dc_block as mpeg2_decode_dc_block,
+    qfs_zero_max as mpeg2_qfs_zero_max, ColourComponent as Mpeg2ColourComponent,
+    DcCoefficient as Mpeg2DcCoefficient, DcComponent as Mpeg2DcComponent,
+    DcPredictors as Mpeg2DcPredictors, MAX_DC_SIZE as MPEG2_MAX_DC_SIZE,
 };
 pub use mpeg2_dct_coeff::{
     CoefficientPosition as Mpeg2CoefficientPosition, DctCoeff as Mpeg2DctCoeff,

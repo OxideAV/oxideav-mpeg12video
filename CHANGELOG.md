@@ -8,6 +8,37 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 27: MPEG-2 §7.2.1 intra-block DC prelude — Annex B
+  Tables B-12 (`dct_dc_size_luminance`) and B-13
+  (`dct_dc_size_chrominance`) extended to `0..=11` with the
+  long-prefix entries for `intra_dc_precision != 0`; §7.2.1
+  `dc_dct_differential` → `dct_diff` `half_range`-threshold
+  reconstruction (cross-checked against the §2.4.3.7 MPEG-1
+  MSB-test form for every size 1..=8 input); per-component
+  `dc_dct_pred[Y / Cb / Cr]` predictor state with Table 7-2 reset
+  values `{128, 256, 512, 1024}` for `intra_dc_precision ∈
+  {0, 1, 2, 3}`; the three-trigger reset contract (start of
+  slice / non-intra macroblock / skipped macroblock); and the
+  §7.2.1 `QFS[0] ∈ [0, 2^(8 + intra_dc_precision) - 1]`
+  bitstream-constraint enforcement on the final predicted DC.
+  Public driver `mpeg2_decode_dc_block(br, predictors, colour)`
+  returns a typed `Mpeg2DcCoefficient` with the raw bits, signed
+  `dct_diff`, final `QFS[0]`, and post-consume bit position.
+  Re-exports at the crate root as `Mpeg2DcCoefficient`,
+  `Mpeg2DcComponent`, `Mpeg2DcPredictors`, `Mpeg2ColourComponent`,
+  `MPEG2_MAX_DC_SIZE`, `mpeg2_decode_dc_block`,
+  `mpeg2_dc_pred_reset_value`, and `mpeg2_qfs_zero_max`. 29 new
+  lib unit tests + 7 new integration tests under
+  `tests/mpeg2_block_dc_synthetic.rs` pin Tables B-12 / B-13's
+  cardinality + width invariants, the first-9-rows bit-exact
+  match against MPEG-1 Tables B.5a / B.5b, the §7.2.1 ↔ §2.4.3.7
+  reconstruction equivalence, the page-77 `dct_dc_size = 3`
+  worked example, the size-11 corner values, the Table 7-2 reset
+  lookup, the per-component routing (Y / Cb / Cr independence),
+  the bitstream-constraint enforcement on both bounds, and the
+  bit-position accounting for the shortest (size 0) and longest
+  (size 11) B-12 codewords.
+
 - round 26: MPEG-2 §7.3 inverse-scan — `ALTERNATE_SCAN`
   (Figure 7-3 / `scan[1][v][u]`), `ALTERNATE_INVERSE_SCAN`,
   `ZIGZAG_INVERSE_SCAN`, the `scan_table` / `inverse_scan_table`
