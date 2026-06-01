@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–28.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–29.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -55,6 +55,15 @@ inverse-quantisation pipeline → §A 8×8 IDCT into a single
 "bitstream → `f[y][x]` plane ready for §7.6.8 add-and-saturate"
 entry point, with the §7.2.2 wire-position `walker_index + run ≤
 63` constraint enforced as an `InvalidBitstream` rejection.
+Round 29 lands the **§6.2.5 / §6.2.6 macroblock-block driver** —
+`mpeg2_macroblock_blocks::decode_macroblock_blocks` walks a
+macroblock's `pattern_code[12]` array and dispatches the round-28
+`mpeg2_decode_block` once per coded slot, auto-deriving the
+§6.1.1.8 block-index → component mapping (Figures 6-10 / 6-11 /
+6-12), the §7.4.2.1 Table 7-5 weighting-matrix `w` per `(coding,
+component, chroma_format)`, and the §7.2.1 non-intra-macroblock
+DC-predictor reset, returning a `Vec<DecodedBlock>` paired with
+the §6.1.1.8 block-index position.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1776,6 +1785,115 @@ be defended as clean-room. The rebuild starts here.
   drives the existing macroblock_pipeline by calling
   `mpeg2_decode_block` per coded slot).
 
+### What round 29 lands
+
+* The **§6.2.5 / §6.2.6 macroblock-block driver** per **ISO/IEC
+  13818-2 (ITU-T H.262)** — the wrapper round 28 flagged as the
+  natural follow-up. `mpeg2_macroblock_blocks::decode_macroblock_blocks`
+  consumes a `BitReader` positioned at the first block's syntax
+  start, the parsed [`MacroblockType`], the parsed
+  [`CodedBlockPattern`], a [`mpeg2_block_dc::DcPredictors`]
+  reference, and a [`mpeg2_macroblock_blocks::MacroblockBlockContext`]
+  carrying the per-macroblock constants (`intra_vlc_format`,
+  `alternate_scan`, `intra_dc_precision`, `quantiser_scale_value`,
+  [`ChromaFormat`], and the four §6.3.7 / §6.3.11.1 weighting
+  matrices). It then walks `pattern_code[12]` and dispatches the
+  round-28 §6.2.6 driver
+  ([`mpeg2_block_decoder::decode_block`]) once per coded slot,
+  returning a `Vec<DecodedBlock>` paired with the §6.1.1.8
+  block-index position.
+  * `mpeg2_macroblock_blocks::block_count(chroma_format)` —
+    Figures 6-10 / 6-11 / 6-12: `Yuv420 → 6`, `Yuv422 → 8`,
+    `Yuv444 → 12`. Matches
+    [`macroblock_pipeline::blocks_per_macroblock`] (re-pinned
+    side-by-side so the macroblock-block driver is self-contained
+    for audit).
+  * `mpeg2_macroblock_blocks::block_component(i, chroma_format)`
+    — Figures 6-10 / 6-11 / 6-12: indices `0..=3` → Y for every
+    chroma format; for 4:2:0 index 4 → Cb, 5 → Cr; for 4:2:2
+    indices 4..=5 → Cb, 6..=7 → Cr; for 4:4:4 indices 4..=7 → Cb,
+    8..=11 → Cr. Returns `None` past `block_count(chroma_format)`.
+  * `mpeg2_macroblock_blocks::MacroblockBlockContext` /
+    `DEFAULT_WEIGHT_MATRICES` — the four §6.3.7 default weighting
+    matrices indexed by §7.4.2.1 Table 7-5 `w ∈ {0, 1, 2, 3}`
+    (intra luma / non-intra luma / intra chroma / non-intra
+    chroma). The convenience constructor
+    `MacroblockBlockContext::with_default_weight_matrices` returns
+    a context bound to the static defaults.
+  * §7.4.2.1 Table 7-5 weighting-matrix dispatch — the driver
+    auto-derives `w` per coded block from `(coding, component,
+    chroma_format)` via
+    [`mpeg2_dequantize::select_weighting_matrix_index`] and
+    looks up the matching matrix in
+    `context.weight_matrices[w]` before passing it down to the
+    round-28 inner driver. For 4:2:0 the chroma matrix selector
+    collapses to the luma one (Table 7-5 row); for 4:2:2 / 4:4:4
+    the chroma indices `w ∈ {2, 3}` route to the chroma matrices.
+  * §7.2.1 non-intra-macroblock DC-predictor reset — the driver
+    calls `DcPredictors::reset()` at every non-intra macroblock
+    before walking blocks, per the §7.2.1 three-trigger reset
+    contract (slice-start and skipped-macroblock resets remain a
+    slice-layer concern). For intra macroblocks the predictors
+    are *preserved* at MB entry and update per block per
+    Table 7-1, as the spec requires.
+  * Up-front argument validation — the driver rejects
+    `intra_dc_precision > 3` (Table 6-13), `quantiser_scale_value
+    == 0` (Table 7-6 forbidden), and the
+    `DcPredictors.intra_dc_precision != context.intra_dc_precision`
+    mismatch as `InvalidBitstream`, so a misconfigured call site
+    surfaces at the macroblock-block driver entry rather than
+    deep in the round-28 stack frame.
+  * Re-exported at the crate root as `mpeg2_decode_macroblock_blocks`,
+    `Mpeg2MacroblockBlockContext`, `Mpeg2MacroblockDecodedBlock`,
+    `mpeg2_block_component`, `mpeg2_block_count`,
+    `MPEG2_DEFAULT_WEIGHT_MATRICES` — keeping the
+    stream-type-distinct spelling at every call site (matches the
+    existing `mpeg2_decode_block` / `mpeg2_decode_dc_block`
+    convention).
+* **15 new lib unit tests** in `src/mpeg2_macroblock_blocks.rs`:
+  the §6.1.1.8 block-index → component mapping for all three
+  chroma formats (4:2:0 Y-vs-Cb-vs-Cr at indices 0..=5 and `None`
+  past 5; 4:2:2 Cb at 4..=5 / Cr at 6..=7; 4:4:4 Cb at 4..=7 /
+  Cr at 8..=11), the `block_count(chroma_format)` table, a
+  six-block intra walk for 4:2:0 (all blocks decode with QFS[0]
+  = 128 and a constant `f[y][x]` plane), the `pattern_code[]`
+  gating (uncoded slots not consumed from the bitstream — verified
+  by emitting only two block bodies and confirming `cbp =
+  0b010100` walks blocks 1 and 3), the §7.2.1 non-intra-MB
+  predictor reset (seeded predictors snap back to 128 with no
+  blocks walked), the intra-MB predictor preservation at MB
+  entry (a seeded Y predictor of 200 carries through), Table 7-5
+  weighting-matrix dispatch (a 4:4:4 non-intra Cb block routes to
+  `w = 3` and surfaces F[0][0] = 24 vs the luma-matrix would-be
+  value 12), and the three argument-validation paths plus the
+  first-failing-block propagation (a truncated chroma block on
+  block 4 surfaces as Short or InvalidBitstream).
+* **6 new integration tests** in
+  `tests/mpeg2_macroblock_blocks_synthetic.rs` exercise the public
+  re-exports end-to-end: a six-block 4:2:0 intra walk in
+  Figure 6-10 order (Y-Y-Y-Y-Cb-Cr), an eight-block 4:2:2 intra
+  walk in Figure 6-11 order (4 Y then 2 Cb then 2 Cr), a
+  twelve-block 4:4:4 intra walk in Figure 6-12 order (4 Y then
+  4 Cb then 4 Cr), the per-component predictor chain across four
+  luma blocks (128 → 129 → 130 → 131 → 132 with `dct_diff = +1`
+  each, Cb / Cr cells staying at the reset value 128), the
+  non-intra-MB-with-no-coded-blocks predictor reset (Y/Cb/Cr
+  snap back to 128 from seeded `500 / 600 / 700`), and the
+  bit-cursor accounting across the six-block 4:2:0 walk (4 × 5
+  luma + 2 × 4 chroma = 28 bits, matching the last block's
+  reported post-EOB bit position).
+
+  Round 29 closes the round-28 next-step candidate. The §6.2.5 /
+  §6.2.6 macroblock-block driver is now wire-complete on the
+  MPEG-2 side, sitting one layer above the round-28 §6.2.6
+  `block(i)` driver and one layer below the still-pending
+  slice-layer driver. The remaining gap on the MPEG-2 decode
+  path is now the slice-layer driver itself — the loop that
+  parses `macroblock_address_increment` /
+  `macroblock_type` / `coded_block_pattern` / motion vectors per
+  MB and dispatches to `mpeg2_decode_macroblock_blocks` once per
+  coded macroblock — which is the natural round-30 work.
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -1812,7 +1930,13 @@ Every line in this crate's `src/` traces to:
   table-dependent `end_of_block` terminator) — no new clauses
   beyond those already cited; the driver composes the existing
   §7.2.1 / §7.2.2 / §7.3 / §7.4 / §A endpoints behind one entry
-  point.
+  point. Round 29 adds §6.1.1.8 Figures 6-10 / 6-11 / 6-12 (the
+  4:2:0 / 4:2:2 / 4:4:4 macroblock-block layout that maps
+  `pattern_code[]` index → colour component) and §6.2.5
+  (`macroblock()` syntax — the `for (i = 0; i < block_count; i++)
+  block(i)` loop body the macroblock-block driver dispatches),
+  and re-uses §7.4.2.1 Table 7-5 (already cited by round 23) for
+  the per-block weighting-matrix dispatch.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —

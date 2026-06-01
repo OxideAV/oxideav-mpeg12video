@@ -331,6 +331,7 @@ pub mod mpeg2_block_decoder;
 pub mod mpeg2_dct_coeff;
 pub mod mpeg2_dequantize;
 pub mod mpeg2_inverse_scan;
+pub mod mpeg2_macroblock_blocks;
 pub mod picture_header;
 pub mod pmv;
 pub mod quantizer_scale;
@@ -416,6 +417,13 @@ pub use mpeg2_inverse_scan::{
     place_coefficient as mpeg2_place_coefficient, scan_table as mpeg2_scan_table,
     ALTERNATE_INVERSE_SCAN as MPEG2_ALTERNATE_INVERSE_SCAN, ALTERNATE_SCAN as MPEG2_ALTERNATE_SCAN,
     ZIGZAG_INVERSE_SCAN as MPEG2_ZIGZAG_INVERSE_SCAN,
+};
+pub use mpeg2_macroblock_blocks::{
+    block_component as mpeg2_block_component, block_count as mpeg2_block_count,
+    decode_macroblock_blocks as mpeg2_decode_macroblock_blocks,
+    DecodedBlock as Mpeg2MacroblockDecodedBlock,
+    MacroblockBlockContext as Mpeg2MacroblockBlockContext,
+    DEFAULT_WEIGHT_MATRICES as MPEG2_DEFAULT_WEIGHT_MATRICES,
 };
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,

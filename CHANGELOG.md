@@ -8,6 +8,56 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 29: MPEG-2 §6.2.5 / §6.2.6 macroblock-block driver
+  (`mpeg2_macroblock_blocks::decode_macroblock_blocks`) — the
+  wrapper that walks a macroblock's `pattern_code[12]` array and
+  dispatches the round-28 §6.2.6 `block(i)` driver
+  (`mpeg2_block_decoder::decode_block`) once per coded slot,
+  returning a `Vec<DecodedBlock>` paired with the §6.1.1.8
+  block-index position. New `block_count(chroma_format)` (6 / 8 /
+  12) and `block_component(i, chroma_format)` helpers encode the
+  Figure 6-10 / 6-11 / 6-12 layout (4:2:0 = Y0..Y3 / Cb / Cr;
+  4:2:2 = Y0..Y3 / Cb0..Cb1 / Cr0..Cr1; 4:4:4 = Y0..Y3 / Cb0..Cb3
+  / Cr0..Cr3). The driver auto-derives the §7.4.2.1 Table 7-5
+  weighting-matrix index `w` per coded block from `(coding,
+  component, chroma_format)`, honours the §7.2.1 non-intra
+  macroblock DC-predictor reset, validates the macroblock-level
+  constants up-front (`intra_dc_precision ≤ 3`,
+  `quantiser_scale_value ≠ 0`, predictor precision matches
+  context precision), and propagates the first failing block's
+  error without walking the rest. New `MacroblockBlockContext`
+  groups the per-macroblock constants (`intra_vlc_format`,
+  `alternate_scan`, `intra_dc_precision`, `quantiser_scale_value`,
+  `chroma_format`, four weighting matrices); the per-block
+  triplet (`component`, `macroblock_intra`, `weight`) is derived
+  inside the driver from the parsed `MacroblockType` and the
+  block index. `DEFAULT_WEIGHT_MATRICES` exposes the §6.3.7
+  defaults indexed by Table 7-5 (intra luma, non-intra luma,
+  intra chroma, non-intra chroma). Re-exported at the crate root
+  as `mpeg2_decode_macroblock_blocks`,
+  `Mpeg2MacroblockBlockContext`, `Mpeg2MacroblockDecodedBlock`,
+  `mpeg2_block_component`, `mpeg2_block_count`,
+  `MPEG2_DEFAULT_WEIGHT_MATRICES`. 15 new lib unit tests +
+  6 new integration tests under
+  `tests/mpeg2_macroblock_blocks_synthetic.rs` pin the §6.1.1.8
+  block-index → component mapping across all three chroma
+  formats, the six-block intra walk for 4:2:0, the eight-block
+  4:2:2 walk (Cb-then-Cr ordering), the twelve-block 4:4:4 walk,
+  the `pattern_code[]` gating (uncoded slots not consumed),
+  Table 7-5 weighting-matrix dispatch for a 4:4:4 non-intra
+  chroma block, the §7.2.1 non-intra-macroblock predictor reset,
+  the intra-macroblock predictor-carry-over (no reset at MB
+  entry), the cross-block DC predictor chain (128 → 129 → 130 →
+  131 → 132 across four luma blocks with `dct_diff = +1` each),
+  the bit-cursor accounting (28 bits for six size-0 intra blocks
+  in 4:2:0), and the three argument-validation paths plus the
+  first-failing-block propagation. This closes the round-28
+  next-step candidate; the remaining MPEG-2 decode gap is the
+  slice-layer driver that loops over macroblocks (parsing
+  `macroblock_address_increment` / `macroblock_type` /
+  `coded_block_pattern` / motion vectors per MB and dispatching
+  to this macroblock-block driver per coded macroblock).
+
 - round 28: MPEG-2 §6.2.6 `block(i)` driver
   (`mpeg2_block_decoder::decode_block`) — chains the §7.2.1 DC
   prelude (intra blocks only) → §7.2.2 residual VLC walker (with
