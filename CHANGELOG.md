@@ -8,6 +8,27 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 28: MPEG-2 §6.2.6 `block(i)` driver
+  (`mpeg2_block_decoder::decode_block`) — chains the §7.2.1 DC
+  prelude (intra blocks only) → §7.2.2 residual VLC walker (with
+  the §7.2.2.2 NOTE 2 / NOTE 3 FIRST / NEXT alternation honoured)
+  → §7.3 inverse scan (Figure 7-2 / Figure 7-3 keyed off
+  `alternate_scan`) → §7.4 inverse-quantisation pipeline
+  (saturation + §7.4.4 mismatch control included) → §A 8×8 IDCT
+  into a single "bitstream → `f[y][x]` plane" entry point. New
+  `Mpeg2BlockContext` groups the per-macroblock constants
+  (`intra_vlc_format`, `alternate_scan`, `intra_dc_precision`,
+  `quantiser_scale_value`); per-block parameters
+  (`component`, `macroblock_intra`, `weight`) move with each
+  call. `Mpeg2DecodedBlock` carries the four intermediate planes
+  (`QFS[]`, `QF[v][u]`, `F[v][u]`, `f[y][x]`) plus the post-EOB
+  bit cursor. §7.2.2 wire-position constraint
+  (`walker_index + run ≤ 63`) enforced as an `InvalidBitstream`
+  rejection. Re-exported at the crate root as
+  `mpeg2_decode_block`, `Mpeg2BlockContext`, and
+  `Mpeg2DecodedBlock`. 16 new lib unit tests +
+  7 new integration tests under
+  `tests/mpeg2_block_decoder_synthetic.rs`.
 - round 27: MPEG-2 §7.2.1 intra-block DC prelude — Annex B
   Tables B-12 (`dct_dc_size_luminance`) and B-13
   (`dct_dc_size_chrominance`) extended to `0..=11` with the

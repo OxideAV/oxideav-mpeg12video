@@ -59,10 +59,19 @@
 //! NOTE 2 / NOTE 3 FIRST / NEXT disambiguation, the table-dependent
 //! `end_of_block` codeword (B-14 `10`, B-15 `0110`), and the Table
 //! B-16 escape (`000001` prefix + 6-bit run + 12-bit signed_level,
-//! `signed_level ∈ [-2047, +2047] \ {0}`). The
-//! public `register` symbol is still a no-op so that downstream
-//! consumers can depend on the crate without the decoder being
-//! inadvertently selected by the registry — the full
+//! `signed_level ∈ [-2047, +2047] \ {0}`). The §6.2.6 `block(i)`
+//! driver at [`mpeg2_block_decoder::decode_block`] now chains the
+//! §7.2.1 DC prelude (intra blocks only), §7.2.2 residual VLC
+//! walker (with the §7.2.2.2 NOTE 2 / NOTE 3 FIRST / NEXT
+//! alternation honoured), §7.3 inverse scan, §7.4 inverse
+//! quantisation, and §A 8×8 IDCT into a single
+//! "bitstream → `f[y][x]` plane ready for §7.6.8 add-and-saturate"
+//! entry point — the missing block-level composition step the
+//! macroblock-level [`macroblock_pipeline`] driver dispatches to
+//! once per coded block per the §6.3.17.4 `pattern_code[12]`
+//! derivation. The public `register` symbol is still a no-op so
+//! that downstream consumers can depend on the crate without the
+//! decoder being inadvertently selected by the registry — the full
 //! [`oxideav_core::Decoder`] / [`oxideav_core::Encoder`] glue still
 //! needs the slice-decoding driver and bytestream entry points.
 //!
@@ -277,6 +286,24 @@
 //!   [`mpeg2_dequantize::F_SATURATION_MAX`] expose the §7.4.3
 //!   clamp bounds. The §A.1 IDCT itself remains blocked behind
 //!   issue #1110.
+//! * [`mpeg2_block_decoder::decode_block`] — the §6.2.6 `block(i)`
+//!   driver per ISO/IEC 13818-2 §6.2.6: chains the §7.2.1 DC
+//!   prelude (intra blocks only), §7.2.2 residual VLC walker
+//!   (with §7.2.2.2 NOTE 2 / NOTE 3 FIRST / NEXT alternation),
+//!   §7.3 inverse scan, §7.4 inverse-quantisation pipeline, and
+//!   §A 8×8 IDCT into a single
+//!   "bitstream → `f[y][x]` plane" call. Consumes a
+//!   [`mpeg2_block_decoder::BlockContext`] (the per-macroblock
+//!   constants `intra_vlc_format` / `alternate_scan` /
+//!   `intra_dc_precision` / `quantiser_scale_value`) plus the
+//!   per-block triplet `(component, macroblock_intra, weight)`
+//!   and a mutable [`mpeg2_block_dc::DcPredictors`] reference;
+//!   returns a [`mpeg2_block_decoder::DecodedBlock`] carrying
+//!   the four intermediate planes (`QFS[]`, `QF[v][u]`,
+//!   `F[v][u]`, `f[y][x]`) plus the post-EOB bit cursor. The
+//!   §7.2.2 wire-position constraint *"the position of the
+//!   coefficient ... shall not exceed 63"* is enforced as an
+//!   `InvalidBitstream` rejection.
 
 #![warn(missing_debug_implementations)]
 
@@ -300,6 +327,7 @@ pub mod motion_vector;
 pub mod mpeg1_motion_vector;
 pub mod mpeg1_reconstruct;
 pub mod mpeg2_block_dc;
+pub mod mpeg2_block_decoder;
 pub mod mpeg2_dct_coeff;
 pub mod mpeg2_dequantize;
 pub mod mpeg2_inverse_scan;
@@ -364,6 +392,10 @@ pub use mpeg2_block_dc::{
     qfs_zero_max as mpeg2_qfs_zero_max, ColourComponent as Mpeg2ColourComponent,
     DcCoefficient as Mpeg2DcCoefficient, DcComponent as Mpeg2DcComponent,
     DcPredictors as Mpeg2DcPredictors, MAX_DC_SIZE as MPEG2_MAX_DC_SIZE,
+};
+pub use mpeg2_block_decoder::{
+    decode_block as mpeg2_decode_block, BlockContext as Mpeg2BlockContext,
+    DecodedBlock as Mpeg2DecodedBlock,
 };
 pub use mpeg2_dct_coeff::{
     CoefficientPosition as Mpeg2CoefficientPosition, DctCoeff as Mpeg2DctCoeff,

@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–27.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–28.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -46,6 +46,15 @@ three-cell per-component DC predictor `dc_dct_pred[cc]` with
 Table 7-2 reset values (`{128, 256, 512, 1024}` for
 `intra_dc_precision ∈ {0,1,2,3}`), and the §7.2.1 `QFS[0] ∈ [0,
 2^(8 + intra_dc_precision) - 1]` bitstream constraint enforcement.
+Round 28 lands the **MPEG-2 §6.2.6 `block(i)` driver** —
+`mpeg2_block_decoder::decode_block` chains the §7.2.1 DC prelude
+(intra blocks only) → §7.2.2 residual VLC walker (with §7.2.2.2
+NOTE 2 / NOTE 3 FIRST / NEXT alternation) → §7.3 inverse scan
+(Figure 7-2 / Figure 7-3 keyed off `alternate_scan`) → §7.4
+inverse-quantisation pipeline → §A 8×8 IDCT into a single
+"bitstream → `f[y][x]` plane ready for §7.6.8 add-and-saturate"
+entry point, with the §7.2.2 wire-position `walker_index + run ≤
+63` constraint enforced as an `InvalidBitstream` rejection.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1671,6 +1680,102 @@ be defended as clean-room. The rebuild starts here.
   prelude → walker → scan → §7.4 inverse-quantise → §A IDCT into
   a per-block decode entry-point).
 
+### What round 28 lands
+
+* The **§6.2.6 `block(i)` driver** per **ISO/IEC 13818-2 (ITU-T
+  H.262) §6.2.6** — the missing block-level composition step the
+  round-27 notes flagged as the remaining MPEG-2 gap. With this
+  in hand the full intra-block path from the bitstream cursor to
+  a `f[y][x]` plane ready for §7.6.8 add-and-saturate runs in a
+  single call: §7.2.1 DC prelude (intra blocks only) → §7.2.2
+  residual VLC walker (with the §7.2.2.2 NOTE 2 / NOTE 3 FIRST
+  / NEXT alternation honoured by the walker) → §7.3 inverse
+  scan (Figure 7-2 / Figure 7-3 keyed off `alternate_scan`) →
+  §7.4 inverse-quantisation pipeline (saturation + §7.4.4
+  mismatch control included) → §A 8×8 IDCT, all chained off the
+  already-landed sibling endpoints with no duplication of their
+  spec-pinned arithmetic.
+  * `mpeg2_block_decoder::BlockContext` — groups the
+    per-macroblock constants the §6.2.6 driver needs:
+    `intra_vlc_format` (Table 7-3 selector), `alternate_scan`
+    (§7.3 Figure 7-2 / Figure 7-3 selector), `intra_dc_precision`
+    (§7.2.1 reset value + Table 7-4 `intra_dc_mult`), and
+    `quantiser_scale_value` (post-Table 7-6 resolved scale).
+    Per-block parameters (`component`, `macroblock_intra`,
+    `weight`) move with each call so a macroblock-level driver
+    can dispatch to the same `BlockContext` for all 6 / 8 / 12
+    blocks of a macroblock.
+  * `mpeg2_block_decoder::DecodedBlock` — captures every
+    intermediate plane: the 64-entry `QFS[]` out of the walker,
+    the §7.3 inverse-scan output `QF[v][u]`, the §7.4
+    inverse-quantisation output `F[v][u]`, and the §A IDCT
+    output `f[y][x]` (already saturated to `[-256, +255]` per
+    §7.5). Carries the post-EOB bit cursor for round-trip
+    accounting against the caller's `BitReader`.
+  * `mpeg2_block_decoder::decode_block(br, ctx, dc_predictors,
+    component, macroblock_intra, weight)` — the §6.2.6 driver
+    entry point. For an intra block the §7.2.1 path advances
+    the walker cursor to zig-zag index 1 and switches the §7.2.2
+    walker to `Position::Next` (because the DC slot has already
+    been consumed); for a non-intra block the walker starts at
+    zig-zag index 0 with `Position::First`. The §7.2.2 spec
+    constraint *"the position of the coefficient ... shall not
+    exceed 63"* is enforced as an `InvalidBitstream` rejection
+    on any `walker_index + run ≥ 64`. Per-call inputs are
+    validated up-front (`intra_dc_precision ≤ 3`,
+    `quantiser_scale_value ≠ 0`, predictor precision matches
+    context precision) so a downstream driver doesn't have to
+    re-prove the §6.3.7 / §7.4.2.2 invariants.
+  * Re-exported at the crate root as `mpeg2_decode_block`,
+    `Mpeg2BlockContext`, `Mpeg2DecodedBlock` so a caller picking
+    between the MPEG-1 and MPEG-2 paths keeps the
+    stream-type-distinct spelling at every call site (matches
+    the existing `mpeg2_decode_dc_block` /
+    `mpeg2_inverse_quantise_block` convention).
+* **16 new lib unit tests** in `src/mpeg2_block_decoder.rs`:
+  size-0 DC + immediate EOB intra block (predictor reset value
+  flows through to `QF[0][0]` → `F[0][0]`), size-1 positive DC
+  (predictor walk 128 → 129), Cb chroma routing (Table B-13 +
+  Cb predictor cell, leaving Y / Cr undisturbed), non-intra
+  block rejection on FIRST-position EOB (which is NEXT-only per
+  §7.2.2.2), non-intra FIRST `(0, +1)` → `QFS[0]`, §7.4 non-intra
+  arithmetic `(2*QF + Sign(QF))*W*Qs/32 = 12` for `QF = +1`,
+  intra block with NEXT `(0, +1)` placing at zig-zag index 1
+  (the §7.2.2.2 alternation in action), intra block with run = 3
+  placing at zig-zag index 4 (cursor accounting), `alternate_scan`
+  remapping `QFS[1]` away from the zig-zag `(0, 1)` cell,
+  end-of-block bit-position reporting matches the reader's
+  cursor, `quantiser_scale_value == 0` rejection (Table 7-6),
+  `intra_dc_precision > 3` rejection (Table 6-13),
+  predictor-vs-context precision-mismatch rejection,
+  `intra_dc_precision = 1` Table 7-2 reset-value chain (predictor
+  = 256, `F[0][0]` = `4 * 256 = 1024` per Table 7-4 `intra_dc_mult`),
+  `intra_dc_mult_local` matches Table 7-4 across `0..=3`, and
+  the §7.2.2 `run + position ≤ 63` constraint enforcement
+  (Table B-16 escape with run = 63 at walker_index = 1 → reject).
+* **7 new integration tests** in
+  `tests/mpeg2_block_decoder_synthetic.rs` exercise the public
+  re-exports end-to-end: Y / Cb / Cr per-component predictor
+  independence, three-block Y chain accumulating positive
+  `dct_diff` (128 → 129 → 130 → 131), cursor accounting across
+  two concatenated blocks (5 + 5 = 10 bits), non-intra round-trip
+  through `DEFAULT_NON_INTRA_WEIGHT`, two-non-intra-block chain
+  confirming §7.2.1 predictor updates skip non-intra blocks,
+  `Mpeg2BlockCoding` enum convention pin, and a 4:2:0 six-block
+  macroblock skeleton (Y0..Y3 + Cb + Cr) walking 28 bits of
+  bitstream.
+
+  Round 28 closes the round-27 next-step candidate. The §6.2.6
+  block-level entry point is now wire-complete on the MPEG-2
+  side; the remaining gap on the MPEG-2 decode path is the
+  macroblock-level driver that walks `pattern_code[12]` to
+  dispatch `decode_block` once per coded block (the existing
+  [`macroblock_pipeline::decode_macroblock`] is shaped for this
+  but currently takes pre-decoded `BlockInputs` rather than a
+  raw `BitReader`; the natural round-29 work is a wrapper that
+  drives the existing macroblock_pipeline by calling
+  `mpeg2_decode_block` per coded slot).
+
 ## Clean-room provenance
 
 Every line in this crate's `src/` traces to:
@@ -1700,7 +1805,14 @@ Every line in this crate's `src/` traces to:
   constraint), Table 7-2 (`intra_dc_precision` → reset value
   `{128, 256, 512, 1024}`), and Annex B Tables B-12 / B-13
   (`dct_dc_size_luminance` / `dct_dc_size_chrominance` extended to
-  `0..=11`).
+  `0..=11`). Round 28 adds §6.2.6 (`block(i)` syntax — the
+  `pattern_code[i]` gate, the `macroblock_intra` split between
+  the §7.2.1 DC prelude and `dct_coeff_first`, the
+  `while (nextbits() != End-of-block)` loop, and the
+  table-dependent `end_of_block` terminator) — no new clauses
+  beyond those already cited; the driver composes the existing
+  §7.2.1 / §7.2.2 / §7.3 / §7.4 / §A endpoints behind one entry
+  point.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
