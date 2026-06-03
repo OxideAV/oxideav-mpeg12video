@@ -27,12 +27,26 @@ fn slice_walker_skipped_count_feeds_p_frame_picture_description() {
     // described as Frame-based / zero-MV / PMV-reset, irrespective
     // of how many slots are skipped between coded macroblocks.
     let mut bw = BitWriter::new();
-    // MB0 — Pattern, motion forward = 1
+    // MB0 — Table B-1 increment = 1 (1-bit `1`).
+    bw.write_u32(0b1, 1);
+    // Table B-3 "Pattern, motion forward" = 1 (1-bit `1`):
+    // fwd == 1, pattern == 1, intra == 0.
+    bw.write_u32(0b1, 1);
+    // motion_vectors(0): Frame-based default (mv_count==1, dmv==0,
+    // f_code==1) → 2 bits (`motion_code = 0` horizontal + vertical).
     bw.write_u32(0b1, 1);
     bw.write_u32(0b1, 1);
-    // MB1 — Table B-1 increment 4 is the 4-bit code `0011`.
+    // coded_block_pattern(): cbp = 60 (Table B-9 3-bit `111`).
+    bw.write_u32(0b111, 3);
+
+    // MB1 — Table B-1 increment 4 is the 4-bit code `0011`. The
+    // §6.3.17.1 skipped-MB range covers addresses MB0+1 .. MB0+3
+    // (3 macroblocks, matching `address_increment - 1`).
     bw.write_u32(0b0011, 4);
     bw.write_u32(0b1, 1);
+    bw.write_u32(0b1, 1);
+    bw.write_u32(0b1, 1);
+    bw.write_u32(0b111, 3);
     let buf = append_stop(bw);
 
     let walk = walk_slice(

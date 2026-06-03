@@ -9,8 +9,8 @@
 
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::{
-    walk_slice, PictureCodingType, PictureStructure, SliceContext, SliceHeader, SliceWalkContext,
-    PAST_INTRA_ADDRESS_RESET,
+    walk_slice, ChromaFormat, MotionVectorsKind, PictureCodingType, PictureStructure, SliceContext,
+    SliceHeader, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
 
 /// Slice-header builder for a non-scalable 352×240 picture
@@ -122,9 +122,16 @@ fn walk_records_skipped_macroblocks_in_p_picture() {
     write_increment_1(&mut bw);
     // Table B-3 P-picture row "Pattern, motion forward" = `1`.
     bw.write_u32(0b1, 1);
+    // motion_vectors(0) for the Frame-based default
+    // (mv_count == 1, dmv == 0, f_code == 1): two zero motion_codes.
+    bw.write_u32(0b11, 2);
+    // coded_block_pattern(): cbp = 60 (Table B-9 `111`).
+    bw.write_u32(0b111, 3);
     // increment = 3 → skip 2 MBs.
     bw.write_u32(0b010, 3);
     bw.write_u32(0b1, 1);
+    bw.write_u32(0b11, 2);
+    bw.write_u32(0b111, 3);
     let buf = append_stop(bw);
 
     let walk = walk_slice(
@@ -223,11 +230,19 @@ fn walk_p_picture_frame_motion_type_advances_past_macroblock_modes_tail() {
     bw.write_u32(0b001, 3);
     // frame_motion_type = `10` (Frame-based, Table 6-17).
     bw.write_u32(0b10, 2);
+    // motion_vectors(0): Frame-based, mv_count=1, dmv=0 →
+    // horiz motion_code=0 + vert motion_code=0 = 2 bits `11`.
+    bw.write_u32(0b11, 2);
     // Second MB — increment=1 then the same MC pattern again.
     write_increment_1(&mut bw);
     bw.write_u32(0b001, 3);
-    // frame_motion_type = `11` (Dual-Prime).
+    // frame_motion_type = `11` (Dual-Prime, mv_count=1, dmv=1).
     bw.write_u32(0b11, 2);
+    // motion_vectors(0): Dual-Prime mv_format=Field, mv_count=1,
+    // dmv=1 → vfs absent (because dmv==1), so the body is just
+    // motion_code+dmvector pairs: horiz (`1`) + dmvector_horiz
+    // (`0`) + vert (`1`) + dmvector_vert (`0`) = 4 bits.
+    bw.write_u32(0b1010, 4);
     let buf = append_stop(bw);
 
     let ctx = SliceWalkContext::first_slice_with_picture_extension(
@@ -244,8 +259,11 @@ fn walk_p_picture_frame_motion_type_advances_past_macroblock_modes_tail() {
     assert_eq!(mb0_mt.code, 0b10);
     let mb1_mt = walk.macroblocks[1].motion_type.expect("present");
     assert_eq!(mb1_mt.code, 0b11);
-    // Cursor at end: 1 + 3 + 2 + 1 + 3 + 2 = 12 bits.
-    assert_eq!(walk.macroblocks[1].body_bit_position, 12);
+    // body_bit_position records the *post-quant* cursor for each MB
+    // — i.e. right after macroblock_modes() since no quant_code is
+    // emitted. MB1's body cursor = 1+3+2 (MB0 hdr) + 2 (MB0 MV) +
+    // 1+3+2 (MB1 hdr) = 14.
+    assert_eq!(walk.macroblocks[1].body_bit_position, 14);
 }
 
 #[test]
@@ -264,6 +282,12 @@ fn walk_field_picture_field_motion_type_then_quant_in_same_mb() {
     bw.write_u32(0b01, 2);
     // quantiser_scale_code = 23.
     bw.write_u32(23, 5);
+    // motion_vectors(0): Field-based mv_count=1, dmv=0 →
+    // vertical_field_select (1 bit `0`) + horiz mv_code (1 bit `1`)
+    // + vert mv_code (1 bit `1`) = 3 bits `011`.
+    bw.write_u32(0b011, 3);
+    // coded_block_pattern(): cbp = 60 (Table B-9 `111`).
+    bw.write_u32(0b111, 3);
     let buf = append_stop(bw);
 
     let ctx = SliceWalkContext::first_slice_with_picture_extension(
@@ -289,6 +313,138 @@ fn walk_field_picture_field_motion_type_then_quant_in_same_mb() {
     // 5 (q_scale) = 13 bits.
     assert_eq!(mb0.body_bit_position, 13);
     assert_eq!(walk.quantiser_scale_code, 23);
+}
+
+#[test]
+fn walk_b_picture_emits_both_motion_vectors_and_no_pattern_code() {
+    // B-picture frame, Table B-4 "Interpolated, Not Coded" = `10`
+    // (2 bits) — fwd=true, bwd=true, pattern=false, intra=false.
+    // The walker reads both `motion_vectors(0)` and
+    // `motion_vectors(1)`; there is no CBP and pattern_code is
+    // all-zero.
+    let mut bw = BitWriter::new();
+    write_increment_1(&mut bw);
+    bw.write_u32(0b10, 2);
+    // motion_vectors(0): Frame-based default → 2 bits.
+    bw.write_u32(0b11, 2);
+    // motion_vectors(1): Frame-based default → 2 bits.
+    bw.write_u32(0b11, 2);
+    let buf = append_stop(bw);
+
+    let walk = walk_slice(
+        &buf,
+        SliceWalkContext::first_slice(22, 0, PictureCodingType::Bidirectional, 8),
+    )
+    .unwrap();
+    assert_eq!(walk.macroblocks.len(), 1);
+    let mb0 = &walk.macroblocks[0];
+    let mv_fwd = mb0
+        .motion_vectors_forward
+        .as_ref()
+        .expect("motion_vectors(0) emitted");
+    let mv_bwd = mb0
+        .motion_vectors_backward
+        .as_ref()
+        .expect("motion_vectors(1) emitted");
+    assert_eq!(mv_fwd.kind, MotionVectorsKind::Forward);
+    assert_eq!(mv_bwd.kind, MotionVectorsKind::Backward);
+    assert_eq!(mb0.pattern_code, [false; 12]);
+    assert!(mb0.coded_block_pattern.is_none());
+}
+
+#[test]
+fn walk_intra_macroblock_with_concealment_motion_vectors_reads_marker_bit() {
+    // §6.3.11 concealment_motion_vectors == 1 in an I-picture: every
+    // intra MB carries a `motion_vectors(0)` block followed by a
+    // single `marker_bit == '1'` per §6.2.5.
+    use oxideav_mpeg12video::SliceWalkContext as Ctx;
+    let mut bw = BitWriter::new();
+    write_increment_1(&mut bw);
+    write_i_intra(&mut bw);
+    // motion_vectors(0): Frame-based default → 2 bits.
+    bw.write_u32(0b11, 2);
+    // marker_bit = 1.
+    bw.write_u32(0b1, 1);
+    let buf = append_stop(bw);
+
+    let walk = walk_slice(
+        &buf,
+        Ctx::first_slice_with_picture_body(
+            22,
+            0,
+            PictureCodingType::Intra,
+            1,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            true,
+            ChromaFormat::Yuv420,
+        ),
+    )
+    .unwrap();
+    assert_eq!(walk.macroblocks.len(), 1);
+    let mb0 = &walk.macroblocks[0];
+    assert!(mb0.motion_vectors_forward.is_some());
+    assert_eq!(mb0.concealment_marker_bit, Some(true));
+    assert_eq!(mb0.pattern_code, [true; 12]);
+}
+
+#[test]
+fn walk_pattern_code_drives_444_extension() {
+    // P-picture frame with `chroma_format = Yuv444` — the
+    // `coded_block_pattern_2` 6-bit extension drives blocks 8..12.
+    use oxideav_mpeg12video::SliceWalkContext as Ctx;
+    let mut bw = BitWriter::new();
+    write_increment_1(&mut bw);
+    // Table B-3 "Pattern, motion forward" = `1` (1 bit).
+    bw.write_u32(0b1, 1);
+    // motion_vectors(0): Frame-based default → 2 bits.
+    bw.write_u32(0b11, 2);
+    // cbp = 63 (Table B-9 6-bit `001100`).
+    bw.write_u32(0b001100, 6);
+    // coded_block_pattern_2 = `1111` -> blocks 8,9,10,11 set
+    // (the `bits` are `coded_block_pattern_2 & (1 << (11 - i))`
+    // for i in 8..12 → mask bits 3,2,1,0).
+    bw.write_u32(0b1111, 6);
+    let buf = append_stop(bw);
+
+    let walk = walk_slice(
+        &buf,
+        Ctx::first_slice_with_picture_body(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            false,
+            ChromaFormat::Yuv444,
+        ),
+    )
+    .unwrap();
+    assert_eq!(walk.macroblocks.len(), 1);
+    let mb0 = &walk.macroblocks[0];
+    let cbp = mb0.coded_block_pattern.as_ref().expect("cbp present");
+    assert_eq!(cbp.cbp, 63);
+    assert_eq!(cbp.coded_block_pattern_2, Some(0b001111));
+    let mut expected = [false; 12];
+    // cbp = 63 → blocks 0..6 all set.
+    for slot in expected.iter_mut().take(6) {
+        *slot = true;
+    }
+    // cbp2 0b001111 → blocks 8..12 set.
+    expected[8] = true;
+    expected[9] = true;
+    expected[10] = true;
+    expected[11] = true;
+    assert_eq!(mb0.pattern_code, expected);
 }
 
 #[test]

@@ -150,11 +150,14 @@
 
 use oxideav_core::bits::BitReader;
 
+use crate::coded_block_pattern::CodedBlockPattern;
 use crate::macroblock_modes::{MacroblockModesContext, MacroblockModesTail, MotionType};
 use crate::macroblock_type::MacroblockType;
 use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
+use crate::motion_vector::{MotionVectors, MotionVectorsContext, MotionVectorsKind};
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::quantizer_scale::{QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
+use crate::sequence_extension::ChromaFormat;
 use crate::{Error, Result};
 
 /// `past_intra_address` sentinel for "no intra macroblock has been
@@ -214,6 +217,42 @@ pub struct SliceWalkContext {
     /// `true` (no field-picture or field-DCT support per ISO/IEC
     /// 11172-2).
     pub frame_pred_frame_dct: bool,
+    /// `f_code[0][0]` — forward horizontal `f_code` from
+    /// `picture_coding_extension()` per §6.3.11 (range `1..=9`;
+    /// `15` is the §6.3.11 "unused" marker). Drives the
+    /// `motion_residual` bit-width when `s == 0`.
+    ///
+    /// Only consumed by the §6.2.5 `motion_vectors(0)` read, which
+    /// fires when either `macroblock_motion_forward == 1` or
+    /// `macroblock_intra && concealment_motion_vectors == 1`. For
+    /// I-pictures with `concealment_motion_vectors == 0` and for
+    /// every macroblock that triggers no `motion_vectors()` read
+    /// the value is unused — placeholder `1` is safe.
+    pub f_code_fwd_horiz: u8,
+    /// `f_code[0][1]` — forward vertical `f_code` from
+    /// `picture_coding_extension()` per §6.3.11.
+    pub f_code_fwd_vert: u8,
+    /// `f_code[1][0]` — backward horizontal `f_code` from
+    /// `picture_coding_extension()` per §6.3.11. Only used when
+    /// the picture coding type is `B` and `macroblock_motion_backward
+    /// == 1`.
+    pub f_code_bwd_horiz: u8,
+    /// `f_code[1][1]` — backward vertical `f_code` from
+    /// `picture_coding_extension()` per §6.3.11.
+    pub f_code_bwd_vert: u8,
+    /// `concealment_motion_vectors` from `picture_coding_extension()`
+    /// per §6.3.11. When `true`, intra macroblocks carry a
+    /// `motion_vectors(0)` block followed by a `marker_bit ==
+    /// '1'`; when `false`, intra macroblocks have no
+    /// motion-vector payload. Always `false` for MPEG-1 streams.
+    pub concealment_motion_vectors: bool,
+    /// `chroma_format` from `sequence_extension()` per §6.3.5.
+    /// Drives the §6.2.5.3 `coded_block_pattern()` 4:2:2 / 4:4:4
+    /// fixed-length extensions and the §6.3.17.4 `pattern_code[12]`
+    /// derivation. MPEG-1 streams are always `Yuv420` (the
+    /// chroma_format field of `sequence_extension()` doesn't exist
+    /// in ISO/IEC 11172-2).
+    pub chroma_format: ChromaFormat,
 }
 
 impl SliceWalkContext {
@@ -245,6 +284,12 @@ impl SliceWalkContext {
             past_intra_address: PAST_INTRA_ADDRESS_RESET,
             picture_structure: PictureStructure::Frame,
             frame_pred_frame_dct: true,
+            f_code_fwd_horiz: 1,
+            f_code_fwd_vert: 1,
+            f_code_bwd_horiz: 1,
+            f_code_bwd_vert: 1,
+            concealment_motion_vectors: false,
+            chroma_format: ChromaFormat::Yuv420,
         }
     }
 
@@ -269,6 +314,66 @@ impl SliceWalkContext {
             past_intra_address: PAST_INTRA_ADDRESS_RESET,
             picture_structure,
             frame_pred_frame_dct,
+            f_code_fwd_horiz: 1,
+            f_code_fwd_vert: 1,
+            f_code_bwd_horiz: 1,
+            f_code_bwd_vert: 1,
+            concealment_motion_vectors: false,
+            chroma_format: ChromaFormat::Yuv420,
+        }
+    }
+
+    /// Full-fidelity constructor exposing every §6.3.5 / §6.3.11
+    /// picture / sequence extension field the §6.2.5 macroblock body
+    /// is gated on: `picture_structure`, `frame_pred_frame_dct`, the
+    /// four `f_code[s][t]` entries that drive `motion_vector(r, s)`
+    /// residual widths, the picture-level
+    /// `concealment_motion_vectors` flag that gates
+    /// `motion_vectors(0)` on intra macroblocks, and the
+    /// sequence-level `chroma_format` that drives the §6.2.5.3
+    /// `coded_block_pattern()` extensions and the §6.3.17.4
+    /// `pattern_code[12]` derivation.
+    ///
+    /// Use this constructor when the slice body contains motion
+    /// vectors and/or a `coded_block_pattern()` — i.e. any P- or
+    /// B-picture macroblock that has `macroblock_motion_*` or
+    /// `macroblock_pattern` set, or any intra macroblock in a
+    /// picture with `concealment_motion_vectors == 1`. For purely
+    /// intra slices with no concealment vectors,
+    /// [`SliceWalkContext::first_slice`] or
+    /// [`SliceWalkContext::first_slice_with_picture_extension`]
+    /// suffice — their f_code / `chroma_format` placeholders are
+    /// never read.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn first_slice_with_picture_body(
+        mb_width: u32,
+        mb_row: u32,
+        picture_coding_type: PictureCodingType,
+        initial_quantiser_scale_code: u8,
+        picture_structure: PictureStructure,
+        frame_pred_frame_dct: bool,
+        f_code_fwd_horiz: u8,
+        f_code_fwd_vert: u8,
+        f_code_bwd_horiz: u8,
+        f_code_bwd_vert: u8,
+        concealment_motion_vectors: bool,
+        chroma_format: ChromaFormat,
+    ) -> Self {
+        Self {
+            mb_width,
+            mb_row,
+            picture_coding_type,
+            mpeg1: false,
+            initial_quantiser_scale_code,
+            past_intra_address: PAST_INTRA_ADDRESS_RESET,
+            picture_structure,
+            frame_pred_frame_dct,
+            f_code_fwd_horiz,
+            f_code_fwd_vert,
+            f_code_bwd_horiz,
+            f_code_bwd_vert,
+            concealment_motion_vectors,
+            chroma_format,
         }
     }
 
@@ -293,13 +398,26 @@ impl SliceWalkContext {
             past_intra_address: PAST_INTRA_ADDRESS_RESET,
             picture_structure: PictureStructure::Frame,
             frame_pred_frame_dct: true,
+            f_code_fwd_horiz: 1,
+            f_code_fwd_vert: 1,
+            f_code_bwd_horiz: 1,
+            f_code_bwd_vert: 1,
+            concealment_motion_vectors: false,
+            chroma_format: ChromaFormat::Yuv420,
         }
     }
 }
 
 /// Per-macroblock summary the walker emits for one iteration of the
 /// §6.2.4 do-while loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Note: this used to derive `Copy` (rounds 30–32) but now holds two
+/// `MotionVectors` payloads (each carrying a small heap-allocated
+/// `Vec<MotionVectorEntry>` for the `r`-loop entries) and a
+/// `CodedBlockPattern` (a plain POD value but the surrounding type
+/// is uniformly `Clone` only for parallelism with the motion-vector
+/// payloads).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacroblockRecord {
     /// `macroblock_address` per §6.3.17.1, i.e. the picture-relative
     /// raster index of this macroblock.
@@ -351,9 +469,12 @@ pub struct MacroblockRecord {
     pub past_intra_address: i32,
     /// Bit position (relative to the start of the buffer the
     /// [`BitReader`] was created from) right after the
-    /// macroblock-header chain — the entry point for the
-    /// macroblock_modes-tail / motion_vectors() / coded_block_pattern()
-    /// / block(i) parsers that future rounds will plug in.
+    /// macroblock-header chain. That is right after `macroblock_modes()`
+    /// plus the §6.2.5 `if (macroblock_quant) quantiser_scale_code`
+    /// read, and crucially still *before* any `motion_vectors()` /
+    /// `coded_block_pattern()` / `block(i)` field. Downstream
+    /// round-by-round drivers can pick up at this cursor when they
+    /// want to re-parse the wire fields the walker captured above.
     pub body_bit_position: u64,
     /// Skipped-macroblock count derived from
     /// `address_increment - 1`: the number of macroblocks at addresses
@@ -361,6 +482,56 @@ pub struct MacroblockRecord {
     /// that the §7.6.6 round must reconstruct from the previous
     /// macroblock's state.
     pub skipped_macroblock_count: u32,
+    /// `motion_vectors(0)` payload when the §6.2.5 syntax has the
+    /// driver consume it — i.e. when either
+    /// `macroblock_motion_forward == 1` (any picture coding type) or
+    /// `macroblock_intra == 1 && concealment_motion_vectors == 1`
+    /// (the §6.3.11 concealment path). `None` otherwise.
+    ///
+    /// This is the **wire-syntax** parse only: the §7.6.3.1
+    /// reconstruction of `vector'[r][s][t]` against the PMV state
+    /// (and the §7.6.3.3 update of PMV slots and §7.6.3.4 reset) is
+    /// not run here — that needs cross-macroblock PMV state the
+    /// slice walker doesn't own.
+    pub motion_vectors_forward: Option<MotionVectors>,
+    /// `motion_vectors(1)` payload when the §6.2.5 syntax has the
+    /// driver consume it — i.e. when `macroblock_motion_backward
+    /// == 1` (only legal in B-pictures). `None` otherwise. Same
+    /// wire-only caveat as [`Self::motion_vectors_forward`].
+    pub motion_vectors_backward: Option<MotionVectors>,
+    /// The `marker_bit == '1'` consumed after `motion_vectors(0)` on
+    /// intra macroblocks with `concealment_motion_vectors == 1`
+    /// (§6.2.5). `Some(true)` when the marker bit was read (and
+    /// matched); `None` when the gate is off and the marker bit is
+    /// absent. The §6.3.17 marker-bit rule is enforced — a `'0'`
+    /// in this slot rejects the slice as
+    /// [`Error::InvalidBitstream`].
+    pub concealment_marker_bit: Option<bool>,
+    /// `coded_block_pattern()` payload when `macroblock_pattern ==
+    /// 1` (§6.2.5). `None` otherwise — meaning either the
+    /// macroblock is intra without `macroblock_pattern == 1`
+    /// (full-pattern by default per §6.3.17.4) or the macroblock
+    /// carries no coded residuals at all.
+    pub coded_block_pattern: Option<CodedBlockPattern>,
+    /// `pattern_code[12]` derived from the macroblock per §6.3.17.4:
+    ///
+    /// * intra macroblock without `macroblock_pattern` → every entry
+    ///   `true` (every block is coded; DC-only intra blocks are
+    ///   still "coded" in the §6.3.17.4 sense).
+    /// * `macroblock_pattern == 1` → driven by
+    ///   `coded_block_pattern.pattern_code(macroblock_intra,
+    ///   macroblock_pattern)` per §6.3.17.4.
+    /// * neither — every entry `false` (the macroblock is purely
+    ///   prediction with no residuals at all; the
+    ///   [`crate::macroblock_pipeline`] reconstruction passes the
+    ///   prediction through unchanged).
+    ///
+    /// Entries `0..6` cover the §6.1.1.8 Y/Cb/Cr block ordering for
+    /// 4:2:0; entries `6..8` extend Cb/Cr for 4:2:2; entries
+    /// `8..12` extend Cb/Cr for 4:4:4. Entries past
+    /// [`crate::mpeg2_block_count`] for the active chroma_format
+    /// are always `false`.
+    pub pattern_code: [bool; 12],
 }
 
 /// Per-slice summary the walker emits when the §6.2.4 do-while loop
@@ -389,6 +560,61 @@ pub struct SliceWalk {
     /// — i.e. the position at which the §6.2.4 stop-condition check
     /// passed.
     pub end_bit_position: u64,
+}
+
+/// Resolve the §6.2.5.2 / §6.3.17.1 effective `MotionType` to thread
+/// into [`MotionVectors::parse`].
+///
+/// * When the `macroblock_modes()` tail parsed an explicit
+///   `frame_motion_type` / `field_motion_type` code, that is the
+///   answer.
+/// * When the field is **absent**, §6.3.17.1 + Table 6-19 supply the
+///   default: `Frame-based` for frame pictures, `Field-based` for
+///   field pictures, with `motion_vector_count = 1`, `dmv = 0`, and
+///   `mv_format` matching the prediction type (frame for frame-based,
+///   field for field-based). This is the path concealment-MV intra
+///   macroblocks (§6.3.11) and `frame_pred_frame_dct == 1` motion
+///   MBs follow.
+///
+/// The function is deterministic on `(macroblock_type, modes_tail,
+/// picture_structure)`; it never reads bits and so cannot fail on
+/// bitstream exhaustion. The MPEG-2 spec also reserves Table 6-17
+/// code `00` — that is rejected upstream by
+/// [`MacroblockModesTail::parse`] when the code is read explicitly,
+/// so we never see it here.
+fn effective_motion_type(
+    macroblock_type: &MacroblockType,
+    modes_tail: &MacroblockModesTail,
+    ctx: &SliceWalkContext,
+) -> Result<MotionType> {
+    use crate::macroblock_modes::{MvFormat, PredictionType};
+    if let Some(mt) = modes_tail.motion_type {
+        return Ok(mt);
+    }
+    // §6.3.17.1 default for the absent-tail case.
+    let _ = macroblock_type;
+    let (prediction_type, mv_format) = match ctx.picture_structure {
+        PictureStructure::Frame => (PredictionType::FrameBased, MvFormat::Frame),
+        PictureStructure::TopField | PictureStructure::BottomField => {
+            (PredictionType::FieldBased, MvFormat::Field)
+        }
+    };
+    // The raw `code` field of `MotionType` is the wire-level 2-bit
+    // value. For the absent-tail case there is no wire code; we pick
+    // the Table 6-17 / 6-18 row that *would* have produced the same
+    // prediction type so callers can read it without surprises.
+    let code = match prediction_type {
+        PredictionType::FrameBased => 0b10,
+        PredictionType::FieldBased => 0b01,
+        _ => unreachable!("absent-tail default is Frame-based or Field-based per §6.3.17.1"),
+    };
+    Ok(MotionType {
+        code,
+        prediction_type,
+        motion_vector_count: 1,
+        mv_format,
+        dmv: false,
+    })
 }
 
 /// Walk the §6.2.4 macroblock loop, parsing the macroblock-header
@@ -580,6 +806,115 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
             past_intra_address = macroblock_address_u32 as i32;
         }
 
+        // Snapshot the cursor right after the macroblock-header chain
+        // (mb_addr_inc + macroblock_modes() + quantiser_scale_code).
+        // The wire-position body fields below live further into the
+        // bitstream and have their own `bit_position_after` cursors,
+        // so we preserve the historical [`MacroblockRecord::body_bit_position`]
+        // value for callers that resume parsing the body themselves.
+        let body_bit_position = br.bit_position();
+
+        // §6.2.5 macroblock body wire-parse: motion_vectors(0),
+        // optional motion_vectors(1), optional marker_bit
+        // (concealment), and optional coded_block_pattern().
+        // **Wire-syntax only** — the §7.6.3.1 reconstruction of
+        // `vector'[r][s][t]` and the §7.6.3.3 PMV-slot update are
+        // driven from the per-picture / per-slice PMV state held by
+        // the picture-level driver one layer up and are intentionally
+        // not run here.
+
+        // §6.2.5: motion_vectors(0) is read iff
+        // `macroblock_motion_forward == 1` (any picture coding type) or
+        // `macroblock_intra && concealment_motion_vectors == 1`
+        // (§6.3.11 picture-extension gate).
+        let needs_forward = macroblock_type.macroblock_motion_forward
+            || (macroblock_type.macroblock_intra && ctx.concealment_motion_vectors);
+        let motion_vectors_forward = if needs_forward {
+            let motion_type = effective_motion_type(&macroblock_type, &modes_tail, &ctx)?;
+            let mv_ctx = MotionVectorsContext {
+                f_code_fwd_horiz: ctx.f_code_fwd_horiz,
+                f_code_fwd_vert: ctx.f_code_fwd_vert,
+                f_code_bwd_horiz: ctx.f_code_bwd_horiz,
+                f_code_bwd_vert: ctx.f_code_bwd_vert,
+            };
+            Some(MotionVectors::parse(
+                &mut br,
+                MotionVectorsKind::Forward,
+                &motion_type,
+                &mv_ctx,
+            )?)
+        } else {
+            None
+        };
+
+        // §6.2.5: motion_vectors(1) iff macroblock_motion_backward.
+        // (The picture_coding_type==B constraint is enforced upstream
+        // by the Tables B-3 / B-4 macroblock_type VLCs: B-3 has no
+        // row that sets `bwd`, so the only legal stream path reaching
+        // a `true` here is a B-picture macroblock_type from B-4.)
+        let motion_vectors_backward = if macroblock_type.macroblock_motion_backward {
+            let motion_type = effective_motion_type(&macroblock_type, &modes_tail, &ctx)?;
+            let mv_ctx = MotionVectorsContext {
+                f_code_fwd_horiz: ctx.f_code_fwd_horiz,
+                f_code_fwd_vert: ctx.f_code_fwd_vert,
+                f_code_bwd_horiz: ctx.f_code_bwd_horiz,
+                f_code_bwd_vert: ctx.f_code_bwd_vert,
+            };
+            Some(MotionVectors::parse(
+                &mut br,
+                MotionVectorsKind::Backward,
+                &motion_type,
+                &mv_ctx,
+            )?)
+        } else {
+            None
+        };
+
+        // §6.2.5: if (macroblock_intra && concealment_motion_vectors)
+        // marker_bit. The §6.3.17 marker_bit rule requires the bit be
+        // `'1'`; we reject `'0'` as a §6.3.17 violation.
+        let concealment_marker_bit =
+            if macroblock_type.macroblock_intra && ctx.concealment_motion_vectors {
+                let bit = br.read_bit().map_err(|_| Error::ShortHeader)?;
+                if !bit {
+                    return Err(Error::InvalidBitstream(
+                        "concealment marker_bit: must be '1' (§6.3.17 / §6.2.5)",
+                    ));
+                }
+                Some(bit)
+            } else {
+                None
+            };
+
+        // §6.2.5: if (macroblock_pattern) coded_block_pattern().
+        // The §6.3.17.4 `pattern_code[12]` derivation is then driven
+        // from the parsed CBP plus the `macroblock_intra` /
+        // `macroblock_pattern` flags.
+        let coded_block_pattern = if macroblock_type.macroblock_pattern {
+            Some(CodedBlockPattern::parse(&mut br, ctx.chroma_format)?)
+        } else {
+            None
+        };
+
+        // §6.3.17.4 pattern_code[12] derivation:
+        // * macroblock_pattern == 1 → driven by the parsed CBP.
+        // * macroblock_intra == 1 && !macroblock_pattern → every
+        //   block coded (CBP slot is *not* in the bitstream; every
+        //   intra block carries at least a DC coefficient per
+        //   §7.2.1 / §2.4.2.8).
+        // * else → no coded blocks (a pure-prediction MB with no
+        //   residuals at all).
+        let pattern_code = if let Some(ref cbp) = coded_block_pattern {
+            cbp.pattern_code(
+                macroblock_type.macroblock_intra,
+                macroblock_type.macroblock_pattern,
+            )
+        } else if macroblock_type.macroblock_intra {
+            [true; 12]
+        } else {
+            [false; 12]
+        };
+
         records.push(MacroblockRecord {
             macroblock_address: macroblock_address_u32,
             address_increment: increment.value,
@@ -591,8 +926,13 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
             quantiser_scale_code,
             macroblock_quant_present,
             past_intra_address,
-            body_bit_position: br.bit_position(),
+            body_bit_position,
             skipped_macroblock_count,
+            motion_vectors_forward,
+            motion_vectors_backward,
+            concealment_marker_bit,
+            coded_block_pattern,
+            pattern_code,
         });
 
         previous_macroblock_address = macroblock_address;
@@ -665,6 +1005,44 @@ mod tests {
     /// Emit a 5-bit `quantiser_scale_code`.
     fn write_q_scale(bw: &mut BitWriter, value: u8) {
         bw.write_u32(u32::from(value), 5);
+    }
+
+    /// Emit the Table B-10 `motion_code = 0` codeword (the 1-bit `1`).
+    /// When the surrounding context has `f_code == 1`, no residual
+    /// follows; combined with `dmv == 0`, this is the shortest legal
+    /// `motion_vector(r, s)` wire form — 2 bits total for the
+    /// horizontal + vertical components.
+    fn write_zero_motion_vector(bw: &mut BitWriter) {
+        // horizontal motion_code = 0 → 1-bit `1`.
+        bw.write_u32(0b1, 1);
+        // vertical motion_code = 0 → 1-bit `1`.
+        bw.write_u32(0b1, 1);
+    }
+
+    /// Emit the smallest legal `motion_vectors(s)` wire form for a
+    /// frame-based MB whose `mv_format == Frame` and
+    /// `motion_vector_count == 1` and surrounding f_code == 1 — i.e.
+    /// just one zero-vector with no vertical_field_select bit.
+    fn write_zero_motion_vectors_frame_one(bw: &mut BitWriter) {
+        write_zero_motion_vector(bw);
+    }
+
+    /// Emit the smallest legal `motion_vectors(s)` wire form for a
+    /// field-picture `16x8 MC` MB whose `mv_format == Field` and
+    /// `motion_vector_count == 2`: two `(vfs, zero_motion_vector)`
+    /// pairs.
+    fn write_zero_motion_vectors_field_two(bw: &mut BitWriter) {
+        for _ in 0..2 {
+            bw.write_u32(0, 1);
+            write_zero_motion_vector(bw);
+        }
+    }
+
+    /// Emit the Table B-9 codeword for `cbp = 60` (`0b111`, 3 bits)
+    /// — the densest row of the table. We pick `60` for tests that
+    /// just need any valid CBP to align the cursor.
+    fn write_cbp_60(bw: &mut BitWriter) {
+        bw.write_u32(0b111, 3);
     }
 
     /// Pad with zero bits up to the next byte boundary and append at
@@ -773,12 +1151,22 @@ mod tests {
     #[test]
     fn p_picture_skipped_macroblocks_recorded() {
         // P-picture with one fwd-pattern MB, then increment=3 to skip
-        // 2 MBs, then another fwd-pattern MB.
+        // 2 MBs, then another fwd-pattern MB. Table B-3 "Pattern,
+        // motion forward" sets `fwd=true, pattern=true`, so each MB
+        // carries `motion_vectors(0)` and `coded_block_pattern()`.
+        // We use the `first_slice(...)` default with
+        // `frame_pred_frame_dct == true` so no `frame_motion_type`
+        // is emitted and the absent-tail default Frame-based
+        // (mv_count == 1, mv_format == Frame, dmv == 0) applies.
         let mut bw = BitWriter::new();
         write_address_increment(&mut bw, 1);
         write_mb_type_p_pattern_fwd(&mut bw);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        write_cbp_60(&mut bw);
         write_address_increment(&mut bw, 3);
         write_mb_type_p_pattern_fwd(&mut bw);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        write_cbp_60(&mut bw);
         let buf = end_with_stop(bw);
 
         let walk = walk_slice(
@@ -916,6 +1304,9 @@ mod tests {
         write_mb_type_p_mc_not_coded(&mut bw);
         // frame_motion_type = `10` → Frame-based.
         bw.write_u32(0b10, 2);
+        // motion_vectors(0): Frame-based, mv_count == 1, dmv == 0 →
+        // 2 zero-bits (horiz `motion_code=0` + vert `motion_code=0`).
+        write_zero_motion_vectors_frame_one(&mut bw);
         let buf = end_with_stop(bw);
 
         let ctx = SliceWalkContext::first_slice_with_picture_extension(
@@ -941,8 +1332,21 @@ mod tests {
         // frame_pred_frame_dct.
         assert!(mb0.dct_type.is_none());
         // body_bit_position after 1 (increment) + 3 (mb_type) + 2
-        // (motion_type) = 6 bits.
+        // (motion_type) = 6 bits (the wire-position body fields
+        // sit further along).
         assert_eq!(mb0.body_bit_position, 6);
+        // motion_vectors(0) is captured; the wire-position cursor
+        // moves 2 bits beyond body_bit_position.
+        let mv = mb0
+            .motion_vectors_forward
+            .as_ref()
+            .expect("motion_vectors(0) present");
+        assert_eq!(mv.entries.len(), 1);
+        assert_eq!(mv.bit_position_after, 8);
+        assert!(mb0.motion_vectors_backward.is_none());
+        assert!(mb0.concealment_marker_bit.is_none());
+        assert!(mb0.coded_block_pattern.is_none());
+        assert_eq!(mb0.pattern_code, [false; 12]);
     }
 
     #[test]
@@ -959,6 +1363,9 @@ mod tests {
         write_mb_type_p_mc_not_coded(&mut bw);
         // field_motion_type = `10` → 16x8 MC.
         bw.write_u32(0b10, 2);
+        // motion_vectors(0): 16x8 MC, mv_count == 2 → two `(vfs,
+        // zero motion_vector)` pairs (1 + 2 + 1 + 2 = 6 bits).
+        write_zero_motion_vectors_field_two(&mut bw);
         let buf = end_with_stop(bw);
 
         let ctx = SliceWalkContext::first_slice_with_picture_extension(
@@ -978,6 +1385,14 @@ mod tests {
         // 16x8 MC has two motion vectors.
         assert_eq!(mt.motion_vector_count, 2);
         assert!(walk.macroblocks[0].dct_type.is_none());
+        let mv = walk.macroblocks[0]
+            .motion_vectors_forward
+            .as_ref()
+            .expect("motion_vectors(0) present");
+        assert_eq!(mv.entries.len(), 2);
+        for entry in &mv.entries {
+            assert_eq!(entry.vertical_field_select, Some(false));
+        }
     }
 
     #[test]
@@ -986,12 +1401,16 @@ mod tests {
         // §6.2.5.1 gate: in a frame picture with
         // `frame_pred_frame_dct == 1`, `frame_motion_type` is
         // omitted (defaulted to Frame-based at the motion-vector
-        // decode site).
+        // decode site). The §6.2.5 `motion_vectors(0)` block still
+        // fires because `macroblock_motion_forward == 1`; the
+        // walker uses [`effective_motion_type`] to thread the
+        // defaulted Frame-based / mv_count=1 / dmv=0 row in.
         let mut bw = BitWriter::new();
         write_address_increment(&mut bw, 1);
         write_mb_type_p_mc_not_coded(&mut bw);
-        // No frame_motion_type emitted — the cursor should sit at
-        // bit 4 after the 3-bit mb_type.
+        // No frame_motion_type emitted. motion_vectors(0) with the
+        // defaulted Frame-based row consumes 2 bits.
+        write_zero_motion_vectors_frame_one(&mut bw);
         let buf = end_with_stop(bw);
 
         let ctx = SliceWalkContext::first_slice_with_picture_extension(
@@ -1009,6 +1428,12 @@ mod tests {
         // body_bit_position after 1 (increment) + 3 (mb_type) = 4
         // bits, no motion_type consumed.
         assert_eq!(walk.macroblocks[0].body_bit_position, 4);
+        // motion_vectors(0) still captured via the defaulted row.
+        let mv = walk.macroblocks[0]
+            .motion_vectors_forward
+            .as_ref()
+            .expect("motion_vectors(0) emitted despite frame_pred_frame_dct == 1");
+        assert_eq!(mv.entries.len(), 1);
     }
 
     #[test]
@@ -1085,6 +1510,11 @@ mod tests {
         bw.write_u32(0b0, 1);
         // quantiser_scale_code = 19.
         bw.write_u32(19, 5);
+        // motion_vectors(0): Frame-based, mv_count == 1, dmv == 0 →
+        // 2 bits.
+        write_zero_motion_vectors_frame_one(&mut bw);
+        // coded_block_pattern(): cbp = 60 (3-bit `111`).
+        write_cbp_60(&mut bw);
         let buf = end_with_stop(bw);
 
         let ctx = SliceWalkContext::first_slice_with_picture_extension(
@@ -1110,6 +1540,26 @@ mod tests {
         assert_eq!(mb0.quantiser_scale_code, 19);
         assert_eq!(mb0.body_bit_position, 14);
         assert_eq!(walk.quantiser_scale_code, 19);
+        // motion_vectors(0) (2 bits) + cbp=60 (3 bits) sit beyond
+        // the body cursor.
+        let mv = mb0
+            .motion_vectors_forward
+            .as_ref()
+            .expect("motion_vectors(0) present");
+        assert_eq!(mv.entries.len(), 1);
+        let cbp = mb0
+            .coded_block_pattern
+            .as_ref()
+            .expect("coded_block_pattern present");
+        assert_eq!(cbp.cbp, 60);
+        // Table 6-19 cbp=60 → bits set for blocks 0..4 (Y0..Y3); the
+        // §6.3.17.4 derivation mirrors that for non-intra MBs.
+        let mut expected = [false; 12];
+        expected[0] = true;
+        expected[1] = true;
+        expected[2] = true;
+        expected[3] = true;
+        assert_eq!(mb0.pattern_code, expected);
     }
 
     #[test]
@@ -1136,5 +1586,274 @@ mod tests {
         assert!(walk.macroblocks[0].dct_type.is_none());
         // body_bit_position = increment(1) + mb_type(1) = 2.
         assert_eq!(walk.macroblocks[0].body_bit_position, 2);
+    }
+
+    // ---- §6.2.5 body wire-parse coverage ----
+
+    #[test]
+    fn intra_macroblock_full_pattern_code_without_cbp() {
+        // I-picture "Intra" MB — `macroblock_intra == 1`,
+        // `macroblock_pattern == 0`. Per §6.3.17.4 the whole 12-entry
+        // `pattern_code` is `true` (every intra block carries at
+        // least a DC coefficient), with no `coded_block_pattern()`
+        // emitted. No motion vectors either since there's no
+        // concealment.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(
+            &buf,
+            SliceWalkContext::first_slice(22, 0, PictureCodingType::Intra, 1),
+        )
+        .unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let mb0 = &walk.macroblocks[0];
+        assert!(mb0.motion_vectors_forward.is_none());
+        assert!(mb0.motion_vectors_backward.is_none());
+        assert!(mb0.concealment_marker_bit.is_none());
+        assert!(mb0.coded_block_pattern.is_none());
+        assert_eq!(mb0.pattern_code, [true; 12]);
+    }
+
+    #[test]
+    fn intra_macroblock_with_concealment_motion_vectors_and_marker_bit() {
+        // I-picture "Intra" MB in a picture with
+        // `concealment_motion_vectors == 1`. §6.2.5 then requires a
+        // `motion_vectors(0)` block + a `marker_bit == '1'` after
+        // it, even though `macroblock_intra == 1` and
+        // `macroblock_motion_forward == 0`.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        // motion_vectors(0): Frame-based default (mv_count == 1) → 2
+        // zero bits.
+        write_zero_motion_vectors_frame_one(&mut bw);
+        // marker_bit = 1.
+        bw.write_u32(0b1, 1);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_body(
+            22,
+            0,
+            PictureCodingType::Intra,
+            1,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            true,
+            ChromaFormat::Yuv420,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let mb0 = &walk.macroblocks[0];
+        assert!(mb0.motion_vectors_forward.is_some());
+        assert!(mb0.motion_vectors_backward.is_none());
+        assert_eq!(mb0.concealment_marker_bit, Some(true));
+        // Pattern is still fully coded for intra without CBP.
+        assert_eq!(mb0.pattern_code, [true; 12]);
+    }
+
+    #[test]
+    fn rejects_zero_concealment_marker_bit() {
+        // Same shape but the marker_bit is `'0'` — §6.3.17 violation,
+        // walker must reject.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        // marker_bit = 0 → rejected.
+        bw.write_u32(0b0, 1);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_body(
+            22,
+            0,
+            PictureCodingType::Intra,
+            1,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            true,
+            ChromaFormat::Yuv420,
+        );
+        let err = walk_slice(&buf, ctx).unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn coded_block_pattern_drives_pattern_code_derivation() {
+        // P-picture "Pattern, motion forward" MB carrying motion +
+        // CBP. cbp=60 → blocks 0..4 (Y0..Y3) coded.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_pattern_fwd(&mut bw);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        write_cbp_60(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(
+            &buf,
+            SliceWalkContext::first_slice(22, 0, PictureCodingType::Predictive, 8),
+        )
+        .unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let mb0 = &walk.macroblocks[0];
+        assert_eq!(
+            mb0.coded_block_pattern.as_ref().expect("cbp emitted").cbp,
+            60
+        );
+        let mut expected = [false; 12];
+        expected[0] = true;
+        expected[1] = true;
+        expected[2] = true;
+        expected[3] = true;
+        assert_eq!(mb0.pattern_code, expected);
+    }
+
+    #[test]
+    fn coded_block_pattern_drives_pattern_code_422_extension() {
+        // P-picture pattern MB with `chroma_format = Yuv422`. The
+        // 2-bit `coded_block_pattern_1` extension drives blocks 6..8.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_pattern_fwd(&mut bw);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        // cbp = 0 → blocks 0..6 cleared. Table B-9 row code is the
+        // 9-bit `0b000000001`.
+        bw.write_u32(0b0_0000_0001, 9);
+        // coded_block_pattern_1 = `11` → blocks 6,7 set.
+        bw.write_u32(0b11, 2);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_body(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            false,
+            ChromaFormat::Yuv422,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let mb0 = &walk.macroblocks[0];
+        let cbp = mb0.coded_block_pattern.as_ref().expect("cbp emitted");
+        assert_eq!(cbp.cbp, 0);
+        assert_eq!(cbp.coded_block_pattern_1, Some(0b11));
+        let mut expected = [false; 12];
+        expected[6] = true;
+        expected[7] = true;
+        assert_eq!(mb0.pattern_code, expected);
+    }
+
+    #[test]
+    fn b_picture_macroblock_emits_both_motion_vectors() {
+        // Table B-4 row "interpolated, not coded" = `10` (2 bits) —
+        // `fwd == 1, bwd == 1, pattern == 0, intra == 0`. Both
+        // `motion_vectors(0)` and `motion_vectors(1)` fire.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        // B-4 "interpolated, not coded" = `10`.
+        bw.write_u32(0b10, 2);
+        // motion_vectors(0): Frame-based, mv_count == 1 → 2 bits.
+        write_zero_motion_vectors_frame_one(&mut bw);
+        // motion_vectors(1): Frame-based, mv_count == 1 → 2 bits.
+        write_zero_motion_vectors_frame_one(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(
+            &buf,
+            SliceWalkContext::first_slice(22, 0, PictureCodingType::Bidirectional, 8),
+        )
+        .unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let mb0 = &walk.macroblocks[0];
+        assert!(mb0.macroblock_type.macroblock_motion_forward);
+        assert!(mb0.macroblock_type.macroblock_motion_backward);
+        let mv_fwd = mb0
+            .motion_vectors_forward
+            .as_ref()
+            .expect("motion_vectors(0) emitted");
+        let mv_bwd = mb0
+            .motion_vectors_backward
+            .as_ref()
+            .expect("motion_vectors(1) emitted");
+        assert_eq!(mv_fwd.kind, MotionVectorsKind::Forward);
+        assert_eq!(mv_bwd.kind, MotionVectorsKind::Backward);
+        assert_eq!(mv_fwd.entries.len(), 1);
+        assert_eq!(mv_bwd.entries.len(), 1);
+    }
+
+    #[test]
+    fn macroblock_with_no_motion_no_pattern_has_empty_pattern_code() {
+        // Reach the `else` branch of the §6.3.17.4 derivation: a
+        // macroblock with neither `macroblock_intra` nor
+        // `macroblock_pattern`. In B-pictures Table B-4 "No MC, not
+        // coded" reaches this state — but it is also the §7.6.6
+        // skipped-MB case. We instead use the simpler "skip via
+        // skipped-MB-as-described-in-r31" path: a B-picture MB with
+        // motion (fwd-not-coded = `01`) drives the empty pattern_code.
+        //
+        // Table B-4 "Fwd, not coded" = `0010` → fwd=true,
+        // bwd=false, pattern=false, intra=false. Pattern_code stays
+        // all-false in this row.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        bw.write_u32(0b0010, 4);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(
+            &buf,
+            SliceWalkContext::first_slice(22, 0, PictureCodingType::Bidirectional, 8),
+        )
+        .unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let mb0 = &walk.macroblocks[0];
+        assert!(!mb0.macroblock_type.macroblock_intra);
+        assert!(!mb0.macroblock_type.macroblock_pattern);
+        assert_eq!(mb0.pattern_code, [false; 12]);
+        assert!(mb0.coded_block_pattern.is_none());
+    }
+
+    #[test]
+    fn body_bit_position_records_post_macroblock_modes_cursor() {
+        // Confirm the historical [`MacroblockRecord::body_bit_position`]
+        // contract: it snapshots the cursor right after
+        // `quantiser_scale_code` (or, when absent, right after
+        // `macroblock_modes()`), **before** any motion_vectors() /
+        // CBP wire. A round-29-era caller depending on this offset
+        // to resume parsing the body itself stays unbroken.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_pattern_fwd(&mut bw);
+        // motion_vectors(0) and CBP wire bits follow but do NOT
+        // move body_bit_position.
+        write_zero_motion_vectors_frame_one(&mut bw);
+        write_cbp_60(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(
+            &buf,
+            SliceWalkContext::first_slice(22, 0, PictureCodingType::Predictive, 8),
+        )
+        .unwrap();
+        let mb0 = &walk.macroblocks[0];
+        // increment(1) + mb_type(1) = 2 bits, no quant code → body
+        // cursor at bit 2.
+        assert_eq!(mb0.body_bit_position, 2);
     }
 }

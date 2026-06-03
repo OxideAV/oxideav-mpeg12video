@@ -8,6 +8,66 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 33: MPEG-2 §6.2.5 macroblock body wire-parse wired into the
+  slice walker. `slice_macroblock_walk::walk_slice` now follows
+  `macroblock_modes()` + `quantiser_scale_code` with the four
+  spec-deterministic body fields: `motion_vectors(0)` (gated on
+  `macroblock_motion_forward == 1` OR `macroblock_intra &&
+  concealment_motion_vectors == 1` per §6.2.5 / §6.3.11),
+  `motion_vectors(1)` (`macroblock_motion_backward == 1`),
+  `marker_bit` (the §6.3.17 concealment-MV `'1'` bit on intra
+  macroblocks with `concealment_motion_vectors == 1` — a `'0'`
+  here is rejected as `InvalidBitstream`), and
+  `coded_block_pattern()` (`macroblock_pattern == 1`, with the
+  §6.3.17.4 `pattern_code[12]` derivation pre-computed for the
+  caller). Each is **wire-syntax only**: the §7.6.3.1 reconstruction
+  of `vector'[r][s][t]` against the PMV state (and the §7.6.3.3 PMV
+  update / §7.6.3.4 reset) stay deferred to the picture-level
+  driver one layer up. `SliceWalkContext` grows six new fields —
+  `f_code_fwd_horiz` / `f_code_fwd_vert` / `f_code_bwd_horiz` /
+  `f_code_bwd_vert` (the four §6.3.11 `f_code[s][t]` widths driving
+  `motion_residual`), `concealment_motion_vectors` (the §6.3.11
+  intra-MB motion-vector / marker-bit gate), and `chroma_format`
+  (the §6.3.5 `Yuv420` / `Yuv422` / `Yuv444` setting driving the
+  §6.2.5.3 `coded_block_pattern_1` / `coded_block_pattern_2`
+  extensions and the §6.3.17.4 `pattern_code` indexing). All three
+  existing constructors keep their original signatures: `first_slice`,
+  `first_slice_with_picture_extension`, and `first_slice_mpeg1`
+  default the new fields to spec-legal "no body fields fire"
+  placeholders (`f_code = 1`, `concealment_motion_vectors = false`,
+  `chroma_format = Yuv420`) so the round-30..32 tests stay
+  bit-identical. A new `first_slice_with_picture_body` surfaces the
+  full pair so callers walking P/B slices, intra-concealment-MV
+  slices, or 4:2:2 / 4:4:4 pictures can thread the real picture +
+  sequence extension values through. `MacroblockRecord` gains five
+  new fields — `motion_vectors_forward: Option<MotionVectors>`,
+  `motion_vectors_backward: Option<MotionVectors>`,
+  `concealment_marker_bit: Option<bool>`, `coded_block_pattern:
+  Option<CodedBlockPattern>`, and `pattern_code: [bool; 12]` — and
+  drops `Copy` (now `Clone` only) since two of those carry
+  `Vec`-backed motion-vector entry lists. The `body_bit_position`
+  cursor keeps its round-30..32 meaning: the offset right after
+  `macroblock_modes()` + the §6.2.5 `quantiser_scale_code`, *before*
+  any of the new wire-body fields, so any external driver that
+  resumes parsing from `body_bit_position` is unaffected by this
+  round's additions. The walker also synthesises a defaulted
+  `MotionType` (Frame-based for frame pictures, Field-based for
+  field pictures, `mv_count = 1`, `dmv = 0`) per §6.3.17.1 / Table
+  6-19 in the absent-modes-tail case (frame picture with
+  `frame_pred_frame_dct == 1` motion MB, or intra MB with
+  concealment vectors) so `motion_vectors()` can still parse.
+  10 new lib unit tests plus 4 new integration tests in
+  `tests/slice_macroblock_walk_synthetic.rs` pin the new gates:
+  the bare-intra full-`pattern_code` derivation, the
+  concealment-MV `motion_vectors(0) + marker_bit` pair (including
+  the `'0'`-marker rejection), the §6.3.17.4 CBP-driven 4:2:0 /
+  4:2:2 / 4:4:4 `pattern_code` derivations, the B-picture
+  `motion_vectors(0) + motion_vectors(1)` pair, the
+  no-motion-no-pattern empty-pattern_code path, and the
+  `body_bit_position` snapshot-before-body-fields contract. The
+  integration tests also update the prior round-30 fixtures to
+  carry valid `motion_vectors(0)` + CBP wire bits so the
+  end-to-end `SliceHeader::parse → walk_slice` chain keeps green.
 - round 32: MPEG-2 §6.2.5.1 `macroblock_modes()` tail wired into
   the slice walker. `slice_macroblock_walk::walk_slice` now reads
   `frame_motion_type` (Table 6-17, frame pictures with

@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–32.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–33.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -126,6 +126,44 @@ fixes a latent ordering bug where the walker had been reading
 `quantiser_scale_code` immediately after `macroblock_type`,
 misaligning the cursor on any MB whose `macroblock_modes()`
 tail consumed bits.
+Round 33 wires the **§6.2.5 macroblock body wire-parse** into
+`slice_macroblock_walk::walk_slice`: `motion_vectors(0)` (gated
+on `macroblock_motion_forward == 1` or `macroblock_intra &&
+concealment_motion_vectors == 1`), `motion_vectors(1)` (gated
+on `macroblock_motion_backward == 1`), the concealment-MV
+`marker_bit` (the §6.3.17 `'1'` bit on intra macroblocks with
+`concealment_motion_vectors == 1` — a `'0'` here is
+`InvalidBitstream`), and `coded_block_pattern()`
+(`macroblock_pattern == 1`, with the §6.3.17.4
+`pattern_code[12]` derivation pre-computed for the caller).
+**Wire-syntax only**: the §7.6.3.1 reconstruction of
+`vector'[r][s][t]` against the PMV state (and the §7.6.3.3 PMV
+update / §7.6.3.4 reset) stay deferred to the picture-level
+driver. `SliceWalkContext` grows six new fields —
+`f_code_fwd_horiz` / `f_code_fwd_vert` / `f_code_bwd_horiz` /
+`f_code_bwd_vert` (the four §6.3.11 `f_code[s][t]` widths
+driving the `motion_residual` bit-width),
+`concealment_motion_vectors` (the §6.3.11 intra-MB MV /
+marker-bit gate), and `chroma_format` (the §6.3.5
+`Yuv420` / `Yuv422` / `Yuv444` setting driving the §6.2.5.3
+`coded_block_pattern_1` / `coded_block_pattern_2` extensions
+and the §6.3.17.4 indexing). Existing `first_slice` /
+`first_slice_with_picture_extension` / `first_slice_mpeg1`
+shorthand constructors default the new fields to placeholders
+that fire none of the new gates, so the round-30..32 fixtures
+stay bit-identical. New `first_slice_with_picture_body`
+surfaces the full pair for callers walking P/B slices,
+intra-concealment-MV slices, or 4:2:2 / 4:4:4 pictures.
+`MacroblockRecord` gains `motion_vectors_forward:
+Option<MotionVectors>`, `motion_vectors_backward:
+Option<MotionVectors>`, `concealment_marker_bit: Option<bool>`,
+`coded_block_pattern: Option<CodedBlockPattern>`, and
+`pattern_code: [bool; 12]`. The §6.3.17.1 / Table 6-19 absent-
+modes-tail default (Frame-based for frame pictures, Field-based
+for field pictures, `mv_count = 1`, `dmv = 0`) is synthesised
+internally so `motion_vectors()` can still parse for the
+`frame_pred_frame_dct == 1` motion-MB and intra-concealment-MV
+paths.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
