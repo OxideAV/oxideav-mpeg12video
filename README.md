@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–29.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–30.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -64,6 +64,32 @@ macroblock's `pattern_code[12]` array and dispatches the round-28
 component, chroma_format)`, and the §7.2.1 non-intra-macroblock
 DC-predictor reset, returning a `Vec<DecodedBlock>` paired with
 the §6.1.1.8 block-index position.
+Round 30 lands the **§6.2.4 slice-level macroblock-header walker**
+— `slice_macroblock_walk::walk_slice` picks up at the post-
+`slice_header()` cursor and walks the `do { macroblock() } while
+( nextbits() != '0000 0000 0000 0000 0000 0000' )` loop,
+parsing each macroblock's spec-deterministic header chain
+(§6.2.5 `macroblock_address_increment` with Table B-1 / escape /
+MPEG-1 stuffing, §6.2.5.1 `macroblock_modes()` opener via
+`macroblock_type` against Tables B-2 / B-3 / B-4 keyed on
+`picture_coding_type`, and the conditional 5-bit
+macroblock-level `quantiser_scale_code` when `macroblock_quant
+== 1`), tracking the §6.3.17.1 per-slice state across iterations
+(`previous_macroblock_address` seeded from
+`mb_row * mb_width - 1`, `macroblock_address` advancing through
+the increment chain, `past_intra_address` advancing to
+`macroblock_address` on every intra macroblock, and the
+intra-quant override applying to *this* MB and every subsequent
+MB), surfacing skipped-MB ranges as
+`skipped_macroblock_count = increment - 1` for a future §7.6.6
+round, rejecting the first-MB-increment-must-be-1 violation,
+and exposing per-MB `body_bit_position` as the entry point for
+the deferred `motion_vectors()` / `coded_block_pattern()` /
+`block(i)` driver rounds. The `macroblock_modes()` tail
+(motion-type / dct_type), motion vectors, CBP, and per-block
+walker stay out of scope this round — their PMV reset / f_code
+/ per-block-context wiring intersects with cross-MB state the
+picture-level driver above this slice walker will own.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -1893,6 +1919,111 @@ be defended as clean-room. The rebuild starts here.
   `macroblock_type` / `coded_block_pattern` / motion vectors per
   MB and dispatches to `mpeg2_decode_macroblock_blocks` once per
   coded macroblock — which is the natural round-30 work.
+
+### What round 30 lands
+
+* The **§6.2.4 slice-level macroblock-header walker** per
+  **ISO/IEC 13818-2 (ITU-T H.262)** — the loop round 29 flagged
+  as the natural follow-up. `slice_macroblock_walk::walk_slice`
+  picks up at the post-`slice_header()` cursor and walks the
+  `do { macroblock() } while ( nextbits() != '0000 0000 0000
+  0000 0000 0000' )` loop from page 51 of 13818-2:1995, parsing
+  each macroblock's spec-deterministic header chain into a
+  `MacroblockRecord` and accumulating the §6.3.17.1 per-slice
+  state.
+  * Per-MB header chain: §6.2.5
+    `macroblock_address_increment` (Table B-1 VLC with the
+    `macroblock_escape` chain and the MPEG-1
+    `macroblock_stuffing` no-op, via
+    [`crate::MbAddressIncrement::parse`]), §6.2.5.1
+    `macroblock_modes()` opener (`macroblock_type` against
+    Tables B-2 / B-3 / B-4 keyed on the picture's
+    `picture_coding_type`, via
+    [`crate::MacroblockType::parse`]), and the conditional
+    5-bit macroblock-level `quantiser_scale_code` when
+    `macroblock_quant == 1` (range `1..=31`, §6.3.16
+    forbidden-zero check enforced).
+  * §6.3.17.1 per-slice state: `previous_macroblock_address`
+    seeded from `mb_row * mb_width - 1`, `macroblock_address =
+    previous_macroblock_address + macroblock_address_increment`
+    per MB, `past_intra_address` initialised to
+    [`crate::PAST_INTRA_ADDRESS_RESET`] (`-2`) at picture
+    start and advanced to `macroblock_address` after every
+    intra MB, `quantiser_scale_code` carried forward from the
+    slice header and overridden by any MB with
+    `macroblock_quant == 1` (override applies to *this* MB
+    and every subsequent MB in the slice). First-MB
+    `macroblock_address_increment != 1` violation rejected
+    per §6.3.17.1.
+  * Skipped-MB accounting: each `MacroblockRecord` carries
+    `skipped_macroblock_count = address_increment - 1`,
+    surfacing the §6.3.17.4 / §7.6.6 skipped-MB ranges so a
+    future §7.6.6 round can reconstruct them. The driver
+    does not run the §7.6.6 skipped-MB reconstruction itself.
+  * §6.2.4 stop-condition: alignment-agnostic per §5.2.3, the
+    loop exits as soon as `nextbits()` peeks 23 zero bits at
+    the current cursor or the buffer runs out (the caller
+    bounds the slice sub-buffer; the trailing
+    `next_start_code()` invocation is the caller's
+    responsibility once the do-while exits).
+  * Per-MB `body_bit_position` surfaces the cursor right after
+    the macroblock-header chain — i.e. the entry point for the
+    deferred `macroblock_modes()` tail (motion-type / dct_type),
+    `motion_vectors(s)`, `coded_block_pattern()`, and the
+    per-block walker rounds. Those parsers intersect with
+    cross-MB state (PMV reset / f_code / per-block
+    `BlockContext`) that the picture-level driver above this
+    walker will own, so they remain explicitly out of scope
+    this round.
+  * Up-front argument validation rejects
+    `initial_quantiser_scale_code == 0` (forbidden per §6.3.16)
+    and `mb_width == 0` (no legal sequence) so a misconfigured
+    call site surfaces at driver entry rather than mid-loop.
+  * Re-exported at the crate root as `walk_slice`,
+    `SliceWalk`, `SliceWalkContext`, `MacroblockRecord`,
+    `PAST_INTRA_ADDRESS_RESET` — keeping the surface flat and
+    consistent with the existing `Mpeg2*` naming on the
+    decode-pipeline modules.
+* **10 new lib unit tests** in `src/slice_macroblock_walk.rs`:
+  the immediate-stop-pattern empty-slice case, the single
+  intra macroblock in an I-picture (Table B-2 `1`), the
+  `Intra-Quant` override + carry-forward to a following
+  no-quant intra MB (verifies the §6.3.17.1
+  "applies to subsequent MBs" semantics), the first-MB
+  `address_increment != 1` rejection, the P-picture
+  skipped-MB recording with `mb_row = 1` (start addr 22,
+  increment 3 → 2 skipped MBs at addr 22..=24), the
+  three-MB intra walk where `past_intra_address` advances
+  to each MB's address (0 → 1 → 2), zero
+  `initial_quantiser_scale_code` rejection, zero
+  `mb_width` rejection, the `body_bit_position` accounting
+  (the post-header cursor lands at bit 2 after a 1-bit
+  increment and a 1-bit `macroblock_type`), and a
+  three-MB explicit override-then-reset walk (q=7 → carry
+  7 → q=15) that pins the final
+  [`SliceWalk::quantiser_scale_code`] at 15.
+* **5 new integration tests** in
+  `tests/slice_macroblock_walk_synthetic.rs` exercise the
+  public re-exports end-to-end: a hand-built
+  slice-start-code-prefixed buffer chained through
+  `SliceHeader::parse` + `walk_slice` for a two-intra-MB
+  I-picture slice (verifies the post-`slice_header()`
+  cursor reaches the body), the P-picture skipped-MB
+  recording across a `mb_row=1` slice, an override + reset
+  three-MB walk pinning the cross-MB carry-forward
+  semantics, the empty-slice-body early-exit on the
+  23-zero-bit stop pattern, and the first-MB
+  increment-2 rejection.
+
+  Round 30 closes the round-29 next-step candidate on the
+  slice-driver side: the §6.2.4 do-while loop now sequences
+  the macroblock-header chain across an entire slice with the
+  §6.3.17.1 state mechanics in place. The remaining gap on
+  the MPEG-2 decode path is the per-MB **body** — `macroblock_modes()`
+  tail / `motion_vectors(s)` / `coded_block_pattern()` / the
+  per-block walker — which is the natural round-31 work and
+  plugs into the per-MB `body_bit_position` this round
+  exposes.
 
 ## Clean-room provenance
 

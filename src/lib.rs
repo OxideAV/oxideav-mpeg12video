@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–23 — structural sequence-layer
+//! **Status:** rebuild rounds 1–30 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -338,6 +338,7 @@ pub mod quantizer_scale;
 pub mod sequence_extension;
 pub mod sequence_header;
 pub mod slice_header;
+pub mod slice_macroblock_walk;
 
 pub use add_coefficients::{
     add_intra_block, add_prediction_and_coefficients, add_prediction_and_coefficients_in_place,
@@ -442,6 +443,9 @@ pub use sequence_extension::{
 pub use sequence_header::{AspectRatio, Mpeg2SequenceHeader, SEQUENCE_HEADER_CODE};
 pub use slice_header::{
     SliceContext, SliceHeader, SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN,
+};
+pub use slice_macroblock_walk::{
+    walk_slice, MacroblockRecord, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
 
 /// Crate-local error type. Each variant is raised at most by the
