@@ -9,7 +9,7 @@
 
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::{
-    walk_slice, PictureCodingType, SliceContext, SliceHeader, SliceWalkContext,
+    walk_slice, PictureCodingType, PictureStructure, SliceContext, SliceHeader, SliceWalkContext,
     PAST_INTRA_ADDRESS_RESET,
 };
 
@@ -205,4 +205,121 @@ fn walk_rejects_first_mb_increment_above_one() {
     .unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("first macroblock"));
+}
+
+#[test]
+fn walk_p_picture_frame_motion_type_advances_past_macroblock_modes_tail() {
+    // P-picture frame with `frame_pred_frame_dct == 0`: every
+    // motion-bearing MB carries a 2-bit `frame_motion_type` per
+    // §6.2.5.1, which the round-32 walker consumes between the
+    // 3-bit Table B-3 "MC, Not Coded" macroblock_type and the
+    // (absent here) quantiser_scale_code. Without the round-32
+    // wiring the walker would mis-advance into the next
+    // increment field by 2 bits.
+    let mut bw = BitWriter::new();
+    write_increment_1(&mut bw);
+    // Table B-3 "MC, Not Coded" = `001` (3 bits) — fwd=true,
+    // bwd=false, pattern=false, intra=false.
+    bw.write_u32(0b001, 3);
+    // frame_motion_type = `10` (Frame-based, Table 6-17).
+    bw.write_u32(0b10, 2);
+    // Second MB — increment=1 then the same MC pattern again.
+    write_increment_1(&mut bw);
+    bw.write_u32(0b001, 3);
+    // frame_motion_type = `11` (Dual-Prime).
+    bw.write_u32(0b11, 2);
+    let buf = append_stop(bw);
+
+    let ctx = SliceWalkContext::first_slice_with_picture_extension(
+        22,
+        0,
+        PictureCodingType::Predictive,
+        8,
+        PictureStructure::Frame,
+        false,
+    );
+    let walk = walk_slice(&buf, ctx).unwrap();
+    assert_eq!(walk.macroblocks.len(), 2);
+    let mb0_mt = walk.macroblocks[0].motion_type.expect("present");
+    assert_eq!(mb0_mt.code, 0b10);
+    let mb1_mt = walk.macroblocks[1].motion_type.expect("present");
+    assert_eq!(mb1_mt.code, 0b11);
+    // Cursor at end: 1 + 3 + 2 + 1 + 3 + 2 = 12 bits.
+    assert_eq!(walk.macroblocks[1].body_bit_position, 12);
+}
+
+#[test]
+fn walk_field_picture_field_motion_type_then_quant_in_same_mb() {
+    // Top-field P-picture with one MB carrying "MC, Coded, Quant"
+    // = Table B-3 row `0001 0` (5 bits). §6.2.5.1 in a field
+    // picture: `field_motion_type` is unconditionally read on
+    // motion, `dct_type` is gated off (Frame-only). The 5-bit
+    // `quantiser_scale_code` follows `macroblock_modes()` per
+    // §6.2.5.
+    let mut bw = BitWriter::new();
+    write_increment_1(&mut bw);
+    // P-picture "MC, Coded, Quant" = `00010` (5 bits).
+    bw.write_u32(0b00010, 5);
+    // field_motion_type = `01` → Field-based, mv_count=1.
+    bw.write_u32(0b01, 2);
+    // quantiser_scale_code = 23.
+    bw.write_u32(23, 5);
+    let buf = append_stop(bw);
+
+    let ctx = SliceWalkContext::first_slice_with_picture_extension(
+        22,
+        0,
+        PictureCodingType::Predictive,
+        8,
+        PictureStructure::TopField,
+        true,
+    );
+    let walk = walk_slice(&buf, ctx).unwrap();
+    assert_eq!(walk.macroblocks.len(), 1);
+    let mb0 = &walk.macroblocks[0];
+    assert!(mb0.macroblock_type.macroblock_quant);
+    let mt = mb0.motion_type.expect("field_motion_type present");
+    assert_eq!(mt.code, 0b01);
+    assert_eq!(mt.motion_vector_count, 1);
+    // No dct_type in a field picture.
+    assert!(mb0.dct_type.is_none());
+    assert!(mb0.macroblock_quant_present);
+    assert_eq!(mb0.quantiser_scale_code, 23);
+    // body_bit_position = 1 (inc) + 5 (mb_type) + 2 (field_mt) +
+    // 5 (q_scale) = 13 bits.
+    assert_eq!(mb0.body_bit_position, 13);
+    assert_eq!(walk.quantiser_scale_code, 23);
+}
+
+#[test]
+fn walk_intra_frame_picture_emits_dct_type_when_not_frame_pred_frame_dct() {
+    // I-picture frame with `frame_pred_frame_dct == 0`: §6.2.5.1
+    // dct_type fires on every intra MB. Two MBs alternating
+    // dct_type values verifies the walker doesn't mis-align the
+    // second MB's increment after consuming the first MB's
+    // dct_type bit.
+    let mut bw = BitWriter::new();
+    write_increment_1(&mut bw);
+    write_i_intra(&mut bw);
+    // dct_type = 1 (field DCT coded).
+    bw.write_u32(0b1, 1);
+    write_increment_1(&mut bw);
+    write_i_intra(&mut bw);
+    // dct_type = 0 (frame DCT coded).
+    bw.write_u32(0b0, 1);
+    let buf = append_stop(bw);
+
+    let ctx = SliceWalkContext::first_slice_with_picture_extension(
+        22,
+        0,
+        PictureCodingType::Intra,
+        1,
+        PictureStructure::Frame,
+        false,
+    );
+    let walk = walk_slice(&buf, ctx).unwrap();
+    assert_eq!(walk.macroblocks.len(), 2);
+    assert_eq!(walk.macroblocks[0].dct_type, Some(true));
+    assert_eq!(walk.macroblocks[1].dct_type, Some(false));
+    assert_eq!(walk.past_intra_address, 1);
 }

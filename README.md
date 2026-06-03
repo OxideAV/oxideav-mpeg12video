@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–31.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–32.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -102,6 +102,30 @@ combinations, plus the §7.6.6 preamble I-picture rejection
 `skipped_macroblock_apply_to_pmv` that fires the
 P-picture-only "Motion vector predictors shall be reset to
 zero" rule.
+Round 32 wires the **§6.2.5.1 `macroblock_modes()` tail**
+into `slice_macroblock_walk::walk_slice`: `frame_motion_type`
+(Table 6-17) on frame pictures with `frame_pred_frame_dct == 0`
+whose MB sets a motion flag, `field_motion_type` (Table 6-18)
+on every motion-bearing MB in a field picture, and `dct_type`
+on frame pictures with `frame_pred_frame_dct == 0` whose MB
+is intra or has a coded pattern — read between the existing
+`macroblock_type` parse and the §6.2.5
+`if (macroblock_quant) quantiser_scale_code` read so the
+walker now follows the §6.2.5 syntax-tree order. Two new
+`SliceWalkContext` fields (`picture_structure`,
+`frame_pred_frame_dct`) carry the §6.3.11 gates; the
+`first_slice` shorthand defaults both to a tail-gated-off
+shape (preserving the round-30 I-picture / `frame_pred_frame_dct
+== 1` semantics verbatim) while
+`first_slice_with_picture_extension` accepts the full pair
+and `first_slice_mpeg1` pins both for MPEG-1 streams.
+`MacroblockRecord` gains `motion_type: Option<MotionType>`
+and `dct_type: Option<bool>` alongside the existing
+`macroblock_type` / `quantiser_scale_code` fields. This also
+fixes a latent ordering bug where the walker had been reading
+`quantiser_scale_code` immediately after `macroblock_type`,
+misaligning the cursor on any MB whose `macroblock_modes()`
+tail consumed bits.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -2140,6 +2164,92 @@ be defended as clean-room. The rebuild starts here.
   `coded_block_pattern()` / the per-block walker the round-30
   walker's `body_bit_position` cursor points at — which is
   the natural round-32 work.
+
+### What round 32 lands
+
+* The §6.2.5.1 **`macroblock_modes()` tail** wired into
+  `slice_macroblock_walk::walk_slice`. The slice driver now
+  parses, in §6.2.5 syntax-tree order:
+    1. `macroblock_address_increment` (Table B-1),
+    2. `macroblock_modes()` — `macroblock_type` (Tables
+       B-2 / B-3 / B-4) then the new tail bits:
+       `frame_motion_type` (Table 6-17) on frame pictures
+       with `frame_pred_frame_dct == 0` and any motion flag
+       set; `field_motion_type` (Table 6-18) on every
+       motion-bearing MB in a field picture; `dct_type` on
+       frame pictures with `frame_pred_frame_dct == 0`
+       whose MB is intra or has a coded pattern,
+    3. `quantiser_scale_code` (5 bits) when
+       `macroblock_quant == 1`.
+* This **fixes a latent ordering bug** in the round-30
+  walker, which read `quantiser_scale_code` immediately
+  after `macroblock_type` and so misaligned the cursor on
+  any P/B-picture MB whose `macroblock_modes()` tail
+  consumed bits (every motion MB on a frame picture with
+  `frame_pred_frame_dct == 0`, every motion MB on a field
+  picture, and every coded-pattern MB on a frame picture
+  with `frame_pred_frame_dct == 0`).
+* `SliceWalkContext` gains two new fields —
+  `picture_structure` (§6.3.11 Table 6-14) and
+  `frame_pred_frame_dct` (§6.3.11) — that the §6.2.5.1
+  gates need. The existing
+  `SliceWalkContext::first_slice(mb_width, mb_row,
+  picture_coding_type, initial_quantiser_scale_code)`
+  shorthand keeps its 4-argument signature and defaults
+  both new fields to a tail-gated-off shape
+  (`PictureStructure::Frame` + `frame_pred_frame_dct =
+  true`), preserving every round-30 test verbatim — that
+  defaulting is safe for I-pictures (no motion possible)
+  and for the `frame_pred_frame_dct == 1` P/B case. Full-
+  fidelity callers use the new
+  `first_slice_with_picture_extension` constructor, and
+  MPEG-1 callers use `first_slice_mpeg1` which pins both
+  fields so the §6.2.5.1 tail is always gated off (MPEG-1's
+  macroblock layer carries its own §2.4.2.7 motion-vector
+  syntax outside this driver).
+* `MacroblockRecord` gains `motion_type: Option<MotionType>`
+  (the parsed `frame_motion_type` / `field_motion_type` with
+  the §6.3.17.2 `motion_vector_count` / `mv_format` / `dmv`
+  derivation) and `dct_type: Option<bool>` alongside the
+  existing fields. The `Option`-typed surface preserves the
+  spec-level distinction between "field is absent" (where the
+  Table 6-17 / Table 6-19 defaults apply, but at the motion-
+  vector or block-organisation site rather than here) and
+  "field is present with value X".
+* **7 new lib unit tests** in `src/slice_macroblock_walk.rs`
+  pin the four §6.2.5.1 gate cases: frame_motion_type read
+  when the motion flag fires and `frame_pred_frame_dct ==
+  0` (`10` Frame-based), frame_motion_type read with `11`
+  Dual-Prime, field_motion_type read in a top-field picture
+  (`10` 16×8 MC with mv_count = 2), motion_type omitted in
+  a frame picture with `frame_pred_frame_dct == 1`,
+  dct_type emitted on an intra MB in a frame picture with
+  `frame_pred_frame_dct == 0`, dct_type omitted in a field
+  picture, the full "type-tail-quant" 14-bit P-picture
+  fixture (`00010 10 0 19_5b`), and the MPEG-1 shorthand
+  asserting both Options are `None`.
+* **3 new integration tests** in
+  `tests/slice_macroblock_walk_synthetic.rs` exercise the
+  same gates end-to-end through the public re-exports: a
+  two-MB P-frame chain with `frame_motion_type` between
+  each `macroblock_type` and the next increment (`10`
+  Frame-based then `11` Dual-Prime), a single-MB top-field
+  P-picture with "MC, Coded, Quant" type + `field_motion_type
+  = 01` Field-based mv_count=1 + 5-bit quantiser_scale_code
+  = 23, and a two-MB intra-frame I-picture with dct_type
+  alternating between field-DCT and frame-DCT.
+
+  The remaining gap on the MPEG-2 decode path is now the
+  three post-`macroblock_modes()` fields: `motion_vectors(s)`
+  (with its §7.6.3.4 PMV reset and `f_code[][]` matrix from
+  `picture_coding_extension()`), the concealment-MV
+  `marker_bit`, and `coded_block_pattern()` + the per-block
+  walker (which need the §7.4.2.1 weighting matrices and the
+  §6.3.17.4 `pattern_code[12]` derivation already in the
+  `mpeg2_macroblock_blocks` module). The natural round-33
+  work is the `motion_vectors(s)` wiring — its f_code matrix
+  comes from the picture coding extension `SliceWalkContext`
+  already implicitly references via `frame_pred_frame_dct`.
 
 ## Clean-room provenance
 

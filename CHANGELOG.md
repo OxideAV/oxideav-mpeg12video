@@ -8,6 +8,39 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 32: MPEG-2 §6.2.5.1 `macroblock_modes()` tail wired into
+  the slice walker. `slice_macroblock_walk::walk_slice` now reads
+  `frame_motion_type` (Table 6-17, frame pictures with
+  `frame_pred_frame_dct == 0` whose MB sets a motion flag),
+  `field_motion_type` (Table 6-18, every motion-bearing MB in a
+  field picture), and `dct_type` (frame pictures with
+  `frame_pred_frame_dct == 0` whose MB is intra or has a coded
+  pattern) between the existing `macroblock_type` parse and the
+  §6.2.5 `if (macroblock_quant) quantiser_scale_code` read,
+  matching the §6.2.5 syntax tree order. Two new
+  `SliceWalkContext` fields `picture_structure` and
+  `frame_pred_frame_dct` surface the §6.3.11 picture-extension
+  state the tail is gated on; `SliceWalkContext::first_slice`
+  keeps its existing 4-arg shorthand by defaulting to
+  `picture_structure = Frame` / `frame_pred_frame_dct = true` (no
+  tail reads — safe for I-pictures and the `frame_pred_frame_dct
+  == 1` P/B case), while
+  `first_slice_with_picture_extension` takes the full pair, and
+  the new `first_slice_mpeg1` shorthand pins both fields so the
+  §6.2.5.1 tail stays gated off on MPEG-1 streams (whose macroblock
+  layer has its own §2.4.2.7 motion-vector parser). `MacroblockRecord`
+  gains `motion_type: Option<MotionType>` and `dct_type: Option<bool>`
+  alongside the existing `macroblock_type` / `quantiser_scale_code`
+  fields. **Fixes a latent ordering bug** where the previous
+  walker read the §6.2.5 `quantiser_scale_code` immediately after
+  `macroblock_type`, misaligning the cursor on any MB whose
+  `macroblock_modes()` tail consumed bits (e.g. P-picture
+  `frame_pred_frame_dct == 0` motion MBs). 7 new lib tests plus 3
+  new integration tests in `tests/slice_macroblock_walk_synthetic.rs`
+  pin the four gate cases — frame_motion_type / field_motion_type /
+  motion-omitted-by-frame_pred_frame_dct / dct_type emitted-with-intra
+  — and a full P-picture MB chain that mixes type-tail-quant in one
+  bit-exact 14-bit fixture.
 - round 31: MPEG-2 §7.6.6 skipped-macroblock specification
   (`skipped_macroblock::describe_skipped_macroblock` +
   `skipped_macroblock_apply_to_pmv`) — the description module the
