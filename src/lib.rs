@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–30 — structural sequence-layer
+//! **Status:** rebuild rounds 1–31 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -337,6 +337,7 @@ pub mod pmv;
 pub mod quantizer_scale;
 pub mod sequence_extension;
 pub mod sequence_header;
+pub mod skipped_macroblock;
 pub mod slice_header;
 pub mod slice_macroblock_walk;
 
@@ -441,6 +442,10 @@ pub use sequence_extension::{
     SEQUENCE_EXTENSION_ID,
 };
 pub use sequence_header::{AspectRatio, Mpeg2SequenceHeader, SEQUENCE_HEADER_CODE};
+pub use skipped_macroblock::{
+    apply_to_pmv as skipped_macroblock_apply_to_pmv, describe_skipped_macroblock,
+    SkippedMacroblock, SkippedMacroblockContext, SkippedMotionVector,
+};
 pub use slice_header::{
     SliceContext, SliceHeader, SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN,
 };

@@ -8,6 +8,59 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 31: MPEG-2 §7.6.6 skipped-macroblock specification
+  (`skipped_macroblock::describe_skipped_macroblock` +
+  `skipped_macroblock_apply_to_pmv`) — the description module the
+  round-30 slice walker flagged as a follow-up.
+  `describe_skipped_macroblock` consumes a
+  `SkippedMacroblockContext` (picture coding type / picture
+  structure / previous-MB direction / PMV state /
+  scalable_i_picture gate) and returns a `SkippedMacroblock` that
+  pins the per-§7.6.6.1..4 deterministic prediction shape: the
+  prediction type (Frame-based for §7.6.6.2 / §7.6.6.4,
+  Field-based for §7.6.6.1 / §7.6.6.3), the derived `mv_format`,
+  the same-parity field reference (§7.6.6.1 / §7.6.6.3), the
+  direction (always `Forward` in P-pictures per §7.6.6.1 /
+  §7.6.6.2; inherited from the previous MB in B-pictures per
+  §7.6.6.3 / §7.6.6.4 "same as the previous macroblock"), the
+  motion-vector source (`SkippedMotionVector::Zero` in
+  P-pictures, `SkippedMotionVector::FromPmv { forward,
+  backward }` in B-pictures with each slot present iff the
+  inherited direction includes it), and the `reset_pmv` flag
+  (true in P-pictures per §7.6.3.4 "In a P-picture when a
+  macroblock is skipped" + §7.6.6.1 / §7.6.6.2 "Motion vector
+  predictors shall be reset to zero"; false in B-pictures per
+  §7.6.6.3 / §7.6.6.4 "Motion vector predictors are
+  unaffected"). The §7.6.6 preamble I-picture rule rejects
+  skipped MBs on non-scalable I-pictures; the
+  `scalable_i_picture` gate exposes the spec exemption but
+  surfaces "not yet supported" until the scalability extensions
+  land. B-pictures with `previous_direction =
+  PredictionDirection::Skipped` are also rejected per the
+  "same as the previous macroblock" rule. The companion
+  `skipped_macroblock_apply_to_pmv` hook fires the §7.6.3.4
+  PMV reset (idempotent; no-op when `reset_pmv == false`). The
+  module re-uses existing crate types (`Pmv` / `VectorIndex` /
+  `Direction` / `Component` from `pmv`, `PictureCodingType` /
+  `PictureStructure` from `picture_header`, `PredictionType` /
+  `MvFormat` from `macroblock_modes`, `PredictionDirection`
+  from `combine_predictions`, `FieldParity` from `dual_prime`)
+  so the description plugs straight into the existing §7.6.4
+  `predict_block` → §7.6.7 `combine_directional_predictions`
+  prediction pipeline (sample-plane formation stays out of
+  scope, since per-block residuals are conceptually zero for
+  skipped MBs). New types
+  `SkippedMacroblockContext` / `SkippedMacroblock` /
+  `SkippedMotionVector` and entry points
+  `describe_skipped_macroblock` /
+  `skipped_macroblock_apply_to_pmv` are re-exported at the
+  crate root. 15 new lib unit tests + 5 new integration tests
+  under `tests/skipped_macroblock_synthetic.rs` pin the four
+  §7.6.6 sub-clause derivations, the §7.6.6 preamble I-picture
+  rejection (both non-scalable and scalable-but-unsupported),
+  the B-picture previous-direction-Skipped rejection, the
+  P-picture PMV reset (idempotent over a 10-MB run), and the
+  B-picture PMV invariance over a 5-MB run.
 - round 30: MPEG-2 §6.2.4 slice-level macroblock-header walker
   (`slice_macroblock_walk::walk_slice`) — the first §6.2.4 driver
   that picks up at the post-`slice_header()` cursor and walks the

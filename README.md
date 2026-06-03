@@ -5,7 +5,7 @@ A pure-Rust MPEG-1 Video / MPEG-2 Video codec for the
 
 ## Status
 
-**Clean-room rebuild — rounds 1–30.** Round 1–23 cover the bitstream
+**Clean-room rebuild — rounds 1–31.** Round 1–23 cover the bitstream
 parsing surface (sequence / GOP / picture / slice headers + the
 macroblock-layer syntax through `motion_vectors()` and
 `coded_block_pattern`), motion-vector reconstruction for both stream
@@ -90,6 +90,18 @@ the deferred `motion_vectors()` / `coded_block_pattern()` /
 walker stay out of scope this round — their PMV reset / f_code
 / per-block-context wiring intersects with cross-MB state the
 picture-level driver above this slice walker will own.
+Round 31 lands the **§7.6.6 skipped-macroblock specification** —
+`skipped_macroblock::describe_skipped_macroblock` consumes the
+round-30 slice walker's `skipped_macroblock_count` ranges and
+returns the per-§7.6.6.1..4 deterministic prediction shape
+(prediction type / `mv_format` / same-parity field reference /
+MV source / PMV side-effect) for one skipped slot at a time
+across all four picture-coding-type × picture-structure
+combinations, plus the §7.6.6 preamble I-picture rejection
+(non-scalable case) and the §7.6.3.4 PMV-reset hook
+`skipped_macroblock_apply_to_pmv` that fires the
+P-picture-only "Motion vector predictors shall be reset to
+zero" rule.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
@@ -2021,9 +2033,113 @@ be defended as clean-room. The rebuild starts here.
   §6.3.17.1 state mechanics in place. The remaining gap on
   the MPEG-2 decode path is the per-MB **body** — `macroblock_modes()`
   tail / `motion_vectors(s)` / `coded_block_pattern()` / the
-  per-block walker — which is the natural round-31 work and
-  plugs into the per-MB `body_bit_position` this round
-  exposes.
+  per-block walker — and the §7.6.6 skipped-MB reconstruction
+  flagged by round 30 as a follow-up. Round 31 picks up the
+  latter.
+
+### What round 31 lands
+
+* The **§7.6.6 skipped-macroblock specification** per
+  **ISO/IEC 13818-2 (ITU-T H.262)** — the description module
+  the round-30 slice walker flagged as a follow-up.
+  `skipped_macroblock::describe_skipped_macroblock` consumes a
+  `SkippedMacroblockContext` (the picture's coding type and
+  structure from `picture_header()` / `picture_coding_extension()`,
+  the previous MB's prediction direction, the PMV state, and
+  the I-picture scalability gate) and returns a
+  `SkippedMacroblock` description that pins the per-§7.6.6.1..4
+  deterministic prediction shape: the prediction type
+  (Frame-based for §7.6.6.2 / §7.6.6.4, Field-based for
+  §7.6.6.1 / §7.6.6.3), the derived `mv_format`, the
+  same-parity field reference (§7.6.6.1 / §7.6.6.3 only), the
+  prediction direction (always `Forward` in P-pictures —
+  §7.6.6.1 / §7.6.6.2 implicit zero-MV forward prediction;
+  inherited from the previous MB in B-pictures per §7.6.6.3 /
+  §7.6.6.4 "same as the previous macroblock"), the motion-vector
+  source (`SkippedMotionVector::Zero` for P-pictures —
+  §7.6.6.1 / §7.6.6.2 "the motion vector shall be zero";
+  `SkippedMotionVector::FromPmv { forward, backward }` for
+  B-pictures — §7.6.6.3 / §7.6.6.4 "motion vectors are taken
+  from the appropriate motion-vector predictors", with each
+  slot present iff the inherited previous direction includes
+  it), and the `reset_pmv` flag (true for P-pictures per
+  §7.6.3.4 bullet "In a P-picture when a macroblock is
+  skipped" and §7.6.6.1 / §7.6.6.2 "Motion vector predictors
+  shall be reset to zero"; false for B-pictures per §7.6.6.3 /
+  §7.6.6.4 "Motion vector predictors are unaffected"). The
+  companion `skipped_macroblock_apply_to_pmv` hook fires the
+  §7.6.3.4 PMV reset on the caller's `Pmv` state when
+  `reset_pmv == true` (idempotent; no-op otherwise).
+* §7.6.6 preamble rejections: I-picture + `scalable_i_picture
+  == false` raises `InvalidBitstream` per "There shall be no
+  skipped macroblocks in I-pictures except when…"; B-picture
+  + `previous_direction == PredictionDirection::Skipped`
+  raises `InvalidBitstream` per "the same as the previous
+  macroblock" — the previous MB must have an encoded
+  direction. The I-picture scalable-exemption gate is
+  exposed for a future scalability round but currently
+  rejects with an explicit "not yet supported" message; the
+  scalability extensions (`picture_spatial_scalable_extension()` /
+  `sequence_scalable_extension()` with `scalable_mode =
+  "SNR scalability"`) own the prediction formation in that
+  case and are not yet parsed by this crate.
+* The module re-uses the existing crate types — `Pmv` /
+  `VectorIndex` / `Direction` / `Component` from
+  [`pmv`], `PictureCodingType` / `PictureStructure` from
+  [`picture_header`], `PredictionType` / `MvFormat` from
+  [`macroblock_modes`], `PredictionDirection` from
+  [`combine_predictions`], and `FieldParity` from
+  [`dual_prime`] — so callers can take a description straight
+  into the existing §7.6.4 / §7.6.7 prediction pipeline
+  (`predict_block` → `combine_directional_predictions`).
+* Re-exported at the crate root as `describe_skipped_macroblock`,
+  `SkippedMacroblock`, `SkippedMacroblockContext`,
+  `SkippedMotionVector`, and `skipped_macroblock_apply_to_pmv`.
+* **15 new lib unit tests** in `src/skipped_macroblock.rs`:
+  the §7.6.6.1 P field (top + bottom parity) Field-based /
+  zero-MV / PMV-reset descriptions, the §7.6.6.2 P frame
+  Frame-based / zero-MV / PMV-reset description, the
+  §7.6.6.4 B frame inheriting each of the three previous-MB
+  directions (Forward only / Backward only / Bidirectional)
+  with the matching PMV slot subset surfaced, the §7.6.6.3
+  B field same-parity rule for both top and bottom
+  structures, the §7.6.6 preamble rejection on a non-scalable
+  I-picture, the "not yet supported" stub on a scalable
+  I-picture, the rejection of `previous_direction ==
+  Skipped` in a B-picture, the `apply_to_pmv` zeroing in
+  P-pictures, the `apply_to_pmv` no-op in B-pictures, the
+  idempotence of repeated `apply_to_pmv` calls, and the
+  `FieldParity::{Top, Bottom}.index() == {0, 1}` spec
+  numbering reaffirmation.
+* **5 new integration tests** in
+  `tests/skipped_macroblock_synthetic.rs` exercise the
+  public re-exports end-to-end: a §7.6.6.2 run where the
+  round-30 slice walker's `skipped_macroblock_count = 3` is
+  iterated through `describe_skipped_macroblock` /
+  `skipped_macroblock_apply_to_pmv` and the PMV converges
+  on zero (matches §7.6.3.4 / §7.6.6.2), a §7.6.6.3 B field
+  top-parity 5-MB run whose `apply_to_pmv` calls leave the
+  full `Pmv` byte-equal (matches "Motion vector predictors
+  are unaffected"), a §7.6.6.4 B frame forward-only
+  inheritance verifying the backward PMV slot is *not*
+  surfaced when the previous MB had no backward direction,
+  the §7.6.6-preamble I-picture-non-scalable rejection
+  through the public surface, and a 10-MB §7.6.6.1 P field
+  (bottom parity) run pinning the convergence-on-zero
+  invariant over a long run.
+
+  Round 31 closes the round-30 next-step candidate on the
+  §7.6.6 skipped-MB side. The actual sample-plane formation
+  for skipped MBs is then a thin glue layer
+  (`SkippedMacroblock` → §7.6.4 `predict_block` → §7.6.7
+  `combine_directional_predictions`); per-block residuals
+  are conceptually zero for skipped MBs so no §7.6.8
+  add-coefficients dispatch is needed. The remaining gap on
+  the MPEG-2 decode path is still the per-MB **body** —
+  `macroblock_modes()` tail / `motion_vectors(s)` /
+  `coded_block_pattern()` / the per-block walker the round-30
+  walker's `body_bit_position` cursor points at — which is
+  the natural round-32 work.
 
 ## Clean-room provenance
 
@@ -2067,7 +2183,16 @@ Every line in this crate's `src/` traces to:
   (`macroblock()` syntax — the `for (i = 0; i < block_count; i++)
   block(i)` loop body the macroblock-block driver dispatches),
   and re-uses §7.4.2.1 Table 7-5 (already cited by round 23) for
-  the per-block weighting-matrix dispatch.
+  the per-block weighting-matrix dispatch. Round 31 adds the
+  §7.6.6 sub-clauses (§7.6.6.1 P field picture, §7.6.6.2 P frame
+  picture, §7.6.6.3 B field picture, §7.6.6.4 B frame picture,
+  plus the §7.6.6 preamble's I-picture-no-skipped-MBs rule and
+  scalability exemption), and re-cites §7.6.3.4 (PMV reset
+  bullet "In a P-picture when a macroblock is skipped", already
+  cited by round 23) and §7.6.3.6 (the field-parity numbering
+  "top field has parity zero, the bottom field has parity one",
+  already cited by round 22 for dual-prime) for the
+  same-parity field-reference rule.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
