@@ -161,7 +161,7 @@ fn intra_dc_mult_local(intra_dc_precision: u8) -> Result<i32> {
 ///   9-bit signed pel range `[-256, +255]`.
 /// * [`Self::end_of_block_bit_position`] — bit cursor after the
 ///   EOB codeword was consumed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedBlock {
     /// The §7.2.2 walker output, in zig-zag order.
     pub qfs: [i32; QFS_LEN],

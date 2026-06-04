@@ -217,7 +217,7 @@ impl<'w> MacroblockBlockContext<'w> {
 ///
 /// `block_index` is `0..=block_count(chroma_format) - 1` and maps
 /// per [`block_component`] to a colour component (Y / Cb / Cr).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedBlock {
     /// Position of this block per Figures 6-10 / 6-11 / 6-12.
     pub block_index: u8,

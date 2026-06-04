@@ -8,6 +8,68 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 34: MPEG-2 §6.2.6 `block(i)` driver wired into the
+  slice walker as an opt-in path. `slice_macroblock_walk::walk_slice`
+  now calls [`crate::mpeg2_decode_macroblock_blocks`] for every
+  coded block per the parsed `pattern_code[i]` whenever the new
+  `SliceWalkContext::block_decoding_enabled` flag is `true`,
+  chaining §7.2.1 DC prelude (intra blocks only), §7.2.2 residual
+  VLC walker (B-14 / B-15 with §7.2.2.2 FIRST/NEXT alternation),
+  §7.3 inverse scan, §7.4 inverse quantisation (Table 7-5
+  weighting-matrix selection driven by `(BlockCoding, Component,
+  ChromaFormat)`), and §A 8×8 IDCT into a single
+  "bitstream → `f[y][x]`" pass per coded block. Maintains the
+  §7.2.1 per-component DC predictor `dc_dct_pred[cc]` across
+  macroblocks for the duration of the slice (allocated at slice
+  start with the Table 7-2 reset value for the active
+  `intra_dc_precision`; reset on every non-intra MB by the
+  inner driver). `SliceWalkContext` grows five new fields —
+  `intra_vlc_format` / `alternate_scan` / `intra_dc_precision`
+  (with the Table 6-13 `0..=3` range enforced before the loop
+  ever runs) / `q_scale_type` (driving the §7.4.2.2 Table 7-6
+  `quantiser_scale_value` resolution from the carried-forward
+  `quantiser_scale_code`) and `block_decoding_enabled`. All four
+  existing constructors (`first_slice`,
+  `first_slice_with_picture_extension`,
+  `first_slice_with_picture_body`, `first_slice_mpeg1`) default
+  the new fields to "block decoding off" (`false` /
+  `intra_dc_precision = 0`) so the round-30..33 contract holds
+  bit-identically — the walker stops at the
+  `coded_block_pattern()` snapshot and emits no §6.2.6 reads. A
+  new `first_slice_with_block_decoding` constructor surfaces the
+  full §6.3.5 / §6.3.11 picture-extension state plus the four
+  §6.2.6 fields and turns the gate on. `MacroblockRecord` gains
+  `decoded_blocks: Option<Vec<DecodedBlock>>` — `None` in the
+  wire-only path (round-30..33 contract), `Some(empty)` for a
+  decoded MB with zero coded blocks (e.g. P-picture "MC, not
+  coded"), or `Some([…])` with one entry per coded block
+  (each carrying the full `QFS[]` / `QF[v][u]` / `F[v][u]` /
+  `f[y][x]` reconstruction plus the post-EOB bit cursor). The
+  §6.3.7 default weighting matrices are used —
+  `quant_matrix_extension()` downloadable-matrix support is a
+  separate follow-up clause. The §6.1.1.8 block ordering per
+  chroma_format (4:2:0 = 6 blocks, 4:2:2 = 8, 4:4:4 = 12) is
+  threaded straight through from
+  `mpeg2_macroblock_blocks::block_count` /
+  `mpeg2_macroblock_blocks::block_component`. The walker's
+  `body_bit_position` snapshot keeps the round-30..33 meaning
+  (cursor after `macroblock_modes()` + `quantiser_scale_code`,
+  before any wire-body field) so external resume-from-cursor
+  drivers stay unbroken; the new per-block `end_of_block_bit_position`
+  exposed by [`crate::Mpeg2DecodedBlock::end_of_block_bit_position`]
+  gives the post-§6.2.6 cursor on each emitted block. 7 new lib
+  unit tests plus 3 new integration tests in
+  `tests/slice_macroblock_walk_synthetic.rs` pin the wire-only
+  vs block-decoding split, the 4:2:0 DC-only intra MB walk (6
+  blocks, predictor reset to 128 with `intra_dc_precision == 0`),
+  per-slice DC predictor advance across two intra MBs, the
+  `intra_dc_precision == 4` pre-flight rejection, the
+  linear-vs-non-linear `q_scale_type` lookup, and the
+  `pattern_code` all-`false` empty-decoded-blocks path. The
+  `DecodedBlock` types under `mpeg2_block_decoder` and
+  `mpeg2_macroblock_blocks` now derive `PartialEq` / `Eq` so the
+  enclosing `MacroblockRecord::decoded_blocks` keeps the
+  walker's record-level `PartialEq` / `Eq` derive intact.
 - round 33: MPEG-2 §6.2.5 macroblock body wire-parse wired into the
   slice walker. `slice_macroblock_walk::walk_slice` now follows
   `macroblock_modes()` + `quantiser_scale_code` with the four

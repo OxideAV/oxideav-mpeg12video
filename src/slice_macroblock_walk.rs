@@ -155,6 +155,11 @@ use crate::macroblock_modes::{MacroblockModesContext, MacroblockModesTail, Motio
 use crate::macroblock_type::MacroblockType;
 use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 use crate::motion_vector::{MotionVectors, MotionVectorsContext, MotionVectorsKind};
+use crate::mpeg2_block_dc::DcPredictors;
+use crate::mpeg2_dequantize::quantiser_scale;
+use crate::mpeg2_macroblock_blocks::{
+    decode_macroblock_blocks, DecodedBlock, MacroblockBlockContext,
+};
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::quantizer_scale::{QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 use crate::sequence_extension::ChromaFormat;
@@ -253,6 +258,46 @@ pub struct SliceWalkContext {
     /// chroma_format field of `sequence_extension()` doesn't exist
     /// in ISO/IEC 11172-2).
     pub chroma_format: ChromaFormat,
+    /// `intra_vlc_format` from `picture_coding_extension()` per
+    /// §6.3.11. Drives the §7.2.2.1 Table 7-3
+    /// `(intra_vlc_format, macroblock_intra)` table selector
+    /// (B-14 vs B-15) when the §6.2.6 `block(i)` driver runs.
+    /// Only consumed when [`Self::block_decoding_enabled`] is
+    /// `true`; otherwise the walker stops at the
+    /// `coded_block_pattern()` cursor and this field is unused
+    /// (default `false` is safe).
+    pub intra_vlc_format: bool,
+    /// `alternate_scan` from `picture_coding_extension()` per
+    /// §6.3.11. Drives the §7.3 inverse-scan dispatch (Figure 7-2
+    /// vs Figure 7-3) when the §6.2.6 `block(i)` driver runs.
+    /// Only consumed when [`Self::block_decoding_enabled`] is
+    /// `true`; default `false` is safe otherwise.
+    pub alternate_scan: bool,
+    /// `intra_dc_precision` from `picture_coding_extension()` per
+    /// §6.3.11 (Table 6-13, `0..=3`). Drives the §7.2.1 DC
+    /// predictor reset value (Table 7-2) and the Table 7-4
+    /// `intra_dc_mult` per-block weighting when the §6.2.6
+    /// `block(i)` driver runs. Only consumed when
+    /// [`Self::block_decoding_enabled`] is `true`; default `0`
+    /// (8-bit precision) is safe otherwise.
+    pub intra_dc_precision: u8,
+    /// `q_scale_type` from `picture_coding_extension()` per
+    /// §6.3.11 (Table 7-6). Drives the §7.4.2.2 resolution from
+    /// `quantiser_scale_code` (1..=31) to `quantiser_scale_value`
+    /// (1..=112) when the §6.2.6 `block(i)` driver runs. Only
+    /// consumed when [`Self::block_decoding_enabled`] is `true`;
+    /// default `false` (linear) is safe otherwise.
+    pub q_scale_type: bool,
+    /// When `true`, the walker runs the §6.2.6 `block(i)` driver
+    /// for every coded block per the parsed `pattern_code[i]`
+    /// (advancing the cursor across `dct_coeff_*` + EOB and
+    /// emitting the full per-block §A IDCT plane on each
+    /// [`MacroblockRecord::decoded_blocks`] entry). When `false`
+    /// (the default for every existing constructor), the walker
+    /// stops at the `coded_block_pattern()` cursor as in rounds
+    /// 30..33 — `decoded_blocks` is `None` on every record and
+    /// the four §6.2.6 fields above are not consulted.
+    pub block_decoding_enabled: bool,
 }
 
 impl SliceWalkContext {
@@ -290,6 +335,11 @@ impl SliceWalkContext {
             f_code_bwd_vert: 1,
             concealment_motion_vectors: false,
             chroma_format: ChromaFormat::Yuv420,
+            intra_vlc_format: false,
+            alternate_scan: false,
+            intra_dc_precision: 0,
+            q_scale_type: false,
+            block_decoding_enabled: false,
         }
     }
 
@@ -320,6 +370,11 @@ impl SliceWalkContext {
             f_code_bwd_vert: 1,
             concealment_motion_vectors: false,
             chroma_format: ChromaFormat::Yuv420,
+            intra_vlc_format: false,
+            alternate_scan: false,
+            intra_dc_precision: 0,
+            q_scale_type: false,
+            block_decoding_enabled: false,
         }
     }
 
@@ -374,6 +429,11 @@ impl SliceWalkContext {
             f_code_bwd_vert,
             concealment_motion_vectors,
             chroma_format,
+            intra_vlc_format: false,
+            alternate_scan: false,
+            intra_dc_precision: 0,
+            q_scale_type: false,
+            block_decoding_enabled: false,
         }
     }
 
@@ -404,6 +464,79 @@ impl SliceWalkContext {
             f_code_bwd_vert: 1,
             concealment_motion_vectors: false,
             chroma_format: ChromaFormat::Yuv420,
+            intra_vlc_format: false,
+            alternate_scan: false,
+            intra_dc_precision: 0,
+            q_scale_type: false,
+            block_decoding_enabled: false,
+        }
+    }
+
+    /// Full-fidelity constructor that surfaces every field the
+    /// §6.2.5 macroblock header **and** the §6.2.6 `block(i)`
+    /// driver consult — i.e. the `first_slice_with_picture_body`
+    /// surface plus the four §6.3.11
+    /// `picture_coding_extension()` fields the per-block
+    /// reconstruction pipeline reads (`intra_vlc_format`,
+    /// `alternate_scan`, `intra_dc_precision`, `q_scale_type`) —
+    /// and toggles [`Self::block_decoding_enabled`] to `true` so
+    /// the walker calls
+    /// [`crate::mpeg2_decode_macroblock_blocks`] for every
+    /// coded macroblock per the parsed `pattern_code[i]`.
+    ///
+    /// Use this constructor when the slice is to be fully decoded
+    /// at the bitstream layer — every macroblock that has any
+    /// coded block emits a [`MacroblockRecord::decoded_blocks`]
+    /// `Some(Vec<DecodedBlock>)` payload carrying the §7.2 / §7.3
+    /// / §7.4 / §A pipeline output. For wire-only walks (header
+    /// fields + motion vectors + CBP but no per-block VLC walk),
+    /// use [`SliceWalkContext::first_slice_with_picture_body`]
+    /// instead — that path skips the §6.2.6 driver entirely.
+    ///
+    /// `intra_dc_precision` must be in `0..=3` per Table 6-13;
+    /// values outside that range surface as
+    /// [`Error::InvalidBitstream`] when the walker runs.
+    /// `q_scale_type` selects between Table 7-6's linear and
+    /// non-linear columns.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn first_slice_with_block_decoding(
+        mb_width: u32,
+        mb_row: u32,
+        picture_coding_type: PictureCodingType,
+        initial_quantiser_scale_code: u8,
+        picture_structure: PictureStructure,
+        frame_pred_frame_dct: bool,
+        f_code_fwd_horiz: u8,
+        f_code_fwd_vert: u8,
+        f_code_bwd_horiz: u8,
+        f_code_bwd_vert: u8,
+        concealment_motion_vectors: bool,
+        chroma_format: ChromaFormat,
+        intra_vlc_format: bool,
+        alternate_scan: bool,
+        intra_dc_precision: u8,
+        q_scale_type: bool,
+    ) -> Self {
+        Self {
+            mb_width,
+            mb_row,
+            picture_coding_type,
+            mpeg1: false,
+            initial_quantiser_scale_code,
+            past_intra_address: PAST_INTRA_ADDRESS_RESET,
+            picture_structure,
+            frame_pred_frame_dct,
+            f_code_fwd_horiz,
+            f_code_fwd_vert,
+            f_code_bwd_horiz,
+            f_code_bwd_vert,
+            concealment_motion_vectors,
+            chroma_format,
+            intra_vlc_format,
+            alternate_scan,
+            intra_dc_precision,
+            q_scale_type,
+            block_decoding_enabled: true,
         }
     }
 }
@@ -532,6 +665,31 @@ pub struct MacroblockRecord {
     /// [`crate::mpeg2_block_count`] for the active chroma_format
     /// are always `false`.
     pub pattern_code: [bool; 12],
+    /// §6.2.6 `block(i)` payloads, one entry per **coded** block
+    /// (i.e. each `i` with `pattern_code[i] == true`), in §6.1.1.8
+    /// raster order.
+    ///
+    /// * `None` — the walker was running in wire-only mode
+    ///   ([`SliceWalkContext::block_decoding_enabled == false`]),
+    ///   so the per-block §7.2 / §7.3 / §7.4 / §A pipeline never
+    ///   ran and the cursor stopped at the
+    ///   `coded_block_pattern()` snapshot. This is the round-30..33
+    ///   contract.
+    /// * `Some(Vec::new())` — block decoding was enabled but the
+    ///   macroblock has zero coded blocks (every `pattern_code[i]`
+    ///   is `false`; e.g. a non-intra MB with no `macroblock_pattern`
+    ///   and no coded residuals at all).
+    /// * `Some(blocks)` — `blocks.len() ==` number of `true` entries
+    ///   in [`Self::pattern_code`], up to the §6.1.1.8
+    ///   `block_count(chroma_format)` slot count. Each entry carries
+    ///   the full `QFS[] → QF[v][u] → F[v][u] → f[y][x]` reconstruction
+    ///   plus the post-EOB bit cursor.
+    ///
+    /// Per §7.2.1 the per-component DC predictor state is reset at
+    /// every non-intra macroblock; the per-slice [`walk_slice`]
+    /// driver carries the predictor across macroblocks and applies
+    /// that reset via the inner driver before each coded block runs.
+    pub decoded_blocks: Option<Vec<DecodedBlock>>,
 }
 
 /// Per-slice summary the walker emits when the §6.2.4 do-while loop
@@ -676,6 +834,21 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
         MbAddressIncrementContext::mpeg1()
     } else {
         MbAddressIncrementContext::mpeg2()
+    };
+
+    // §7.2.1: per-slice DC-predictor state. Allocated only when
+    // the §6.2.6 driver is gated on — the wire-only path keeps
+    // the round-30..33 contract of "no DC predictor state needed,
+    // walker stops at CBP". The §7.2.1 "reset at start of slice"
+    // rule is satisfied by [`DcPredictors::new`] which seeds every
+    // component to the Table 7-2 reset value selected by
+    // `intra_dc_precision`. Block decoding requires
+    // `intra_dc_precision` to be in `0..=3` (Table 6-13); the
+    // validation surfaces as [`Error::InvalidBitstream`] up-front.
+    let mut dc_predictors: Option<DcPredictors> = if ctx.block_decoding_enabled {
+        Some(DcPredictors::new(ctx.intra_dc_precision)?)
+    } else {
+        None
     };
 
     let end_bit_position: u64;
@@ -915,6 +1088,94 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
             [false; 12]
         };
 
+        // §6.2.6 `block(i)` driver: when the surrounding context
+        // signals `block_decoding_enabled`, run the per-block
+        // §7.2.1 / §7.2.2 / §7.3 / §7.4 / §A pipeline for every
+        // coded block via [`decode_macroblock_blocks`]. Skipped
+        // when block decoding is gated off — the cursor stops at
+        // the post-`coded_block_pattern()` snapshot per the
+        // round-30..33 wire-only contract.
+        //
+        // The §6.2.6 syntax is gated on `pattern_code[i]`; the
+        // helper iterates the §6.1.1.8 block ordering internally
+        // and skips uncoded slots so a zero-CBP non-intra MB
+        // emits an empty `Vec<DecodedBlock>` with no bitstream
+        // reads. Intra MBs still emit one §7.2.1 DC prelude per
+        // coded block per §6.2.6.
+        let decoded_blocks = if let Some(ref mut predictors) = dc_predictors {
+            // §7.4.2.2 Table 7-6: resolve `quantiser_scale_code`
+            // through the `q_scale_type` column to the final
+            // `quantiser_scale_value` in `1..=112`. The `quantiser_scale_code`
+            // here is the post-override value carried by the
+            // walker (i.e. either the slice-header value or the
+            // most-recent `macroblock_quant == 1` override),
+            // which is the spec-correct input to Table 7-6 per
+            // §7.4.2.2 (the override applies to *this* MB).
+            let quantiser_scale_value = quantiser_scale(quantiser_scale_code, ctx.q_scale_type)?;
+            // §6.3.7 default weighting matrices — the walker
+            // does not currently surface the optional
+            // `quant_matrix_extension()` overrides, so every
+            // §7.4.2.1 Table 7-5 `w`-index resolves to the
+            // §6.3.7 default. Downloadable-matrix support is a
+            // separate follow-up clause.
+            let mb_block_ctx = MacroblockBlockContext::with_default_weight_matrices(
+                ctx.intra_vlc_format,
+                ctx.alternate_scan,
+                ctx.intra_dc_precision,
+                quantiser_scale_value,
+                ctx.chroma_format,
+            );
+            // [`decode_macroblock_blocks`] internally derives
+            // `pattern_code` from the same CBP / macroblock_type
+            // we already computed above, so when the macroblock
+            // has no `coded_block_pattern` payload but is
+            // non-intra (every entry `false`) it returns an
+            // empty `Vec` without reading any bits. The walker's
+            // own per-MB `coded_block_pattern.is_none() &&
+            // !macroblock_intra` case is the same path.
+            //
+            // §7.2.1 also says the DC predictor is reset on
+            // every non-intra MB; the helper applies that
+            // before its per-block loop runs.
+            //
+            // Macroblocks whose `macroblock_pattern == 0` and
+            // `macroblock_intra == 1` (pattern_code == [true;
+            // 12]) reach this helper without a parsed CBP —
+            // the helper handles that by treating "no CBP" as
+            // "every block coded" so we synthesise a
+            // pattern-all-coded shim CBP for the call.
+            let cbp_for_decode = coded_block_pattern.unwrap_or(CodedBlockPattern {
+                // §6.3.17.4: intra MB without `macroblock_pattern`
+                // has every block coded. The §6.2.5.3 CBP wire
+                // encoding for "every block coded" is `cbp ==
+                // 63` (with no 4:2:2 / 4:4:4 extension), but
+                // [`CodedBlockPattern::pattern_code(true, false)`]
+                // ignores the `cbp` payload entirely and returns
+                // `[true; 12]` straight away. Any CBP is
+                // therefore safe here; we use the "every block
+                // coded" row + no extensions so a hypothetical
+                // future `pattern_code(macroblock_intra,
+                // macroblock_pattern)` mismatch would still be
+                // self-consistent. `bit_position_after` is
+                // synthesised at the current cursor — no CBP
+                // bits were actually read.
+                cbp: 63,
+                coded_block_pattern_1: None,
+                coded_block_pattern_2: None,
+                bit_position_after: br.bit_position(),
+            });
+            let blocks = decode_macroblock_blocks(
+                &mut br,
+                &mb_block_ctx,
+                predictors,
+                &macroblock_type,
+                &cbp_for_decode,
+            )?;
+            Some(blocks)
+        } else {
+            None
+        };
+
         records.push(MacroblockRecord {
             macroblock_address: macroblock_address_u32,
             address_increment: increment.value,
@@ -933,6 +1194,7 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
             concealment_marker_bit,
             coded_block_pattern,
             pattern_code,
+            decoded_blocks,
         });
 
         previous_macroblock_address = macroblock_address;
@@ -1043,6 +1305,54 @@ mod tests {
     /// just need any valid CBP to align the cursor.
     fn write_cbp_60(bw: &mut BitWriter) {
         bw.write_u32(0b111, 3);
+    }
+
+    /// Emit the Table B-12 `dct_dc_size_luminance = 0` codeword
+    /// (`100`, 3 bits) — the shortest legal DC prelude on a
+    /// luminance intra block.
+    fn write_dc_size_zero_luma(bw: &mut BitWriter) {
+        bw.write_u32(0b100, 3);
+    }
+
+    /// Emit the Table B-13 `dct_dc_size_chrominance = 0` codeword
+    /// (`00`, 2 bits) — the shortest legal DC prelude on a
+    /// chrominance intra block.
+    fn write_dc_size_zero_chroma(bw: &mut BitWriter) {
+        bw.write_u32(0b00, 2);
+    }
+
+    /// Emit the Table B-14 `end_of_block` codeword (`10`, 2 bits).
+    /// This is the EOB used by the FIRST/NEXT walker once
+    /// `dct_dc_size == 0` has already absorbed the only coefficient
+    /// the block carries.
+    fn write_eob_b14(bw: &mut BitWriter) {
+        bw.write_u32(0b10, 2);
+    }
+
+    /// Emit the wire form of one §6.2.6 intra `block(i)` whose DC
+    /// size is 0 and whose residual is an immediate EOB — i.e.
+    /// `QFS = [0, 0, ..., 0]` riding on the DC predictor.
+    ///
+    /// * Luma: 3 + 2 = 5 bits.
+    /// * Chroma: 2 + 2 = 4 bits.
+    fn write_dc_zero_intra_block(bw: &mut BitWriter, is_luma: bool) {
+        if is_luma {
+            write_dc_size_zero_luma(bw);
+        } else {
+            write_dc_size_zero_chroma(bw);
+        }
+        write_eob_b14(bw);
+    }
+
+    /// Emit the wire form of one 4:2:0 intra macroblock whose 6
+    /// blocks (4 luma + 1 Cb + 1 Cr) all use `dct_dc_size == 0` +
+    /// immediate EOB. Total length is 4 * 5 + 2 * 4 = 28 bits.
+    fn write_dc_zero_intra_macroblock_420(bw: &mut BitWriter) {
+        for _ in 0..4 {
+            write_dc_zero_intra_block(bw, true);
+        }
+        write_dc_zero_intra_block(bw, false);
+        write_dc_zero_intra_block(bw, false);
     }
 
     /// Pad with zero bits up to the next byte boundary and append at
@@ -1855,5 +2165,267 @@ mod tests {
         // increment(1) + mb_type(1) = 2 bits, no quant code → body
         // cursor at bit 2.
         assert_eq!(mb0.body_bit_position, 2);
+    }
+
+    // -----------------------------------------------------------
+    // §6.2.6 `block(i)` wiring (round 232 / changelog "round 34")
+    // -----------------------------------------------------------
+
+    /// Construct the §6.2.6 §6.2.5-body context for the dominant
+    /// 4:2:0 / `intra_dc_precision = 0` / linear-q-scale case.
+    fn block_ctx_420_default_iframe(q: u8) -> SliceWalkContext {
+        SliceWalkContext::first_slice_with_block_decoding(
+            22,
+            0,
+            PictureCodingType::Intra,
+            q,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            false,
+            ChromaFormat::Yuv420,
+            false, // intra_vlc_format
+            false, // alternate_scan
+            0,     // intra_dc_precision
+            false, // q_scale_type
+        )
+    }
+
+    #[test]
+    fn block_decoding_off_keeps_round_33_contract_decoded_blocks_none() {
+        // The round-30..33 contract: when `block_decoding_enabled
+        // == false` (every existing constructor), the walker does
+        // NOT advance past `coded_block_pattern()` into §6.2.6 and
+        // `decoded_blocks` is always `None`.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(
+            &buf,
+            SliceWalkContext::first_slice(22, 0, PictureCodingType::Intra, 14),
+        )
+        .unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        assert!(walk.macroblocks[0].decoded_blocks.is_none());
+    }
+
+    #[test]
+    fn block_decoding_on_dc_only_intra_macroblock_emits_six_decoded_blocks() {
+        // §6.2.6 `block(i)` driver wired into the walker. The MB is
+        // a 4:2:0 bare-intra (no `macroblock_pattern`); §6.3.17.4
+        // says every block is coded. Each of the six §6.1.1.8
+        // blocks (4 Y, 1 Cb, 1 Cr) carries `dct_dc_size == 0` +
+        // immediate EOB — the smallest legal intra block.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        write_dc_zero_intra_macroblock_420(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(&buf, block_ctx_420_default_iframe(14)).unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let mb0 = &walk.macroblocks[0];
+        let blocks = mb0.decoded_blocks.as_ref().expect("§6.2.6 ran");
+        assert_eq!(blocks.len(), 6);
+        // §6.1.1.8: block 0..=3 are Y, 4 is Cb, 5 is Cr.
+        use crate::mpeg2_block_dc::ColourComponent as CC;
+        assert_eq!(blocks[0].component, CC::Y);
+        assert_eq!(blocks[1].component, CC::Y);
+        assert_eq!(blocks[2].component, CC::Y);
+        assert_eq!(blocks[3].component, CC::Y);
+        assert_eq!(blocks[4].component, CC::Cb);
+        assert_eq!(blocks[5].component, CC::Cr);
+        // Every QFS slot above [0] is zero (DC-only block).
+        for b in blocks {
+            for i in 1..b.decoded.qfs.len() {
+                assert_eq!(b.decoded.qfs[i], 0);
+            }
+        }
+        // The cursor advanced past the §6.2.6 wire bits: increment
+        // (1) + mb_type (1) + 4 luma blocks (4*5=20) + 2 chroma
+        // blocks (2*4=8) = 30 bits into the buffer.
+        assert_eq!(blocks[5].decoded.end_of_block_bit_position, 30);
+    }
+
+    #[test]
+    fn block_decoding_on_dc_predictor_advances_per_intra_block() {
+        // Two intra MBs in a row, both DC-only with size 0 → both
+        // produce QFS[0] = predictor (no differential). Across two
+        // intra MBs the predictor for Y is fed forward, so MB1's Y
+        // DC equals MB0's Y DC. Both equal the Table 7-2 reset
+        // value 128 because the first intra MB's predictor is the
+        // slice-start reset (no preceding `dct_diff != 0`).
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        write_dc_zero_intra_macroblock_420(&mut bw);
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        write_dc_zero_intra_macroblock_420(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let walk = walk_slice(&buf, block_ctx_420_default_iframe(14)).unwrap();
+        assert_eq!(walk.macroblocks.len(), 2);
+        let mb0 = walk.macroblocks[0].decoded_blocks.as_ref().unwrap();
+        let mb1 = walk.macroblocks[1].decoded_blocks.as_ref().unwrap();
+        // Y DC for MB0 block 0 — should be the predictor reset
+        // value: with `intra_dc_precision == 0` Table 7-2 gives
+        // 128.
+        assert_eq!(mb0[0].decoded.qfs[0], 128);
+        // Y DC for MB1 block 0 — predictor carried forward
+        // unchanged because every MB0 block had `dct_diff == 0`.
+        assert_eq!(mb1[0].decoded.qfs[0], 128);
+    }
+
+    #[test]
+    fn block_decoding_rejects_intra_dc_precision_out_of_range() {
+        // Pre-flight validation: `intra_dc_precision = 4` is
+        // outside Table 6-13's `0..=3` and the §7.2.1 DC
+        // predictor allocation must reject it before the loop
+        // ever runs (i.e. the error must surface even when the
+        // bitstream contains zero macroblocks).
+        let buf = vec![0x00, 0x00, 0x00, 0x01, 0xB7];
+        let ctx = SliceWalkContext::first_slice_with_block_decoding(
+            22,
+            0,
+            PictureCodingType::Intra,
+            14,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            false,
+            ChromaFormat::Yuv420,
+            false,
+            false,
+            4, // intra_dc_precision out of range
+            false,
+        );
+        let err = walk_slice(&buf, ctx).unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn block_decoding_constructor_signals_enabled_flag() {
+        // Sanity check on the constructor itself: every other
+        // constructor leaves `block_decoding_enabled == false`,
+        // and the §6.2.6 constructor flips it.
+        let off = SliceWalkContext::first_slice(22, 0, PictureCodingType::Intra, 14);
+        assert!(!off.block_decoding_enabled);
+        let on = block_ctx_420_default_iframe(14);
+        assert!(on.block_decoding_enabled);
+    }
+
+    #[test]
+    fn block_decoding_q_scale_type_drives_table_7_6_lookup() {
+        // §7.4.2.2 Table 7-6 mapping: `quantiser_scale_code = 1`
+        // is `2` on the linear column (`q_scale_type == 0`) and
+        // `1` on the non-linear column (`q_scale_type == 1`). The
+        // walker's resolved `quantiser_scale_value` flows into the
+        // per-block context. We sanity-check the linear case via a
+        // walk-then-inspect: the value isn't surfaced directly on
+        // `MacroblockRecord`, but the walk succeeding (with the
+        // DC-only block above) confirms the lookup yielded a legal
+        // value. The non-linear column is also walkable.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        write_dc_zero_intra_macroblock_420(&mut bw);
+        let buf = end_with_stop(bw);
+
+        // Linear column (q_scale_type = false), code = 1.
+        let linear = SliceWalkContext::first_slice_with_block_decoding(
+            22,
+            0,
+            PictureCodingType::Intra,
+            1,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            false,
+            ChromaFormat::Yuv420,
+            false,
+            false,
+            0,
+            false,
+        );
+        walk_slice(&buf, linear).unwrap();
+        // Non-linear column (q_scale_type = true), code = 1.
+        let nonlinear = SliceWalkContext::first_slice_with_block_decoding(
+            22,
+            0,
+            PictureCodingType::Intra,
+            1,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            false,
+            ChromaFormat::Yuv420,
+            false,
+            false,
+            0,
+            true,
+        );
+        walk_slice(&buf, nonlinear).unwrap();
+    }
+
+    #[test]
+    fn block_decoding_decoded_blocks_omitted_for_records_with_no_coded_blocks() {
+        // Wire-only round-30 contract: a non-intra MB whose
+        // `macroblock_pattern == 0` carries no coded blocks at
+        // all. With block decoding ON the walker still emits a
+        // record but `decoded_blocks` is `Some(empty)` because
+        // every `pattern_code[i]` is `false`.
+        //
+        // Build a P-picture MB with Table B-3 row "MC, not
+        // coded" (`001`, 3 bits): macroblock_motion_forward == 1,
+        // macroblock_pattern == 0, macroblock_intra == 0.
+        // motion_vectors(0) follows (we use the zero-vector form
+        // with f_code == 1). No CBP, no blocks.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        // Table B-3 "MC, not coded" = `001` (3 bits).
+        bw.write_u32(0b001, 3);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_block_decoding(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            true,
+            1,
+            1,
+            1,
+            1,
+            false,
+            ChromaFormat::Yuv420,
+            false,
+            false,
+            0,
+            false,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+        let blocks = walk.macroblocks[0]
+            .decoded_blocks
+            .as_ref()
+            .expect("§6.2.6 ran");
+        assert!(blocks.is_empty());
     }
 }

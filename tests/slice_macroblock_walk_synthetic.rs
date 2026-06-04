@@ -9,8 +9,8 @@
 
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::{
-    walk_slice, ChromaFormat, MotionVectorsKind, PictureCodingType, PictureStructure, SliceContext,
-    SliceHeader, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
+    walk_slice, ChromaFormat, MotionVectorsKind, Mpeg2ColourComponent, PictureCodingType,
+    PictureStructure, SliceContext, SliceHeader, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
 
 /// Slice-header builder for a non-scalable 352×240 picture
@@ -477,5 +477,154 @@ fn walk_intra_frame_picture_emits_dct_type_when_not_frame_pred_frame_dct() {
     assert_eq!(walk.macroblocks.len(), 2);
     assert_eq!(walk.macroblocks[0].dct_type, Some(true));
     assert_eq!(walk.macroblocks[1].dct_type, Some(false));
+    assert_eq!(walk.past_intra_address, 1);
+}
+
+// ----- §6.2.6 `block(i)` driver wiring (round 232) ---------------
+
+/// Table B-12 size 0 = `100` (3 bits).
+fn write_dc_size_zero_luma(bw: &mut BitWriter) {
+    bw.write_u32(0b100, 3);
+}
+/// Table B-13 size 0 = `00` (2 bits).
+fn write_dc_size_zero_chroma(bw: &mut BitWriter) {
+    bw.write_u32(0b00, 2);
+}
+/// Table B-14 EOB = `10` (2 bits).
+fn write_eob_b14(bw: &mut BitWriter) {
+    bw.write_u32(0b10, 2);
+}
+
+/// One §6.2.6 intra block whose DC size is 0 + immediate EOB.
+fn write_dc_zero_intra_block(bw: &mut BitWriter, is_luma: bool) {
+    if is_luma {
+        write_dc_size_zero_luma(bw);
+    } else {
+        write_dc_size_zero_chroma(bw);
+    }
+    write_eob_b14(bw);
+}
+
+/// Six §6.2.6 intra blocks (4 luma + 1 Cb + 1 Cr) for a 4:2:0 MB.
+fn write_dc_zero_intra_macroblock_420(bw: &mut BitWriter) {
+    for _ in 0..4 {
+        write_dc_zero_intra_block(bw, true);
+    }
+    write_dc_zero_intra_block(bw, false);
+    write_dc_zero_intra_block(bw, false);
+}
+
+#[test]
+fn walk_slice_with_block_decoding_emits_six_blocks_per_intra_macroblock() {
+    // §6.2.4 → §6.2.5 → §6.2.6 from a body-only buffer. The
+    // walker's contract is "feed me a buffer starting at the
+    // post-slice-header cursor"; the existing integration tests
+    // ([`parse_slice_header_then_walk_macroblocks_in_i_picture`])
+    // explain the body-only shape — `walk_slice` doesn't accept
+    // a bit-aligned cursor, so the body is built independently
+    // from the slice header.
+    let mut body_bw = BitWriter::new();
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    write_dc_zero_intra_macroblock_420(&mut body_bw);
+    let body_buf = append_stop(body_bw);
+
+    let ctx = SliceWalkContext::first_slice_with_block_decoding(
+        22,
+        0,
+        PictureCodingType::Intra,
+        14,
+        PictureStructure::Frame,
+        true,
+        1,
+        1,
+        1,
+        1,
+        false,
+        ChromaFormat::Yuv420,
+        false, // intra_vlc_format
+        false, // alternate_scan
+        0,     // intra_dc_precision
+        false, // q_scale_type
+    );
+    let walk = walk_slice(&body_buf, ctx).unwrap();
+    assert_eq!(walk.macroblocks.len(), 1);
+    let mb0 = &walk.macroblocks[0];
+    let blocks = mb0.decoded_blocks.as_ref().expect("§6.2.6 ran");
+    assert_eq!(blocks.len(), 6);
+    assert_eq!(blocks[0].component, Mpeg2ColourComponent::Y);
+    assert_eq!(blocks[4].component, Mpeg2ColourComponent::Cb);
+    assert_eq!(blocks[5].component, Mpeg2ColourComponent::Cr);
+    // §7.2.1: with `intra_dc_precision == 0` the DC predictor
+    // reset value is 128 (Table 7-2). With every block having
+    // `dct_diff == 0` every QFS[0] equals 128.
+    for b in blocks {
+        assert_eq!(b.decoded.qfs[0], 128);
+    }
+}
+
+#[test]
+fn walk_slice_with_block_decoding_off_keeps_decoded_blocks_none() {
+    // Confirm the round-30..33 contract: when the caller uses the
+    // existing `first_slice` constructor (block decoding off) the
+    // §6.2.6 driver never runs and `decoded_blocks` is `None` on
+    // every record.
+    let mut body_bw = BitWriter::new();
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    let body_buf = append_stop(body_bw);
+
+    let walk = walk_slice(
+        &body_buf,
+        SliceWalkContext::first_slice(22, 0, PictureCodingType::Intra, 14),
+    )
+    .unwrap();
+    assert_eq!(walk.macroblocks.len(), 1);
+    assert!(walk.macroblocks[0].decoded_blocks.is_none());
+}
+
+#[test]
+fn walk_slice_with_block_decoding_chains_two_intra_macroblocks_dc_predictor() {
+    // Two §6.2.6-decoded intra MBs in the same slice — the per-slice
+    // DC predictor is allocated once and fed across MB boundaries
+    // per §7.2.1. Both MBs are DC-only (size 0 → dct_diff = 0), so
+    // both Y DC predictors land on the §7.2.1 reset value 128.
+    let mut body_bw = BitWriter::new();
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    write_dc_zero_intra_macroblock_420(&mut body_bw);
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    write_dc_zero_intra_macroblock_420(&mut body_bw);
+    let body_buf = append_stop(body_bw);
+
+    let ctx = SliceWalkContext::first_slice_with_block_decoding(
+        22,
+        0,
+        PictureCodingType::Intra,
+        14,
+        PictureStructure::Frame,
+        true,
+        1,
+        1,
+        1,
+        1,
+        false,
+        ChromaFormat::Yuv420,
+        false,
+        false,
+        0,
+        false,
+    );
+    let walk = walk_slice(&body_buf, ctx).unwrap();
+    assert_eq!(walk.macroblocks.len(), 2);
+    let mb0 = walk.macroblocks[0].decoded_blocks.as_ref().unwrap();
+    let mb1 = walk.macroblocks[1].decoded_blocks.as_ref().unwrap();
+    assert_eq!(mb0.len(), 6);
+    assert_eq!(mb1.len(), 6);
+    assert_eq!(mb0[0].decoded.qfs[0], 128);
+    assert_eq!(mb1[0].decoded.qfs[0], 128);
+    // §6.3.17.1: past_intra_address advances to the last intra
+    // MB's address.
     assert_eq!(walk.past_intra_address, 1);
 }

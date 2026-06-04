@@ -164,6 +164,36 @@ for field pictures, `mv_count = 1`, `dmv = 0`) is synthesised
 internally so `motion_vectors()` can still parse for the
 `frame_pred_frame_dct == 1` motion-MB and intra-concealment-MV
 paths.
+Round 34 wires the **§6.2.6 `block(i)` driver** into
+`slice_macroblock_walk::walk_slice` as an opt-in path: when the
+new `SliceWalkContext::block_decoding_enabled` flag is `true`,
+the walker calls `mpeg2_decode_macroblock_blocks` for every
+coded block per the parsed `pattern_code[i]`, chaining §7.2.1 DC
+prelude (intra blocks only), §7.2.2 residual VLC walker (B-14 /
+B-15 with §7.2.2.2 FIRST/NEXT alternation), §7.3 inverse scan,
+§7.4 inverse quantisation (Table 7-5 weighting-matrix
+selection), and §A 8×8 IDCT into a single `bitstream →
+f[y][x]` pass per coded block. The §7.2.1 per-component DC
+predictor `dc_dct_pred[cc]` is allocated at slice start with the
+Table 7-2 reset for the active `intra_dc_precision` and carried
+across macroblocks (reset on every non-intra MB by the inner
+driver). `SliceWalkContext` grows five new fields:
+`intra_vlc_format`, `alternate_scan`, `intra_dc_precision`
+(Table 6-13 `0..=3` range enforced before the loop ever runs),
+`q_scale_type` (driving §7.4.2.2 Table 7-6 resolution from
+`quantiser_scale_code` to `quantiser_scale_value`), and
+`block_decoding_enabled`. The four existing constructors
+default the new fields to "block decoding off" so the
+round-30..33 contract holds bit-identically. A new
+`first_slice_with_block_decoding` constructor surfaces the full
+state and turns the gate on. `MacroblockRecord` gains
+`decoded_blocks: Option<Vec<DecodedBlock>>` — `None` in the
+wire-only path, `Some(empty)` for a decoded MB with zero coded
+blocks (e.g. P-picture "MC, not coded"), or `Some([…])` with
+one entry per coded block (each carrying the full reconstruction
+plus the post-EOB bit cursor). The §6.3.7 default weighting
+matrices are used — `quant_matrix_extension()` downloadable-
+matrix support is a separate follow-up clause.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
