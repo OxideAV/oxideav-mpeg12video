@@ -8,6 +8,27 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 238: §7.6.3.1 PMV reconstruction wired into the §6.2.5
+  `motion_vectors()` parser path. New
+  `pmv::decode_motion_vector(pmv, r, s, t, motion_code,
+  motion_residual, f_code)` — the brief-signature per-component
+  entry point that wraps the round-12 `reconstruct_component`
+  for the dominant non-vertical-half-pred case, threading the
+  resulting `vector'[r][s][t]` back into `pmv[r][s][t]`. New
+  `slice_macroblock_walk::reconstruct_record_motion_vectors(record,
+  pmv, ctx)` — the wire-to-recon helper that reads a
+  `MacroblockRecord`'s parsed `motion_vectors_forward` /
+  `motion_vectors_backward`, runs `reconstruct_motion_vector`
+  per `(r, s)` slot, and returns `ReconstructedMotionVectors`
+  carrying per-`(r, s)` `ReconstructedVector` pairs (horizontal
+  + vertical post-wrap `vector'[r][s][:]`). Honours the
+  §6.3.17.1 / Table 6-19 absent-modes-tail default through the
+  existing `effective_motion_type` derivation. Eleven new
+  bit-exact tests cover the worked-example surface
+  (zero-code, f_code-2 / f_code-3 residual paths with sign
+  flip, wrap-around in both directions, residual presence
+  gating, slot isolation) and the two-MB PMV accumulation
+  across the slice walker.
 - round 34: MPEG-2 §6.2.6 `block(i)` driver wired into the
   slice walker as an opt-in path. `slice_macroblock_walk::walk_slice`
   now calls [`crate::mpeg2_decode_macroblock_blocks`] for every

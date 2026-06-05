@@ -432,9 +432,9 @@ pub use picture_header::{
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
 };
 pub use pmv::{
-    compute_delta, reconstruct_component, reconstruct_motion_vector, scale_chroma,
-    update_predictors, vector_range, Component, Direction, Pmv, PmvUpdateContext, PmvUpdateOutcome,
-    ReconstructedComponent, ScaledMotionVector, VectorIndex,
+    compute_delta, decode_motion_vector, reconstruct_component, reconstruct_motion_vector,
+    scale_chroma, update_predictors, vector_range, Component, Direction, Pmv, PmvUpdateContext,
+    PmvUpdateOutcome, ReconstructedComponent, ScaledMotionVector, VectorIndex,
 };
 pub use quantizer_scale::{QuantizerScale, QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 pub use sequence_extension::{
@@ -450,7 +450,8 @@ pub use slice_header::{
     SliceContext, SliceHeader, SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN,
 };
 pub use slice_macroblock_walk::{
-    walk_slice, MacroblockRecord, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
+    reconstruct_record_motion_vectors, walk_slice, MacroblockRecord, ReconstructedMotionVectors,
+    ReconstructedVector, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
 
 /// Crate-local error type. Each variant is raised at most by the

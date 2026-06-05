@@ -341,6 +341,66 @@ pub fn reconstruct_component(
     })
 }
 
+/// §7.6.3.1 per-component entry point with the spec's named arguments
+/// (`r`, `s`, `motion_code`, `motion_residual`, `f_code`).
+///
+/// This is the **component-level** wiring used by the round-238
+/// `motion_vectors()` driver to chain the §6.2.5.2.1 wire bits into
+/// the §7.6.3.1 reconstruction without forcing callers to spell out
+/// every gating field of [`reconstruct_component`]. It assumes the
+/// dominant case — no vertical-half-pred (`mv_format == frame` *or*
+/// `picture_structure == field picture`) — and stores the resulting
+/// PMV value back into `pmv[r][s][t]`. Use [`reconstruct_component`]
+/// directly when the `(mv_format, picture_structure, t)` combination
+/// requires the §7.6.3.1 vertical-half-pred branch.
+///
+/// Arguments:
+/// * `pmv` — the PMV-slot bank; the function reads `pmv[r][s][t]`,
+///   reconstructs `vector'[r][s][t]` per §7.6.3.1, and writes the
+///   resulting predictor back into `pmv[r][s][t]`.
+/// * `r`, `s`, `t` — Table 7-7 PMV-slot indices the spec's procedure
+///   reads / writes.
+/// * `motion_code` — the §6.2.5.2.1 `motion_code[r][s][t]` value
+///   (range `-16..=16`).
+/// * `motion_residual` — the §6.2.5.2.1 `motion_residual[r][s][t]`
+///   value when present (`f_code != 1 && motion_code != 0`), else
+///   `None`.
+/// * `f_code` — `f_code[s][t]` from `picture_coding_extension()`
+///   (range `1..=9`).
+///
+/// Returns the [`ReconstructedComponent`] for the post-wrap
+/// `vector'[r][s][t]` and the new PMV value (here equal to
+/// `vector_prime` since this entry point excludes the vertical-half-
+/// pred path).
+///
+/// Errors mirror [`reconstruct_component`]; on error the PMV slot is
+/// left untouched.
+pub fn decode_motion_vector(
+    pmv: &mut Pmv,
+    r: VectorIndex,
+    s: Direction,
+    t: Component,
+    motion_code: i32,
+    motion_residual: Option<u32>,
+    f_code: u8,
+) -> Result<ReconstructedComponent> {
+    // §7.6.3.1: this convenience entry skips the vertical-half-pred
+    // branch by construction. The Frame/Frame combination is the only
+    // one in which the branch is suppressed for both component
+    // indices, so it's the natural placeholder.
+    let recon = reconstruct_component(
+        motion_code,
+        motion_residual,
+        f_code,
+        pmv.get(r, s, t),
+        MvFormat::Frame,
+        PictureStructure::Frame,
+        t,
+    )?;
+    pmv.set(r, s, t, recon.new_pmv);
+    Ok(recon)
+}
+
 /// §7.6.3.1 driven from a parsed [`MotionVector`]: reconstruct both
 /// components (`t = 0` and `t = 1`) of one of the macroblock's motion
 /// vectors and update the corresponding two PMV slots.
@@ -1255,6 +1315,275 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    // ---- §7.6.3.1 decode_motion_vector (brief-signature wiring) ----
+
+    #[test]
+    fn decode_motion_vector_zero_code_passes_through_predictor() {
+        // f_code=1, motion_code=0, residual absent: §7.6.3.1 sets
+        // delta = motion_code = 0. With a prior PMV of 4, vector' = 4
+        // and PMV stays at 4. No vertical-half-pred kicks in (the
+        // entry helper assumes the frame/frame combo).
+        let mut pmv = Pmv::new();
+        pmv.set(
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Horizontal,
+            4,
+        );
+        let recon = decode_motion_vector(
+            &mut pmv,
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Horizontal,
+            0,
+            None,
+            1,
+        )
+        .expect("§7.6.3.1");
+        assert_eq!(recon.delta, 0);
+        assert_eq!(recon.vector_prime, 4);
+        assert_eq!(recon.new_pmv, 4);
+        assert_eq!(recon.range, 32);
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal,
+            ),
+            4
+        );
+    }
+
+    #[test]
+    fn decode_motion_vector_residual_path_with_f_code_two_positive() {
+        // f_code=2 ⇒ r_size=1, f=2. motion_code=+3, motion_residual=1
+        // ⇒ delta = (3-1)*2 + 1 + 1 = 6. Prior PMV=0, vector'=6, PMV=6.
+        // Range: f=2 ⇒ [-32, 31], range=64. No wrap.
+        let mut pmv = Pmv::new();
+        let recon = decode_motion_vector(
+            &mut pmv,
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Horizontal,
+            3,
+            Some(1),
+            2,
+        )
+        .expect("§7.6.3.1");
+        assert_eq!(recon.delta, 6);
+        assert_eq!(recon.vector_prime, 6);
+        assert_eq!(recon.new_pmv, 6);
+        assert_eq!(recon.range, 64);
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal,
+            ),
+            6
+        );
+    }
+
+    #[test]
+    fn decode_motion_vector_negative_sign_flips_delta() {
+        // f_code=3 ⇒ r_size=2, f=4. motion_code=-2, motion_residual=3
+        // ⇒ delta = -((2-1)*4 + 3 + 1) = -8. Prior PMV=10, vector'=2.
+        // Range: f=4 ⇒ [-64, 63], range=128. No wrap.
+        let mut pmv = Pmv::new();
+        pmv.set(
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Horizontal,
+            10,
+        );
+        let recon = decode_motion_vector(
+            &mut pmv,
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Horizontal,
+            -2,
+            Some(3),
+            3,
+        )
+        .expect("§7.6.3.1");
+        assert_eq!(recon.delta, -8);
+        assert_eq!(recon.vector_prime, 2);
+        assert_eq!(recon.new_pmv, 2);
+        assert_eq!(recon.range, 128);
+    }
+
+    #[test]
+    fn decode_motion_vector_modulo_wrap_high_to_low() {
+        // f_code=1 ⇒ range=32, high=15. Prior PMV=15, motion_code=+3
+        // ⇒ delta=3, raw vector' = 18 > 15 ⇒ wrap −32 ⇒ −14.
+        // §7.6.3.1 modulo wrap into [-16, 15].
+        let mut pmv = Pmv::new();
+        pmv.set(
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Vertical,
+            15,
+        );
+        let recon = decode_motion_vector(
+            &mut pmv,
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Vertical,
+            3,
+            None,
+            1,
+        )
+        .expect("§7.6.3.1");
+        assert_eq!(recon.delta, 3);
+        assert_eq!(recon.vector_prime, -14);
+        assert_eq!(recon.new_pmv, -14);
+        assert_eq!(
+            pmv.get(VectorIndex::First, Direction::Forward, Component::Vertical),
+            -14
+        );
+    }
+
+    #[test]
+    fn decode_motion_vector_modulo_wrap_low_to_high() {
+        // f_code=1 ⇒ range=32, low=-16. Prior PMV=-15, motion_code=-3
+        // ⇒ delta=-3, raw vector' = -18 < -16 ⇒ wrap +32 ⇒ +14.
+        let mut pmv = Pmv::new();
+        pmv.set(
+            VectorIndex::Second,
+            Direction::Backward,
+            Component::Horizontal,
+            -15,
+        );
+        let recon = decode_motion_vector(
+            &mut pmv,
+            VectorIndex::Second,
+            Direction::Backward,
+            Component::Horizontal,
+            -3,
+            None,
+            1,
+        )
+        .expect("§7.6.3.1");
+        assert_eq!(recon.delta, -3);
+        assert_eq!(recon.vector_prime, 14);
+        assert_eq!(recon.new_pmv, 14);
+        // Other PMV slots untouched.
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal,
+            ),
+            0
+        );
+        assert_eq!(
+            pmv.get(
+                VectorIndex::Second,
+                Direction::Backward,
+                Component::Horizontal,
+            ),
+            14
+        );
+    }
+
+    #[test]
+    fn decode_motion_vector_rejects_residual_when_formula_forbids() {
+        // f_code=1 forces the "delta = motion_code" shortcut; any
+        // residual supplied is a §6.2.5.2.1 mis-parse and must reject.
+        let mut pmv = Pmv::new();
+        let err = decode_motion_vector(
+            &mut pmv,
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Horizontal,
+            1,
+            Some(0),
+            1,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+        // PMV slot must be untouched on error.
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal,
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn decode_motion_vector_writes_distinct_slots() {
+        // Three consecutive calls into (First,Forward,Horiz),
+        // (First,Forward,Vert), (Second,Forward,Horiz) update only
+        // their own PMV cell and leave the others at zero.
+        let mut pmv = Pmv::new();
+        decode_motion_vector(
+            &mut pmv,
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Horizontal,
+            5,
+            None,
+            1,
+        )
+        .unwrap();
+        decode_motion_vector(
+            &mut pmv,
+            VectorIndex::First,
+            Direction::Forward,
+            Component::Vertical,
+            -3,
+            None,
+            1,
+        )
+        .unwrap();
+        decode_motion_vector(
+            &mut pmv,
+            VectorIndex::Second,
+            Direction::Forward,
+            Component::Horizontal,
+            7,
+            None,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                Component::Horizontal,
+            ),
+            5
+        );
+        assert_eq!(
+            pmv.get(VectorIndex::First, Direction::Forward, Component::Vertical),
+            -3
+        );
+        assert_eq!(
+            pmv.get(
+                VectorIndex::Second,
+                Direction::Forward,
+                Component::Horizontal,
+            ),
+            7
+        );
+        // Backward and second-forward-vertical slots untouched.
+        assert_eq!(
+            pmv.get(VectorIndex::Second, Direction::Forward, Component::Vertical,),
+            0
+        );
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Backward,
+                Component::Horizontal,
+            ),
+            0
+        );
     }
 
     // ---- §7.6.3.4 reset ----

@@ -151,7 +151,7 @@
 use oxideav_core::bits::BitReader;
 
 use crate::coded_block_pattern::CodedBlockPattern;
-use crate::macroblock_modes::{MacroblockModesContext, MacroblockModesTail, MotionType};
+use crate::macroblock_modes::{MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat};
 use crate::macroblock_type::MacroblockType;
 use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 use crate::motion_vector::{MotionVectors, MotionVectorsContext, MotionVectorsKind};
@@ -161,6 +161,7 @@ use crate::mpeg2_macroblock_blocks::{
     decode_macroblock_blocks, DecodedBlock, MacroblockBlockContext,
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
+use crate::pmv::{reconstruct_motion_vector, Direction, Pmv, ReconstructedComponent, VectorIndex};
 use crate::quantizer_scale::{QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 use crate::sequence_extension::ChromaFormat;
 use crate::{Error, Result};
@@ -1221,6 +1222,172 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
         quantiser_scale_code,
         end_bit_position,
     })
+}
+
+/// One reconstructed `vector'[r][s][:]` pair (`t = 0` horizontal,
+/// `t = 1` vertical) per §7.6.3.1, surfaced after running
+/// [`reconstruct_record_motion_vectors`] across a [`MacroblockRecord`].
+///
+/// The horizontal / vertical components are paired so the picture-
+/// level driver can index `[r]` to read the post-reconstruction
+/// motion vector for slot `r` and feed it into the §7.6.4 forming-
+/// predictions pel reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconstructedVector {
+    /// Horizontal component (`vector'[r][s][0]`) and the updated
+    /// `PMV[r][s][0]` value the spec wrote back.
+    pub horizontal: ReconstructedComponent,
+    /// Vertical component (`vector'[r][s][1]`) and the updated
+    /// `PMV[r][s][1]` value.
+    pub vertical: ReconstructedComponent,
+}
+
+/// All reconstructed motion vectors for one macroblock — the forward
+/// (`s = 0`) and backward (`s = 1`) entries, each with up to two
+/// `(horizontal, vertical)` components.
+///
+/// `forward` / `backward` mirror
+/// [`MacroblockRecord::motion_vectors_forward`] /
+/// [`MacroblockRecord::motion_vectors_backward`] presence: `None`
+/// when the wire-syntax parse skipped the field, `Some(vec)` when it
+/// was consumed (with `vec.len() ∈ {1, 2}` matching the parsed
+/// `motion_vector_count`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReconstructedMotionVectors {
+    /// `vector'[r][0][t]` per parsed forward `motion_vectors(0)`
+    /// entry, one row per `motion_vector_count`.
+    pub forward: Option<Vec<ReconstructedVector>>,
+    /// `vector'[r][1][t]` per parsed backward `motion_vectors(1)`
+    /// entry.
+    pub backward: Option<Vec<ReconstructedVector>>,
+}
+
+/// Run the §7.6.3.1 PMV reconstruction for every parsed motion
+/// vector on a single [`MacroblockRecord`] using the round-238
+/// [`crate::pmv::reconstruct_motion_vector`] entry point. Updates
+/// `pmv` in place per Table 7-7 and returns the reconstructed
+/// `vector'[r][s][:]` pairs the §7.6.4 forming-predictions stage
+/// reads.
+///
+/// `mv_format_override`, when `Some`, forces the `mv_format` field
+/// of the [`MotionType`] used for §7.6.3.1 (the §6.3.17.1 /
+/// Table 6-19 default for concealment-MV intra macroblocks where
+/// no `frame_motion_type` was present in the bitstream). When
+/// `None`, the parsed `MotionVectors`' embedded entries' bit-shape
+/// already determines the `mv_format`; this helper picks the
+/// dominant case where every entry's `mv_format` matches the
+/// surrounding macroblock's `effective_motion_type`.
+///
+/// `picture_structure` is the §6.3.11 `picture_structure` (from
+/// the surrounding [`SliceWalkContext::picture_structure`]). It
+/// drives the §7.6.3.1 vertical-half-pred gate.
+///
+/// The §7.6.3.4 reset of `pmv` at slice boundaries is the
+/// caller's responsibility (the picture-level driver does this
+/// before each new slice); this helper assumes the predictor bank
+/// already holds the post-previous-macroblock values per §7.6.3.3.
+///
+/// Errors:
+/// * [`Error::InvalidBitstream`] when a parsed `motion_code` +
+///   `f_code` combination violates §7.6.3.1's `[low, high]` range
+///   even after wrap (see [`crate::pmv::reconstruct_component`]
+///   for the full error surface).
+pub fn reconstruct_record_motion_vectors(
+    record: &MacroblockRecord,
+    pmv: &mut Pmv,
+    ctx: &SliceWalkContext,
+) -> Result<ReconstructedMotionVectors> {
+    let mut out = ReconstructedMotionVectors::default();
+
+    // The motion_type the record carries is the parsed wire value
+    // (`None` if the §6.2.5.1 tail was omitted). The PMV reconstruction
+    // path needs the *effective* motion_type per §6.3.17.1 /
+    // Table 6-19; reuse the same `effective_motion_type` helper the
+    // wire-parse path uses so the mv_format here matches what
+    // [`MotionVectors::parse`] expanded against above.
+    let effective_mt = effective_motion_type(&record.macroblock_type, &derive_tail(record), ctx)?;
+    let mv_format = effective_mt.mv_format;
+
+    if let Some(ref mvs) = record.motion_vectors_forward {
+        let recons = reconstruct_mvs(
+            mvs,
+            Direction::Forward,
+            mv_format,
+            ctx,
+            ctx.f_code_fwd_horiz,
+            ctx.f_code_fwd_vert,
+            pmv,
+        )?;
+        out.forward = Some(recons);
+    }
+    if let Some(ref mvs) = record.motion_vectors_backward {
+        let recons = reconstruct_mvs(
+            mvs,
+            Direction::Backward,
+            mv_format,
+            ctx,
+            ctx.f_code_bwd_horiz,
+            ctx.f_code_bwd_vert,
+            pmv,
+        )?;
+        out.backward = Some(recons);
+    }
+    Ok(out)
+}
+
+/// Rebuild the [`MacroblockModesTail`] payload the §6.2.5.1 parser
+/// stored on the record. The record only carries `motion_type` and
+/// `dct_type`; a re-synthesis matching the wire-time leaf fields is
+/// enough for [`effective_motion_type`] — the `bit_position_after`
+/// is replayed from the record's `body_bit_position` snapshot.
+fn derive_tail(record: &MacroblockRecord) -> MacroblockModesTail {
+    MacroblockModesTail {
+        motion_type: record.motion_type,
+        dct_type: record.dct_type,
+        bit_position_after: record.body_bit_position,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_mvs(
+    mvs: &MotionVectors,
+    s: Direction,
+    mv_format: MvFormat,
+    ctx: &SliceWalkContext,
+    f_code_horiz: u8,
+    f_code_vert: u8,
+    pmv: &mut Pmv,
+) -> Result<Vec<ReconstructedVector>> {
+    let mut out: Vec<ReconstructedVector> = Vec::with_capacity(mvs.entries.len());
+    for (idx, entry) in mvs.entries.iter().enumerate() {
+        // Table 7-7: `r ∈ {0, 1}`. The §6.2.5.2 `r`-loop iterates in
+        // bitstream order, so index 0 → First, index 1 → Second.
+        let r = match idx {
+            0 => VectorIndex::First,
+            1 => VectorIndex::Second,
+            // The §6.2.5.2 parser caps `motion_vector_count` at 2.
+            _ => {
+                return Err(Error::InvalidBitstream(
+                    "reconstruct_record_motion_vectors: motion_vector_count > 2 (Tables 6-17 / 6-18)",
+                ));
+            }
+        };
+        let [h, v] = reconstruct_motion_vector(
+            pmv,
+            &entry.motion_vector,
+            r,
+            s,
+            f_code_horiz,
+            f_code_vert,
+            mv_format,
+            ctx.picture_structure,
+        )?;
+        out.push(ReconstructedVector {
+            horizontal: h,
+            vertical: v,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -2380,6 +2547,206 @@ mod tests {
             true,
         );
         walk_slice(&buf, nonlinear).unwrap();
+    }
+
+    // ---- §7.6.3.1 wire-to-reconstruction wiring ----
+
+    #[test]
+    fn reconstruct_record_zero_vector_leaves_pmv_at_zero() {
+        // P-picture MB with a zero forward motion vector (motion_code
+        // h/v = 0, f_code = 1). §7.6.3.1 delta = 0 in both components,
+        // prior PMV = 0, vector' = 0, PMV stays 0.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_mc_not_coded(&mut bw);
+        // frame_motion_type = `10` (Frame-based), mv_count = 1.
+        bw.write_u32(0b10, 2);
+        write_zero_motion_vectors_frame_one(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            false,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+
+        let mut pmv = Pmv::new();
+        let recon = reconstruct_record_motion_vectors(&walk.macroblocks[0], &mut pmv, &ctx)
+            .expect("§7.6.3.1");
+        let fwd = recon.forward.expect("forward present");
+        assert_eq!(fwd.len(), 1);
+        assert_eq!(fwd[0].horizontal.vector_prime, 0);
+        assert_eq!(fwd[0].horizontal.new_pmv, 0);
+        assert_eq!(fwd[0].vertical.vector_prime, 0);
+        assert_eq!(fwd[0].vertical.new_pmv, 0);
+        assert!(recon.backward.is_none());
+        // PMV state — every slot still zero.
+        for r in [VectorIndex::First, VectorIndex::Second] {
+            for s in [Direction::Forward, Direction::Backward] {
+                for t in [
+                    crate::pmv::Component::Horizontal,
+                    crate::pmv::Component::Vertical,
+                ] {
+                    assert_eq!(pmv.get(r, s, t), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reconstruct_record_threads_pmv_across_two_macroblocks() {
+        // Two-MB slice: each MB carries a forward motion vector with
+        // motion_code horiz = +1 (3-bit Table B-10 code `010`),
+        // motion_code vert = 0 (1-bit `1`). f_code = 1 throughout, so
+        // each call leaves delta = +1 in the horizontal. The first
+        // MB's PMV starts at 0 → vector' = 1 → PMV becomes 1. The
+        // second MB picks up PMV = 1 → vector' = 1 + 1 = 2 → PMV
+        // becomes 2. Confirms §7.6.3.1 PMV accumulation across MBs.
+        let mut bw = BitWriter::new();
+        // MB 0: increment 1, "MC, not coded", frame_motion_type=10,
+        // mv h=+1 (3 bits `010`), mv v=0 (1 bit `1`).
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_mc_not_coded(&mut bw);
+        bw.write_u32(0b10, 2);
+        bw.write_u32(0b010, 3);
+        bw.write_u32(0b1, 1);
+        // MB 1: same shape.
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_mc_not_coded(&mut bw);
+        bw.write_u32(0b10, 2);
+        bw.write_u32(0b010, 3);
+        bw.write_u32(0b1, 1);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            false,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 2);
+
+        let mut pmv = Pmv::new();
+        let recon0 = reconstruct_record_motion_vectors(&walk.macroblocks[0], &mut pmv, &ctx)
+            .expect("§7.6.3.1 MB0");
+        let f0 = recon0.forward.unwrap();
+        assert_eq!(f0[0].horizontal.vector_prime, 1);
+        assert_eq!(f0[0].horizontal.new_pmv, 1);
+        assert_eq!(f0[0].vertical.vector_prime, 0);
+
+        let recon1 = reconstruct_record_motion_vectors(&walk.macroblocks[1], &mut pmv, &ctx)
+            .expect("§7.6.3.1 MB1");
+        let f1 = recon1.forward.unwrap();
+        assert_eq!(f1[0].horizontal.vector_prime, 2);
+        assert_eq!(f1[0].horizontal.new_pmv, 2);
+        // Vertical PMV stays 0; vert motion_code was 0 every MB.
+        assert_eq!(f1[0].vertical.vector_prime, 0);
+
+        // Final PMV state: [First][Forward][Horizontal] = 2.
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                crate::pmv::Component::Horizontal,
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn reconstruct_record_handles_absent_motion_vectors() {
+        // Intra MB without concealment_motion_vectors: no
+        // motion_vectors() consumed, so both forward / backward come
+        // back `None` from the reconstruction helper. PMV unchanged.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Intra,
+            8,
+            PictureStructure::Frame,
+            true,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+
+        let mut pmv = Pmv::new();
+        // Seed a non-zero PMV value so we can assert the helper
+        // didn't touch it.
+        pmv.set(
+            VectorIndex::First,
+            Direction::Forward,
+            crate::pmv::Component::Horizontal,
+            42,
+        );
+        let recon = reconstruct_record_motion_vectors(&walk.macroblocks[0], &mut pmv, &ctx)
+            .expect("§7.6.3.1 no-op");
+        assert!(recon.forward.is_none());
+        assert!(recon.backward.is_none());
+        assert_eq!(
+            pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                crate::pmv::Component::Horizontal,
+            ),
+            42
+        );
+    }
+
+    #[test]
+    fn reconstruct_record_modulo_wraps_when_delta_pushes_past_range() {
+        // P-picture MB with motion_code = -3 in the horizontal. With
+        // f_code = 1 (range [-16, 15]) and a prior PMV of -15, the
+        // §7.6.3.1 raw sum is -18, which wraps +32 to +14.
+        //
+        // motion_code = -3 → Table B-10 row `0001 1` (5 bits).
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_mc_not_coded(&mut bw);
+        bw.write_u32(0b10, 2); // frame_motion_type = Frame-based
+                               // motion_code = -3 → Table B-10 row `0001 1` (5 bits, value
+                               // 0x03). Spelt as a plain integer to dodge the 4-bit clippy
+                               // byte-grouping lint without an allow blanket.
+        bw.write_u32(0x03, 5);
+        bw.write_u32(0b1, 1); // motion_code vert = 0
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            false,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 1);
+
+        let mut pmv = Pmv::new();
+        pmv.set(
+            VectorIndex::First,
+            Direction::Forward,
+            crate::pmv::Component::Horizontal,
+            -15,
+        );
+        let recon = reconstruct_record_motion_vectors(&walk.macroblocks[0], &mut pmv, &ctx)
+            .expect("§7.6.3.1");
+        let f = recon.forward.unwrap();
+        assert_eq!(f[0].horizontal.delta, -3);
+        assert_eq!(f[0].horizontal.vector_prime, 14);
+        assert_eq!(f[0].horizontal.new_pmv, 14);
     }
 
     #[test]

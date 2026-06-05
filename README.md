@@ -164,6 +164,29 @@ for field pictures, `mv_count = 1`, `dmv = 0`) is synthesised
 internally so `motion_vectors()` can still parse for the
 `frame_pred_frame_dct == 1` motion-MB and intra-concealment-MV
 paths.
+Round 238 wires the **§7.6.3.1 PMV reconstruction** into the
+§6.2.5 `motion_vectors()` parser path. The round-12 `pmv` module
+already implemented `reconstruct_component` /
+`reconstruct_motion_vector` (the §7.6.3.1 per-component arithmetic
+with the `[-16f, 16f-1]` modulo wrap into `range = 32f`, the
+vertical-half-pred branch for mv_format=field/frame-picture, and
+the post-wrap `[low, high]` conformance check); round 238 adds the
+brief-signature direct entry point `decode_motion_vector(pmv, r,
+s, t, motion_code, motion_residual, f_code)` and the wire-to-
+recon helper `reconstruct_record_motion_vectors(record, pmv, ctx)`
+that runs §7.6.3.1 against a `MacroblockRecord`'s parsed
+`motion_vectors_forward` / `motion_vectors_backward` payloads,
+threading the picture-level `Pmv` state into the existing wire-
+parse output. The helper returns one `ReconstructedVector` per
+parsed `(r, s)` motion vector, paired horizontal + vertical,
+suitable for the §7.6.4 forming-predictions pel reader. Eleven
+new bit-exact tests cover the `decode_motion_vector` worked
+examples (zero pass-through, f_code=2/3 residual paths with sign
+flip, wrap-around low-to-high and high-to-low, residual presence
+gating, distinct-slot isolation) and the wire-to-recon path
+(zero-vector identity, two-MB PMV accumulation across
+macroblocks, absent-motion-vectors no-op, and §7.6.3.1 modulo
+wrap end-to-end through the slice walker).
 Round 34 wires the **§6.2.6 `block(i)` driver** into
 `slice_macroblock_walk::walk_slice` as an opt-in path: when the
 new `SliceWalkContext::block_decoding_enabled` flag is `true`,
