@@ -8,6 +8,47 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 241: §6.2.3.2 `quant_matrix_extension()` parser plus the
+  §6.3.11 per-sequence weighting-matrix state machine. New module
+  `quant_matrix_extension` with `QuantMatrixExtension` (the four
+  optional `intra` / `non_intra` / `chroma_intra` /
+  `chroma_non_intra` payloads, each a `QuantiserMatrixPayload`),
+  `QuantiserMatrixState` (the four §7.4.2.1 / Table 7-5
+  `w`-indexed `[[u8; 8]; 8]` slots, initialised to the §6.3.7
+  defaults — intra is the published Wf matrix shared with the
+  MPEG-1 default, non-intra is the all-16 matrix), and
+  `QUANT_MATRIX_EXTENSION_ID = 0b0011` (Table 6-2). Parser
+  enforces every §6.3.11 rejection site: 32-bit
+  `extension_start_code` (`0x000001B5`), 4-bit
+  `extension_start_code_identifier` (`0011`),
+  `chroma_format == 4:2:0 ⇒ load_chroma_*_quantiser_matrix ==
+  '0'` (both flags), `intra_quantiser_matrix[0] == 8` (luma and
+  chroma), and `value zero is forbidden` for every byte of every
+  loaded payload. `QuantiserMatrixPayload::to_matrix` lifts the
+  on-wire §7.3.1 default-zigzag-order bytes through
+  `mpeg2_inverse_scan::inverse_scan_table(false)` into the
+  row-major `W[v][u]` layout. `QuantMatrixExtension::apply`
+  composes the four optionals against a
+  `QuantiserMatrixState` per the §6.3.11 sequencing
+  (luma-load first, optional chroma-load override second; the
+  4:2:2 / 4:4:4 luma load copies into the chroma slot, while the
+  4:2:0 luma load leaves chroma untouched).
+  `QuantiserMatrixState::reset_to_defaults` performs the
+  §6.3.11 `sequence_header_code` reset. 24 new bit-exact unit
+  tests cover the positive parses (no-load / intra-only /
+  non-intra-only / all-four), the 4:2:0 chroma-flag rejection
+  pair, the byte-zero rejection pair, the intra first-byte-8
+  rejection pair, the wrong-start-code / wrong-id / short-buffer
+  rejection trio, the byte-alignment count for both empty and
+  fully-loaded extensions, the §7.3.1 `to_matrix` round-trip, and
+  the four `apply` sequencing cases (luma→chroma copy at 4:2:2 /
+  4:4:4 vs. no copy at 4:2:0, chroma-load override on top of a
+  same-extension luma-load, default reset). The walker's existing
+  §6.3.7-default fallback in
+  [`slice_macroblock_walk::walk_slice`] is now flagged with a
+  forward pointer at the comment site so the next round can wire
+  the state through `SliceWalkContext` without re-reading the
+  spec.
 - round 238: §7.6.3.1 PMV reconstruction wired into the §6.2.5
   `motion_vectors()` parser path. New
   `pmv::decode_motion_vector(pmv, r, s, t, motion_code,

@@ -1113,12 +1113,18 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
             // which is the spec-correct input to Table 7-6 per
             // §7.4.2.2 (the override applies to *this* MB).
             let quantiser_scale_value = quantiser_scale(quantiser_scale_code, ctx.q_scale_type)?;
-            // §6.3.7 default weighting matrices — the walker
-            // does not currently surface the optional
-            // `quant_matrix_extension()` overrides, so every
-            // §7.4.2.1 Table 7-5 `w`-index resolves to the
-            // §6.3.7 default. Downloadable-matrix support is a
-            // separate follow-up clause.
+            // §6.3.7 default weighting matrices. The
+            // `quant_matrix_extension()` parser
+            // ([`crate::quant_matrix_extension`]) is now in tree
+            // (per §6.2.3.2 / §6.3.11) and emits
+            // [`crate::QuantiserMatrixState`] for the four
+            // §7.4.2.1 Table 7-5 `w`-indices, but the walker's
+            // [`SliceWalkContext`] does not yet carry that
+            // state — surfacing it onto the context (so
+            // user-defined matrices reach
+            // [`MacroblockBlockContext`] verbatim) remains a
+            // follow-up. Until then every `w`-index resolves to
+            // the §6.3.7 default.
             let mb_block_ctx = MacroblockBlockContext::with_default_weight_matrices(
                 ctx.intra_vlc_format,
                 ctx.alternate_scan,

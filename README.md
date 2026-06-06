@@ -217,6 +217,37 @@ one entry per coded block (each carrying the full reconstruction
 plus the post-EOB bit cursor). The §6.3.7 default weighting
 matrices are used — `quant_matrix_extension()` downloadable-
 matrix support is a separate follow-up clause.
+Round 241 lands the **§6.2.3.2 `quant_matrix_extension()` parser**
+and the §6.3.11 per-sequence weighting-matrix state machine in a
+new `quant_matrix_extension` module: `QuantMatrixExtension` holds
+the four optional 64-byte `intra` / `non_intra` / `chroma_intra`
+/ `chroma_non_intra` payloads (`QuantiserMatrixPayload`),
+`QuantiserMatrixState` carries the four §7.4.2.1 / Table 7-5
+`w`-indexed `[[u8; 8]; 8]` slots — initialised to the §6.3.7
+defaults (intra is the published Wf matrix shared with the
+MPEG-1 default; non-intra is the all-16 matrix), and
+`QUANT_MATRIX_EXTENSION_ID = 0b0011` names the Table 6-2
+identifier. Parser enforces every §6.3.11 rejection site:
+32-bit `extension_start_code` (`0x000001B5`), 4-bit
+`extension_start_code_identifier` (`0011`),
+`chroma_format == 4:2:0 ⇒ load_chroma_*_quantiser_matrix ==
+'0'` (both flags), `intra_quantiser_matrix[0] == 8` (luma and
+chroma), and `value zero is forbidden` for every byte of every
+loaded payload. `QuantiserMatrixPayload::to_matrix` lifts the
+on-wire §7.3.1 default-zigzag-order bytes through
+`mpeg2_inverse_scan::inverse_scan_table(false)` into the
+row-major `W[v][u]` layout consumed by §7.4.2.3.
+`QuantMatrixExtension::apply` composes the four optionals
+against a `QuantiserMatrixState` per the §6.3.11 sequencing
+(luma-load first, optional chroma-load override second; the
+4:2:2 / 4:4:4 luma load copies into the chroma slot, while the
+4:2:0 luma load leaves chroma untouched).
+`QuantiserMatrixState::reset_to_defaults` performs the §6.3.11
+post-`sequence_header_code` reset. Wiring the state through
+`SliceWalkContext` into the round-34 block driver is a clean
+follow-up (the walker comment now points to the new module);
+the parser + state in isolation already covers every spec
+rejection site for the syntax element.
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);

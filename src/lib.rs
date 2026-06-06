@@ -334,6 +334,7 @@ pub mod mpeg2_inverse_scan;
 pub mod mpeg2_macroblock_blocks;
 pub mod picture_header;
 pub mod pmv;
+pub mod quant_matrix_extension;
 pub mod quantizer_scale;
 pub mod sequence_extension;
 pub mod sequence_header;
@@ -435,6 +436,9 @@ pub use pmv::{
     compute_delta, decode_motion_vector, reconstruct_component, reconstruct_motion_vector,
     scale_chroma, update_predictors, vector_range, Component, Direction, Pmv, PmvUpdateContext,
     PmvUpdateOutcome, ReconstructedComponent, ScaledMotionVector, VectorIndex,
+};
+pub use quant_matrix_extension::{
+    QuantMatrixExtension, QuantiserMatrixPayload, QuantiserMatrixState, QUANT_MATRIX_EXTENSION_ID,
 };
 pub use quantizer_scale::{QuantizerScale, QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 pub use sequence_extension::{
