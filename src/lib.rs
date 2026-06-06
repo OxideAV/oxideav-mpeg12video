@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–34 — structural sequence-layer
+//! **Status:** rebuild rounds 1–244 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -332,6 +332,7 @@ pub mod mpeg2_dct_coeff;
 pub mod mpeg2_dequantize;
 pub mod mpeg2_inverse_scan;
 pub mod mpeg2_macroblock_blocks;
+pub mod picture_display_extension;
 pub mod picture_header;
 pub mod pmv;
 pub mod quant_matrix_extension;
@@ -427,6 +428,11 @@ pub use mpeg2_macroblock_blocks::{
     DecodedBlock as Mpeg2MacroblockDecodedBlock,
     MacroblockBlockContext as Mpeg2MacroblockBlockContext,
     DEFAULT_WEIGHT_MATRICES as MPEG2_DEFAULT_WEIGHT_MATRICES,
+};
+pub use picture_display_extension::{
+    number_of_frame_centre_offsets, FieldUsage, FrameCentreOffset, FrameCentreOffsetState,
+    PictureDisplayContext, PictureDisplayExtension, MAX_FRAME_CENTRE_OFFSETS,
+    PICTURE_DISPLAY_EXTENSION_ID,
 };
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,

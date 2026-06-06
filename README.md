@@ -248,6 +248,48 @@ post-`sequence_header_code` reset. Wiring the state through
 follow-up (the walker comment now points to the new module);
 the parser + state in isolation already covers every spec
 rejection site for the syntax element.
+Round 244 lands the **§6.2.3.3 `picture_display_extension()`
+parser** plus the §6.3.12 frame-centre offset state machine in a
+new `picture_display_extension` module:
+`PictureDisplayExtension` carries the 1..=3 decoded `(horizontal,
+vertical)` offset pairs in a `Copy`-friendly fixed-capacity array
+(capacity `MAX_FRAME_CENTRE_OFFSETS = 3` per the §6.3.12 cap),
+`PictureDisplayContext` bundles the four picture-layer flags
+(`progressive_sequence`, `picture_structure`, `repeat_first_field`,
+`top_field_first`) the §6.3.12 derivation needs, and the standalone
+`number_of_frame_centre_offsets(ctx)` helper transcribes the
+§6.3.12 pseudocode 1-to-1 (progressive ⇒ {1, 2, 3} via the RFF +
+TFF gates; interlaced ⇒ 1 for field pictures, {2, 3} for frame
+pictures via the RFF gate). `PICTURE_DISPLAY_EXTENSION_ID = 0b0111`
+names the Table 6-2 identifier. Parser enforces every §6.2.3.3
+rejection site: 32-bit `extension_start_code` (`0x000001B5`), 4-bit
+`extension_start_code_identifier` (`0111`), and the two marker_bit
+slots inside every loop iteration (after the 16-bit signed
+horizontal offset and after the 16-bit signed vertical offset).
+The 16-bit signed (`simsbf`) offset components are read via
+`oxideav_core::bits::BitReader::read_i32(16)`, so the full
+`[-32768, 32767]` range round-trips bit-exact (covered by an
+`i16::MIN`/`i16::MAX` boundary test). `FrameCentreOffsetState`
+implements the two §6.3.12 carry-over rules: `reset_to_zero()`
+sets the current `(horizontal, vertical)` pair to `(0, 0)` per
+*"Following a `sequence_header()` the value zero shall be used
+for all frame centre offsets"*, and `apply(&ext)` adopts the
+first transmission-order pair as the new
+*"most recently decoded frame centre offset"* per the §6.3.12
+NOTE that *"each of the missing frame centre offsets have the
+same value"*. The `FieldUsage` enum captures the
+between-pictures vs. per-picture application context so a
+sequence-layer driver can cross-check the §6.3.12 ordering
+constraint (*"a `picture_display_extension()` shall not occur
+unless a `sequence_display_extension()` followed the previous
+`sequence_header()`"*) without re-reading the spec. 22 new
+bit-exact unit tests cover the six §6.3.12 derivation arms, the
+1 / 2 / 3 positive parses, the `i16` boundary round-trip, the
+wrong-start-code / wrong-id / horizontal-marker-zero /
+vertical-marker-zero / short-buffer rejection quintet, the
+encoded byte-length count for all three loop arities (9 / 13 /
+18 bytes), and the three state-machine cases (zero baseline,
+extension absorption, reset).
 
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);

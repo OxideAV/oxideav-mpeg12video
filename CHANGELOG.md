@@ -8,6 +8,34 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 244: §6.2.3.3 `picture_display_extension()` parser plus the
+  §6.3.12 frame-centre offset state machine. New module
+  `picture_display_extension` with `PictureDisplayExtension` (the
+  fixed-capacity 1..=3 array of `(horizontal, vertical)` offset pairs),
+  `FrameCentreOffset` (one signed-16 component pair),
+  `PictureDisplayContext` (the four picture-layer flags §6.3.12 needs:
+  `progressive_sequence`, `picture_structure`, `repeat_first_field`,
+  `top_field_first`), the standalone
+  `number_of_frame_centre_offsets(ctx)` helper transcribing the §6.3.12
+  pseudocode 1-to-1, `FrameCentreOffsetState` carrying the §6.3.12
+  "most recently decoded" pair with `reset_to_zero` (the
+  post-`sequence_header()` reset) and `apply` (extension absorption,
+  taking the first offset per the §6.3.12 NOTE), `FieldUsage` capturing
+  the between-pictures vs. per-picture application context, and
+  `PICTURE_DISPLAY_EXTENSION_ID = 0b0111` naming the Table 6-2
+  identifier. Parser enforces every §6.2.3.3 rejection site: 32-bit
+  `extension_start_code` (`0x000001B5`), 4-bit
+  `extension_start_code_identifier` (`0111`), and the two `marker_bit`
+  slots inside every loop iteration. The 16-bit signed (`simsbf`)
+  offsets round-trip the full `[-32768, 32767]` range via
+  `BitReader::read_i32(16)`. 22 new bit-exact unit tests cover the six
+  §6.3.12 derivation arms, the 1 / 2 / 3 positive wire parses, the
+  `i16::MIN` / `i16::MAX` boundary, the five rejection paths
+  (wrong-start-code, wrong-id, horizontal-marker-zero,
+  vertical-marker-zero, short-buffer), the encoded byte-length count
+  for each loop arity (9 / 13 / 18 bytes — the count-1 / count-3 sizes
+  are post-pad), and the three state-machine cases (zero baseline,
+  extension absorption, reset).
 - round 241: §6.2.3.2 `quant_matrix_extension()` parser plus the
   §6.3.11 per-sequence weighting-matrix state machine. New module
   `quant_matrix_extension` with `QuantMatrixExtension` (the four
