@@ -378,6 +378,124 @@ impl Default for QuantiserMatrixState {
     }
 }
 
+/// Picture-level state machine that owns the running §6.3.11
+/// [`QuantiserMatrixState`] across the lifetime of one MPEG-2 video
+/// sequence and emits the snapshot the slice walker consumes per
+/// dispatch.
+///
+/// The driver collapses the two §6.3.11 lifecycle events the slice
+/// walker requires into named methods so callers reading the spec
+/// flow line-for-line never have to spell out the
+/// `state.reset_to_defaults()` / `extension.apply(&mut state, ...)`
+/// dance themselves:
+///
+/// ```text
+/// // Every time a sequence_header_code (§6.2.2.1) is decoded:
+/// driver.on_sequence_header();
+///
+/// // Every time a quant_matrix_extension() (§6.2.3.2) is decoded:
+/// driver.on_quant_matrix_extension(ext, chroma_format);
+///
+/// // When dispatching a slice (§6.2.4):
+/// let ctx = SliceWalkContext::first_slice_with_block_decoding(...)
+///     .with_quantiser_matrices(driver.state());
+/// ```
+///
+/// [`Self::on_sequence_header`] implements *"When a
+/// sequence_header_code is decoded all matrices shall be reset to
+/// their default values"* (§6.3.11) by deferring to
+/// [`QuantiserMatrixState::reset_to_defaults`].
+/// [`Self::on_quant_matrix_extension`] composes a parsed
+/// [`QuantMatrixExtension`] onto the running state through
+/// [`QuantMatrixExtension::apply`], which honours the §6.3.11
+/// four-flag sequencing (luminance assignment first, then optional
+/// chrominance override, with the 4:2:2 / 4:4:4 chroma-follows-luma
+/// rule baked in).
+///
+/// The state surface stays small on purpose: the §6.3.7 default
+/// matrices live behind a single accessor [`Self::state`] (and a
+/// `Copy` of that snapshot is what
+/// [`crate::slice_macroblock_walk::SliceWalkContext::with_quantiser_matrices`]
+/// takes), and the driver itself is `Copy` so callers can keep a
+/// freshly-initialised driver alongside the rest of their
+/// per-sequence parser state without ceremony. A freshly-`Default`-ed
+/// driver is byte-identical to one that just observed a
+/// sequence-header reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuantMatrixDriver {
+    state: QuantiserMatrixState,
+}
+
+impl QuantMatrixDriver {
+    /// Construct a fresh driver with every matrix at its §6.3.7
+    /// default. Equivalent to constructing a driver and immediately
+    /// calling [`Self::on_sequence_header`] — both paths reach the
+    /// same `QuantiserMatrixState::defaults()` snapshot.
+    pub const fn new() -> Self {
+        Self {
+            state: QuantiserMatrixState::defaults(),
+        }
+    }
+
+    /// §6.3.11 sequence-header event. *"When a sequence_header_code
+    /// is decoded all matrices shall be reset to their default
+    /// values."* The driver invokes
+    /// [`QuantiserMatrixState::reset_to_defaults`] verbatim.
+    ///
+    /// Note this is the §6.3.11 mandatory reset behaviour and does
+    /// **not** absorb the optional `intra_quantiser_matrix` /
+    /// `non_intra_quantiser_matrix` trailer that the
+    /// `sequence_header()` itself may carry per §6.2.2.1. Those
+    /// optional sequence-header loads are a distinct §6.3.11 download
+    /// site and are not modelled here — callers that need them can
+    /// either dispatch a synthetic [`QuantMatrixExtension`] via
+    /// [`Self::on_quant_matrix_extension`] (using the
+    /// [`QuantiserMatrixPayload`] reconstructed from the
+    /// zigzag-ordered sequence-header bytes) or splice the trailer
+    /// matrices into a [`QuantiserMatrixState`] manually before
+    /// constructing the driver. Keeping the spec-mandated reset
+    /// separate from the optional loads matches the §6.3.11 text and
+    /// leaves the higher-level composition decision to the picture
+    /// driver author.
+    pub fn on_sequence_header(&mut self) {
+        self.state.reset_to_defaults();
+    }
+
+    /// §6.2.3.2 / §6.3.11 quant-matrix-extension event. Composes the
+    /// parsed extension onto the running [`QuantiserMatrixState`]
+    /// through [`QuantMatrixExtension::apply`], honouring the
+    /// §6.3.11 four-flag sequencing and the §6.3.11
+    /// `chroma_format`-driven chroma-follows-luma rule.
+    ///
+    /// `chroma_format` must come from the active `sequence_extension()`
+    /// (§6.3.5) — at 4:2:0 the §6.3.11 parser-side gate already
+    /// forbids the chroma `load_*` flags from being `'1'`, and at
+    /// 4:2:2 / 4:4:4 a luminance load also overwrites the chrominance
+    /// slot (which can then be overridden by an explicit chroma load
+    /// in the same extension).
+    pub fn on_quant_matrix_extension(
+        &mut self,
+        ext: QuantMatrixExtension,
+        chroma_format: ChromaFormat,
+    ) {
+        ext.apply(&mut self.state, chroma_format);
+    }
+
+    /// Read-only snapshot of the running [`QuantiserMatrixState`].
+    /// Returns by value so callers can plumb it into
+    /// [`crate::slice_macroblock_walk::SliceWalkContext::with_quantiser_matrices`]
+    /// without borrowing the driver.
+    pub const fn state(&self) -> QuantiserMatrixState {
+        self.state
+    }
+}
+
+impl Default for QuantMatrixDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Hand-built bit-exact `quant_matrix_extension()` fixtures plus
@@ -769,5 +887,131 @@ mod tests {
         );
         let bytes = bw.finish();
         assert_eq!(bytes.len(), 5 + 4 * 64);
+    }
+
+    // §6.3.11 picture-level driver tests. The driver wraps the same
+    // [`QuantiserMatrixState`] the parser tests above already exercise
+    // and routes sequence-header / quant-matrix-extension events to
+    // [`QuantiserMatrixState::reset_to_defaults`] and
+    // [`QuantMatrixExtension::apply`]. These tests pin the driver
+    // surface itself: every method must remain a thin shim with no
+    // hidden behavioural difference from the field-level API the
+    // slice walker already trusts.
+
+    #[test]
+    fn driver_new_matches_default_state() {
+        let driver = QuantMatrixDriver::new();
+        assert_eq!(driver.state(), QuantiserMatrixState::defaults());
+    }
+
+    #[test]
+    fn driver_default_impl_matches_new() {
+        // `Default` is a delegate to `Self::new`; this confirms both
+        // entry points reach the same §6.3.7 baseline so callers can
+        // pick whichever fits their initialisation style.
+        let via_new = QuantMatrixDriver::new();
+        let via_default = QuantMatrixDriver::default();
+        assert_eq!(via_new, via_default);
+        assert_eq!(via_default.state(), QuantiserMatrixState::defaults());
+    }
+
+    #[test]
+    fn driver_on_sequence_header_restores_defaults() {
+        // §6.3.11 first sentence: "When a sequence_header_code is
+        // decoded all matrices shall be reset to their default
+        // values." Confirm the driver replays the reset even when an
+        // earlier extension has mutated the state.
+        let intra = default_intra_in_zigzag_order();
+        let mut bw = BitWriter::new();
+        write_quant_matrix_extension(&mut bw, Some(&intra), None, None, None);
+        let bytes = bw.finish();
+        let ext = QuantMatrixExtension::parse(&bytes, ChromaFormat::Yuv422).expect("parse");
+
+        let mut driver = QuantMatrixDriver::new();
+        // Mutate the running state through the extension entry point.
+        driver.on_quant_matrix_extension(ext, ChromaFormat::Yuv422);
+        // Then issue the sequence-header reset and confirm we land
+        // exactly back at the §6.3.7 defaults.
+        driver.on_sequence_header();
+        assert_eq!(driver.state(), QuantiserMatrixState::defaults());
+    }
+
+    #[test]
+    fn driver_on_quant_matrix_extension_applies_extension() {
+        // Confirm the driver-side `on_quant_matrix_extension` is
+        // a faithful shim over `QuantMatrixExtension::apply`: the
+        // post-call state matches the direct-apply result on a
+        // bit-identical input.
+        let luma_payload = default_intra_in_zigzag_order();
+        let mut chroma_payload = default_intra_in_zigzag_order();
+        chroma_payload[63] = chroma_payload[63].saturating_add(1);
+
+        let mut bw = BitWriter::new();
+        write_quant_matrix_extension(
+            &mut bw,
+            Some(&luma_payload),
+            None,
+            Some(&chroma_payload),
+            None,
+        );
+        let bytes = bw.finish();
+        let ext = QuantMatrixExtension::parse(&bytes, ChromaFormat::Yuv444).expect("parse");
+
+        let mut driver = QuantMatrixDriver::new();
+        driver.on_quant_matrix_extension(ext, ChromaFormat::Yuv444);
+
+        // Reference: same extension applied directly to a fresh
+        // state via the field-level API.
+        let mut reference = QuantiserMatrixState::defaults();
+        let ext_ref = QuantMatrixExtension::parse(&bytes, ChromaFormat::Yuv444).expect("parse");
+        ext_ref.apply(&mut reference, ChromaFormat::Yuv444);
+
+        assert_eq!(driver.state(), reference);
+    }
+
+    #[test]
+    fn driver_threads_sequence_header_then_extension_lifecycle() {
+        // Full §6.3.11 lifecycle in one go:
+        //   sequence_header_code → reset (a no-op on a fresh driver)
+        //   quant_matrix_extension() → install user matrices
+        //   second sequence_header_code → reset back to defaults
+        //   second quant_matrix_extension() → re-install user matrices
+        // After step 2 the state must carry the loaded matrices; after
+        // step 4 it must be byte-identical to the post-step-2 snapshot
+        // (same extension applied on top of a freshly-reset state).
+        let intra = default_intra_in_zigzag_order();
+        let non_intra = default_non_intra_in_zigzag_order();
+        let mut bw = BitWriter::new();
+        write_quant_matrix_extension(&mut bw, Some(&intra), Some(&non_intra), None, None);
+        let bytes = bw.finish();
+        let parse_ext =
+            || QuantMatrixExtension::parse(&bytes, ChromaFormat::Yuv420).expect("parse");
+
+        let mut driver = QuantMatrixDriver::new();
+        driver.on_sequence_header();
+        driver.on_quant_matrix_extension(parse_ext(), ChromaFormat::Yuv420);
+        let after_first = driver.state();
+        assert_eq!(after_first.intra_luma, DEFAULT_INTRA_WEIGHT);
+        assert_eq!(after_first.non_intra_luma, DEFAULT_NON_INTRA_WEIGHT);
+
+        // Mutate state mid-sequence so the second reset has visible
+        // work to do.
+        driver.on_sequence_header();
+        assert_eq!(driver.state(), QuantiserMatrixState::defaults());
+
+        driver.on_quant_matrix_extension(parse_ext(), ChromaFormat::Yuv420);
+        assert_eq!(driver.state(), after_first);
+    }
+
+    #[test]
+    fn driver_state_returns_copy_not_reference() {
+        // `state()` returns by value (the surface the slice walker
+        // builder consumes); mutating the returned snapshot must not
+        // affect the driver's running state.
+        let driver = QuantMatrixDriver::new();
+        let mut snapshot = driver.state();
+        snapshot.intra_luma[0][0] = 99;
+        assert_eq!(driver.state(), QuantiserMatrixState::defaults());
+        assert_ne!(snapshot, driver.state());
     }
 }

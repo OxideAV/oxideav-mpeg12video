@@ -317,6 +317,23 @@
 //!   [`slice_macroblock_walk::SliceWalkContext::with_quantiser_matrices`]
 //!   builder and the four Table 7-5 `w`-indexed matrices flow
 //!   verbatim into [`mpeg2_macroblock_blocks::MacroblockBlockContext::weight_matrices`].
+//! * [`quant_matrix_extension::QuantMatrixDriver`] — round 254
+//!   adds the picture-level state machine that collapses the
+//!   §6.3.11 lifecycle (`reset_to_defaults()` on every
+//!   `sequence_header_code`, `extension.apply(...)` on every
+//!   `quant_matrix_extension()`) behind two named event methods
+//!   [`quant_matrix_extension::QuantMatrixDriver::on_sequence_header`]
+//!   and
+//!   [`quant_matrix_extension::QuantMatrixDriver::on_quant_matrix_extension`].
+//!   The driver's
+//!   [`quant_matrix_extension::QuantMatrixDriver::state`] accessor
+//!   returns a [`quant_matrix_extension::QuantiserMatrixState`]
+//!   snapshot the slice-walker builder
+//!   [`slice_macroblock_walk::SliceWalkContext::with_quantiser_matrices`]
+//!   consumes verbatim, so callers reading the §6.3.11 spec flow
+//!   line-for-line no longer have to write out the
+//!   `state.reset_to_defaults(); ext.apply(&mut state, cf);
+//!   ctx.with_quantiser_matrices(state)` dance themselves.
 
 #![warn(missing_debug_implementations)]
 
@@ -457,7 +474,8 @@ pub use pmv::{
     PmvUpdateOutcome, ReconstructedComponent, ScaledMotionVector, VectorIndex,
 };
 pub use quant_matrix_extension::{
-    QuantMatrixExtension, QuantiserMatrixPayload, QuantiserMatrixState, QUANT_MATRIX_EXTENSION_ID,
+    QuantMatrixDriver, QuantMatrixExtension, QuantiserMatrixPayload, QuantiserMatrixState,
+    QUANT_MATRIX_EXTENSION_ID,
 };
 pub use quantizer_scale::{QuantizerScale, QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 pub use sequence_extension::{

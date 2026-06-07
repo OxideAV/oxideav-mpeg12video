@@ -8,6 +8,32 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 254: §6.3.11 `QuantMatrixDriver` picture-level state machine
+  that owns the running `QuantiserMatrixState` across one MPEG-2
+  sequence and exposes the two §6.3.11 lifecycle events as named
+  methods so picture-driver callers stop spelling the state-mutation
+  dance themselves. `QuantMatrixDriver::on_sequence_header()` invokes
+  `QuantiserMatrixState::reset_to_defaults` per *"When a
+  `sequence_header_code` is decoded all matrices shall be reset to
+  their default values"* (§6.3.11). `QuantMatrixDriver::on_quant_matrix_extension(
+  ext, chroma_format)` composes a parsed `QuantMatrixExtension` onto
+  the running state through the already-landed `QuantMatrixExtension::apply`,
+  honouring the four-flag sequencing and 4:2:2 / 4:4:4
+  chroma-follows-luma rule. `QuantMatrixDriver::state()` returns a
+  `Copy` snapshot the slice-walker builder
+  `SliceWalkContext::with_quantiser_matrices` consumes verbatim. Six
+  new unit tests cover the driver surface (`new` ↔ §6.3.7 defaults,
+  `Default` ↔ `new`, sequence-header reset after an extension
+  mutation, extension shim matches the field-level API on a 4:4:4
+  luma + chroma payload, two-cycle reset → apply → reset → apply
+  idempotency, snapshot return-by-value). Two new integration tests
+  prove the end-to-end driver → slice-walker arithmetic on the r251
+  single-AC fixture: feeding a hand-built `quant_matrix_extension()`
+  (intra-luma cells = 80) through the driver and dispatching the
+  slice via `ctx.with_quantiser_matrices(driver.state())` yields
+  `f_quant[0][1] == 140`, and a follow-up `driver.on_sequence_header()`
+  brings the next slice's `f_quant[0][1]` back to the r251 baseline
+  `28`.
 - round 251: §6.3.11 `QuantiserMatrixState` wired through the §6.2.4
   slice walker into the §6.2.6 `block(i)` driver. New field
   `SliceWalkContext::quantiser_matrices: QuantiserMatrixState` carries

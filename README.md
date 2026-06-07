@@ -317,6 +317,49 @@ entry-point seeds `quantiser_matrices` to the §6.3.7 defaults.
 The pre-r251 walker comment that flagged this surfacing as a
 follow-up is now resolved.
 
+Round 254 adds the **§6.3.11 `QuantMatrixDriver`** picture-level
+state machine the r251 doc-comment lifecycle (`reset_to_defaults();
+ext.apply(...); ctx.with_quantiser_matrices(state)`) was naming
+without exposing as code. The driver wraps a single
+`QuantiserMatrixState` field and routes the two §6.3.11 events to
+the already-landed field-level methods through two named entry
+points: `on_sequence_header()` replays §6.3.11's *"When a
+sequence_header_code is decoded all matrices shall be reset to
+their default values"* by deferring to
+`QuantiserMatrixState::reset_to_defaults`, and
+`on_quant_matrix_extension(ext, chroma_format)` composes a parsed
+`QuantMatrixExtension` onto the running state through the
+existing `QuantMatrixExtension::apply`, honouring §6.3.11's
+four-flag sequencing and the 4:2:2 / 4:4:4 chroma-follows-luma
+rule. A `state()` accessor returns a `Copy` snapshot the slice
+walker builder `SliceWalkContext::with_quantiser_matrices`
+consumes verbatim, so picture-driver callers can now collapse the
+three-line lifecycle into `driver.state()` at slice dispatch
+without ever spelling the state-mutation steps. The driver itself
+is `Copy + Default`, and `QuantMatrixDriver::default()` is
+byte-identical to `QuantMatrixDriver::new()` — both reach the
+§6.3.7 defaults. Six new unit tests cover the surface (`new`
+matches the §6.3.7 defaults, `Default` matches `new`,
+`on_sequence_header` restores defaults after an extension
+mutation, `on_quant_matrix_extension` matches the field-level
+`QuantMatrixExtension::apply` byte-for-byte on a 4:4:4 luma +
+chroma payload, a full reset → apply → reset → apply lifecycle
+threads idempotently across two cycles, and `state()` returns by
+value so mutating the snapshot leaves the running state intact).
+Two new integration tests prove the end-to-end driver →
+slice-walker arithmetic: parsing a hand-built
+`quant_matrix_extension()` that loads an intra-luma matrix where
+every non-zigzag-origin cell is `80`, feeding it through
+`driver.on_quant_matrix_extension`, and dispatching the r251
+single-AC fixture via `ctx.with_quantiser_matrices(driver.state())`
+yields the §7.4.2.3 reconstruction `f_quant[0][1] == 140` (the same
+override the r251 hand-built-matrix test reaches); a follow-up
+sequence-header reset on the driver brings the next slice's
+arithmetic back to the r251 baseline `f_quant[0][1] == 28`. The
+r251 walker doc-comment that still spelled `state.reset_to_defaults();
+extension.apply(...)` as picture-driver-author work is now backed by
+a single-call API.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

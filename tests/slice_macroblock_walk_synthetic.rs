@@ -10,8 +10,9 @@
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::{
     walk_slice, ChromaFormat, MotionVectorsKind, Mpeg2ColourComponent, PictureCodingType,
-    PictureStructure, QuantiserMatrixState, SliceContext, SliceHeader, SliceWalkContext,
-    DEFAULT_INTRA_WEIGHT, PAST_INTRA_ADDRESS_RESET,
+    PictureStructure, QuantMatrixDriver, QuantMatrixExtension, QuantiserMatrixState, SliceContext,
+    SliceHeader, SliceWalkContext, DEFAULT_INTRA_WEIGHT, EXTENSION_START_CODE,
+    PAST_INTRA_ADDRESS_RESET, QUANT_MATRIX_EXTENSION_ID,
 };
 
 /// Slice-header builder for a non-scalable 352×240 picture
@@ -827,4 +828,159 @@ fn slice_walk_context_quantiser_matrices_default_matches_table_7_5_defaults() {
         ctx_block.quantiser_matrices,
         QuantiserMatrixState::defaults()
     );
+}
+
+/// Build a synthetic `quant_matrix_extension()` that loads a single
+/// luminance intra matrix where every cell except `[0][0]` equals
+/// `target_value`; the `[0][0]` cell remains `8` per the §6.3.11
+/// "first value shall always be 8" rule. The §7.3.1 inverse zigzag
+/// puts the first zigzag byte (`bytes[0]`) at `[0][0]` and the
+/// second zigzag byte (`bytes[1]`) at `[0][1]`, so a uniform
+/// non-`[0][0]` payload makes the post-decode `intra_luma[0][1]` an
+/// independently-checkable footprint of the extension.
+fn write_quant_matrix_extension_intra_only(bw: &mut BitWriter, target_value: u8) {
+    bw.write_u32(EXTENSION_START_CODE, 32);
+    bw.write_u32(QUANT_MATRIX_EXTENSION_ID, 4);
+    bw.write_bit(true); // load_intra_quantiser_matrix
+    bw.write_u32(8, 8); // bytes[0] — first value shall be 8 (§6.3.11)
+    for _ in 1..64 {
+        bw.write_u32(u32::from(target_value), 8);
+    }
+    bw.write_bit(false); // load_non_intra_quantiser_matrix
+    bw.write_bit(false); // load_chroma_intra_quantiser_matrix
+    bw.write_bit(false); // load_chroma_non_intra_quantiser_matrix
+}
+
+#[test]
+fn quant_matrix_driver_feeds_slice_walker_user_matrices() {
+    // Round-254 picture-level driver end-to-end: the §6.3.11 lifecycle
+    // `driver.on_sequence_header(); driver.on_quant_matrix_extension(...)`
+    // must produce the same `quantiser_matrices` snapshot the slice
+    // walker would otherwise have to build by hand, and the §7.4.2.3
+    // reconstruction step must read the user-downloaded entries
+    // through the new driver → builder path.
+    let mut ext_bw = BitWriter::new();
+    // target = 80 → intra_luma[0][1] = 80 after §7.3.1 inverse scan.
+    write_quant_matrix_extension_intra_only(&mut ext_bw, 80);
+    let ext_bytes = ext_bw.finish();
+    let ext = QuantMatrixExtension::parse(&ext_bytes, ChromaFormat::Yuv420).expect("parse");
+
+    let mut driver = QuantMatrixDriver::new();
+    driver.on_sequence_header();
+    driver.on_quant_matrix_extension(ext, ChromaFormat::Yuv420);
+    // Sanity: the per-zigzag-cell footprint of the synthetic extension
+    // — `intra_luma[0][1] == 80` while `intra_luma[0][0]` keeps the
+    // first-value-shall-be-8 byte at the §7.3.1 zigzag origin.
+    let state = driver.state();
+    assert_eq!(state.intra_luma[0][0], 8);
+    assert_eq!(state.intra_luma[0][1], 80);
+    // Non-intra slot was never loaded so it stays at the §6.3.7
+    // default — the driver does not mutate slots an extension did not
+    // touch.
+    assert_eq!(
+        state.non_intra_luma,
+        QuantiserMatrixState::defaults().non_intra_luma
+    );
+
+    // Same wire bitstream as the r251 baseline / custom tests so the
+    // §7.4.2.3 arithmetic comparison is bit-identical with the
+    // overridden `W[0][1] = 80` path.
+    let mut body_bw = BitWriter::new();
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    write_intra_420_one_ac_then_dc_only(&mut body_bw);
+    let body_buf = append_stop(body_bw);
+
+    let ctx = SliceWalkContext::first_slice_with_block_decoding(
+        22,
+        0,
+        PictureCodingType::Intra,
+        14,
+        PictureStructure::Frame,
+        true,
+        1,
+        1,
+        1,
+        1,
+        false,
+        ChromaFormat::Yuv420,
+        false,
+        false,
+        0,
+        false,
+    )
+    .with_quantiser_matrices(driver.state());
+
+    // The builder snapshot matches the driver's running state.
+    assert_eq!(ctx.quantiser_matrices, state);
+
+    let walk = walk_slice(&body_buf, ctx).unwrap();
+    let blocks = walk.macroblocks[0]
+        .decoded_blocks
+        .as_ref()
+        .expect("§6.2.6 ran");
+    let y0 = &blocks[0];
+    assert_eq!(y0.component, Mpeg2ColourComponent::Y);
+    assert_eq!(y0.decoded.qf[0][1], 1);
+    // F''[0][1] = (2 * 1) * 80 * 28 / 32 = 140 — the same value the
+    // r251 hand-built-matrix test asserts. Reaching it via the
+    // r254 driver → builder pipeline proves the §6.3.11 lifecycle
+    // plumbing matches the in-place-matrix path byte-for-byte.
+    assert_eq!(y0.decoded.f_quant[0][1], 140);
+}
+
+#[test]
+fn quant_matrix_driver_sequence_header_reset_restores_default_arithmetic() {
+    // The complementary lifecycle event: after the driver has
+    // applied a user matrix, a subsequent `sequence_header_code`
+    // must replay the §6.3.7 defaults so the next slice's §7.4.2.3
+    // arithmetic matches the r251 baseline value (`28`).
+    let mut ext_bw = BitWriter::new();
+    write_quant_matrix_extension_intra_only(&mut ext_bw, 80);
+    let ext_bytes = ext_bw.finish();
+    let ext = QuantMatrixExtension::parse(&ext_bytes, ChromaFormat::Yuv420).expect("parse");
+
+    let mut driver = QuantMatrixDriver::new();
+    driver.on_quant_matrix_extension(ext, ChromaFormat::Yuv420);
+    // The custom matrix is now installed.
+    assert_eq!(driver.state().intra_luma[0][1], 80);
+
+    // §6.3.11 sequence-header reset wipes the customisation.
+    driver.on_sequence_header();
+    assert_eq!(driver.state(), QuantiserMatrixState::defaults());
+
+    let mut body_bw = BitWriter::new();
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    write_intra_420_one_ac_then_dc_only(&mut body_bw);
+    let body_buf = append_stop(body_bw);
+
+    let ctx = SliceWalkContext::first_slice_with_block_decoding(
+        22,
+        0,
+        PictureCodingType::Intra,
+        14,
+        PictureStructure::Frame,
+        true,
+        1,
+        1,
+        1,
+        1,
+        false,
+        ChromaFormat::Yuv420,
+        false,
+        false,
+        0,
+        false,
+    )
+    .with_quantiser_matrices(driver.state());
+
+    let walk = walk_slice(&body_buf, ctx).unwrap();
+    let blocks = walk.macroblocks[0]
+        .decoded_blocks
+        .as_ref()
+        .expect("§6.2.6 ran");
+    let y0 = &blocks[0];
+    // Back to the r251 baseline: F''[0][1] = (2 * 1) * 16 * 28 / 32 = 28.
+    assert_eq!(y0.decoded.f_quant[0][1], 28);
 }
