@@ -8,6 +8,33 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 251: §6.3.11 `QuantiserMatrixState` wired through the §6.2.4
+  slice walker into the §6.2.6 `block(i)` driver. New field
+  `SliceWalkContext::quantiser_matrices: QuantiserMatrixState` carries
+  the four §7.4.2.1 Table 7-5 `w`-indexed weighting matrices
+  (`intra_luma`, `non_intra_luma`, `intra_chroma`, `non_intra_chroma`)
+  per-slice; each existing constructor seeds the field to the §6.3.7
+  defaults so prior callers see no behavioural change. New builder
+  method `SliceWalkContext::with_quantiser_matrices` chains a parsed
+  state onto any constructor so the picture-level driver pattern
+  `state.reset_to_defaults(); ext.apply(&mut state, chroma);
+  ctx.with_quantiser_matrices(state)` matches the §6.3.11 lifecycle
+  spelling 1-to-1. Inside `walk_slice` the four matrices are unpacked
+  into the `[[[u8; 8]; 8]; 4]` slot
+  `MacroblockBlockContext::weight_matrices` expects, so the §7.4.2.3
+  reconstruction step `F''[v][u] = (2*QF + k) * W * quantiser_scale /
+  32` picks up the user-downloaded matrices verbatim rather than
+  always reading the §6.3.7 defaults. The pre-r251 walker comment
+  flagging this surfacing as a follow-up is resolved. Three new
+  integration tests pin the wiring: a default-matrix baseline asserts
+  `f_quant[0][1] == 28` against a single AC coefficient at zig-zag
+  index 1 (`(run=0, level=+1)` Table B-14 NEXT-form), the same
+  fixture with `intra_luma[0][1]` overridden to `80` asserts
+  `f_quant[0][1] == 140` (a 5× change driven solely by the matrix
+  override, confirming the new field reaches the §7.4.2.3 arithmetic),
+  and a constructor sweep across `first_slice` / `first_slice_mpeg1`
+  / `first_slice_with_block_decoding` confirms every entry-point
+  defaults to the §6.3.7 matrices.
 - round 244: §6.2.3.3 `picture_display_extension()` parser plus the
   §6.3.12 frame-centre offset state machine. New module
   `picture_display_extension` with `PictureDisplayExtension` (the

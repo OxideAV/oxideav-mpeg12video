@@ -4,7 +4,7 @@
 //! (ITU-T H.262 / ISO/IEC 13818-2) decoder and encoder for the
 //! [oxideav](https://github.com/OxideAV/oxideav) framework.
 //!
-//! **Status:** rebuild rounds 1–244 — structural sequence-layer
+//! **Status:** rebuild rounds 1–251 — structural sequence-layer
 //! parsers, the `group_of_pictures_header()` layer, the
 //! `picture_header()` (+ `picture_coding_extension()`) layer, the
 //! `slice()` header bits, the macroblock-loop syntax through the end
@@ -304,6 +304,19 @@
 //!   §7.2.2 wire-position constraint *"the position of the
 //!   coefficient ... shall not exceed 63"* is enforced as an
 //!   `InvalidBitstream` rejection.
+//! * [`slice_macroblock_walk::SliceWalkContext::quantiser_matrices`]
+//!   — round 251 wires the §6.3.11
+//!   [`quant_matrix_extension::QuantiserMatrixState`] through
+//!   the §6.2.4 slice walker into the §6.2.6 `block(i)` driver
+//!   so the §7.4.2.3 reconstruction step picks up user-downloaded
+//!   weighting matrices verbatim. Each constructor seeds the
+//!   field to [`quant_matrix_extension::QuantiserMatrixState::defaults`]
+//!   (byte-identical to the prior `with_default_weight_matrices`
+//!   path); callers that have parsed a `quant_matrix_extension()`
+//!   chain it on via the new
+//!   [`slice_macroblock_walk::SliceWalkContext::with_quantiser_matrices`]
+//!   builder and the four Table 7-5 `w`-indexed matrices flow
+//!   verbatim into [`mpeg2_macroblock_blocks::MacroblockBlockContext::weight_matrices`].
 
 #![warn(missing_debug_implementations)]
 

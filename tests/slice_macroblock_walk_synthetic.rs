@@ -10,7 +10,8 @@
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::{
     walk_slice, ChromaFormat, MotionVectorsKind, Mpeg2ColourComponent, PictureCodingType,
-    PictureStructure, SliceContext, SliceHeader, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
+    PictureStructure, QuantiserMatrixState, SliceContext, SliceHeader, SliceWalkContext,
+    DEFAULT_INTRA_WEIGHT, PAST_INTRA_ADDRESS_RESET,
 };
 
 /// Slice-header builder for a non-scalable 352×240 picture
@@ -627,4 +628,203 @@ fn walk_slice_with_block_decoding_chains_two_intra_macroblocks_dc_predictor() {
     // §6.3.17.1: past_intra_address advances to the last intra
     // MB's address.
     assert_eq!(walk.past_intra_address, 1);
+}
+
+// ----- §6.3.11 quant_matrix_extension state wiring (round 251) ---
+
+/// Write a single intra Y block carrying one AC coefficient at
+/// zig-zag index 1 (`(v, u) = (0, 1)`) with `level == +1`:
+///
+/// * `dct_dc_size_luminance = 0` (Table B-12 code `100`, 3 bits) —
+///   no `dct_dc_differential`, so `QF[0][0]` resolves to the §7.2.1
+///   reset value when the predictor is fresh.
+/// * `dct_coeff_next` = `(run = 0, level = 1)` (Table B-14 NEXT-form
+///   code `11`, 2 bits) followed by the positive-sign bit `0`. The
+///   FIRST-form `1s` (1-bit) is rejected by the walker on intra
+///   blocks per §7.2.2.2 NOTE 2, so this is the only `(0, +1)` shape
+///   the parser will accept here.
+/// * `end_of_block` = Table B-14 `10` (2 bits).
+///
+/// After the §7.2.1 DC consumes index 0 the AC walk advances by
+/// `1 + run = 1` per symbol, so `(run=0, level=1)` lands at
+/// zig-zag index 1 — which §7.3 maps to `(v, u) = (0, 1)`.
+///
+/// The companion 5 blocks of a 4:2:0 MB are DC-only, so the matrix
+/// element this asserts on is the `[0][1]` entry of the **luma intra**
+/// matrix (Table 7-5 `w == 0`).
+fn write_intra_y_block_one_ac(bw: &mut BitWriter) {
+    write_dc_size_zero_luma(bw);
+    // (run=0, level=1): Table B-14 NEXT-form code `11` (2 bits) + sign `0`.
+    bw.write_u32(0b11, 2);
+    bw.write_bit(false);
+    write_eob_b14(bw);
+}
+
+/// A 4:2:0 macroblock whose block 0 (luma) carries the AC coefficient
+/// from [`write_intra_y_block_one_ac`] and whose remaining 5 blocks are
+/// DC-only.
+fn write_intra_420_one_ac_then_dc_only(bw: &mut BitWriter) {
+    write_intra_y_block_one_ac(bw);
+    // Y blocks 1..=3 — DC-only.
+    for _ in 0..3 {
+        write_dc_zero_intra_block(bw, true);
+    }
+    // Cb, Cr — DC-only.
+    write_dc_zero_intra_block(bw, false);
+    write_dc_zero_intra_block(bw, false);
+}
+
+#[test]
+fn walk_slice_threads_default_quantiser_matrices_through_block_driver() {
+    // Baseline: `first_slice_with_block_decoding` carries the
+    // §6.3.7 default `intra_luma` matrix (W[0][1] = 16) since no
+    // `quant_matrix_extension()` was applied.
+    //
+    // F''[0][1] = (2 * QF[0][1] + 0) * W[0][1] * quantiser_scale / 32
+    //           = (2 * 1) * 16 * 28 / 32 = 28
+    // with `quantiser_scale_code = 14, q_scale_type = 0` → Table 7-6
+    // linear column gives `quantiser_scale = 28`. The §7.4.4
+    // mismatch-control LSB toggle only ever touches `F[7][7]`, so
+    // `f_quant[0][1]` is the post-pipeline value verbatim.
+    let mut body_bw = BitWriter::new();
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    write_intra_420_one_ac_then_dc_only(&mut body_bw);
+    let body_buf = append_stop(body_bw);
+
+    let ctx = SliceWalkContext::first_slice_with_block_decoding(
+        22,
+        0,
+        PictureCodingType::Intra,
+        14,
+        PictureStructure::Frame,
+        true,
+        1,
+        1,
+        1,
+        1,
+        false,
+        ChromaFormat::Yuv420,
+        false, // intra_vlc_format = 0 → Table B-14 path
+        false,
+        0,
+        false,
+    );
+    assert_eq!(ctx.quantiser_matrices, QuantiserMatrixState::defaults());
+    let walk = walk_slice(&body_buf, ctx).unwrap();
+    let blocks = walk.macroblocks[0]
+        .decoded_blocks
+        .as_ref()
+        .expect("§6.2.6 ran");
+    assert_eq!(blocks.len(), 6);
+    let y0 = &blocks[0];
+    assert_eq!(y0.component, Mpeg2ColourComponent::Y);
+    // §7.3 inverse scan puts `(run=1, level=1)` at QF[0][1] = +1.
+    assert_eq!(y0.decoded.qf[0][1], 1);
+    // §7.4.2.3 reconstruction with the §6.3.7 default W[0][1] = 16.
+    assert_eq!(y0.decoded.f_quant[0][1], 28);
+}
+
+#[test]
+fn walk_slice_threads_custom_quantiser_matrices_through_block_driver() {
+    // Same bitstream as the baseline above, but the SliceWalkContext
+    // is chained with a custom QuantiserMatrixState whose
+    // `intra_luma[0][1]` cell is overridden to 80 (vs. the §6.3.7
+    // default 16). The walker must forward the override into the
+    // §6.2.6 driver's `MacroblockBlockContext::weight_matrices`
+    // verbatim so the §7.4.2.3 reconstruction step picks up the
+    // changed entry.
+    //
+    // F''[0][1] = (2 * 1) * 80 * 28 / 32 = 140
+    // — i.e. five times the baseline value. The other matrix cells
+    // are left at their defaults so the QF / f_pel of the
+    // surrounding DC-only blocks does not change (DC bypasses W via
+    // the §7.4.1 intra_dc_mult path).
+    let mut body_bw = BitWriter::new();
+    write_increment_1(&mut body_bw);
+    write_i_intra(&mut body_bw);
+    write_intra_420_one_ac_then_dc_only(&mut body_bw);
+    let body_buf = append_stop(body_bw);
+
+    let mut matrices = QuantiserMatrixState::defaults();
+    matrices.intra_luma[0][1] = 80;
+
+    let ctx = SliceWalkContext::first_slice_with_block_decoding(
+        22,
+        0,
+        PictureCodingType::Intra,
+        14,
+        PictureStructure::Frame,
+        true,
+        1,
+        1,
+        1,
+        1,
+        false,
+        ChromaFormat::Yuv420,
+        false,
+        false,
+        0,
+        false,
+    )
+    .with_quantiser_matrices(matrices);
+    assert_eq!(ctx.quantiser_matrices.intra_luma[0][1], 80);
+    // §6.3.11: other defaults survive the override.
+    assert_eq!(
+        ctx.quantiser_matrices.non_intra_luma,
+        QuantiserMatrixState::defaults().non_intra_luma
+    );
+
+    let walk = walk_slice(&body_buf, ctx).unwrap();
+    let blocks = walk.macroblocks[0]
+        .decoded_blocks
+        .as_ref()
+        .expect("§6.2.6 ran");
+    let y0 = &blocks[0];
+    assert_eq!(y0.decoded.qf[0][1], 1);
+    // §7.4.2.3 with the overridden W[0][1] = 80. The default of 16
+    // would give 28 (asserted in the baseline test above), so a
+    // mismatch here would mean the matrix is **not** being
+    // forwarded through the SliceWalkContext → MacroblockBlockContext
+    // boundary the new wiring just introduced.
+    assert_eq!(y0.decoded.f_quant[0][1], 140);
+}
+
+#[test]
+fn slice_walk_context_quantiser_matrices_default_matches_table_7_5_defaults() {
+    // Sanity: every constructor seeds `quantiser_matrices` to the
+    // §6.3.7 defaults (the same four matrices `DEFAULT_INTRA_WEIGHT`
+    // / `DEFAULT_NON_INTRA_WEIGHT` exposed at the crate root).
+    let ctx_first_slice = SliceWalkContext::first_slice(22, 0, PictureCodingType::Intra, 1);
+    assert_eq!(
+        ctx_first_slice.quantiser_matrices.intra_luma,
+        DEFAULT_INTRA_WEIGHT
+    );
+    let ctx_mpeg1 = SliceWalkContext::first_slice_mpeg1(22, 0, PictureCodingType::Intra, 1);
+    assert_eq!(
+        ctx_mpeg1.quantiser_matrices,
+        QuantiserMatrixState::defaults()
+    );
+    let ctx_block = SliceWalkContext::first_slice_with_block_decoding(
+        22,
+        0,
+        PictureCodingType::Intra,
+        14,
+        PictureStructure::Frame,
+        true,
+        1,
+        1,
+        1,
+        1,
+        false,
+        ChromaFormat::Yuv420,
+        false,
+        false,
+        0,
+        false,
+    );
+    assert_eq!(
+        ctx_block.quantiser_matrices,
+        QuantiserMatrixState::defaults()
+    );
 }

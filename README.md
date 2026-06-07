@@ -291,6 +291,32 @@ encoded byte-length count for all three loop arities (9 / 13 /
 18 bytes), and the three state-machine cases (zero baseline,
 extension absorption, reset).
 
+Round 251 wires the **§6.3.11 `QuantiserMatrixState`** through
+the §6.2.4 slice walker into the §6.2.6 `block(i)` driver. A new
+`SliceWalkContext::quantiser_matrices: QuantiserMatrixState` field
+carries the four §7.4.2.1 Table 7-5 `w`-indexed weighting matrices
+(`intra_luma`, `non_intra_luma`, `intra_chroma`, `non_intra_chroma`)
+across each slice dispatch — defaulting to the §6.3.7 default
+matrices so existing callers keep their prior behaviour byte-for-byte.
+A new builder method `SliceWalkContext::with_quantiser_matrices`
+chains a parsed state onto any of the four existing constructors so
+the picture-level driver pattern `reset_to_defaults(); apply(ext);
+ctx.with_quantiser_matrices(state)` reads as the §6.3.11 lifecycle
+spells it. Inside `walk_slice` the four matrices are unpacked into
+the `[[[u8; 8]; 8]; 4]` array `MacroblockBlockContext::weight_matrices`
+expects, so the §7.4.2.3 reconstruction step
+`F''[v][u] = (2*QF + k) * W * quantiser_scale / 32` picks up the
+user-downloaded entries verbatim instead of always reading the
+defaults. Three new integration tests pin the wiring: a baseline
+walk with the defaults asserts `f_quant[0][1] == 28` against a
+single AC coefficient at zig-zag index 1, the same fixture with
+`intra_luma[0][1]` overridden to `80` asserts `f_quant[0][1] == 140`
+(a 5× change driven solely by the matrix override), and a
+constructor sweep confirms every existing `SliceWalkContext::*`
+entry-point seeds `quantiser_matrices` to the §6.3.7 defaults.
+The pre-r251 walker comment that flagged this surfacing as a
+follow-up is now resolved.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

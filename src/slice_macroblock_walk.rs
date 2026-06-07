@@ -162,6 +162,7 @@ use crate::mpeg2_macroblock_blocks::{
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::pmv::{reconstruct_motion_vector, Direction, Pmv, ReconstructedComponent, VectorIndex};
+use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::quantizer_scale::{QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 use crate::sequence_extension::ChromaFormat;
 use crate::{Error, Result};
@@ -299,6 +300,30 @@ pub struct SliceWalkContext {
     /// 30..33 — `decoded_blocks` is `None` on every record and
     /// the four §6.2.6 fields above are not consulted.
     pub block_decoding_enabled: bool,
+    /// §7.4.2.1 Table 7-5 weighting matrices carried across the
+    /// sequence per §6.3.11. Defaults to
+    /// [`QuantiserMatrixState::defaults`] (the §6.3.7 default
+    /// matrices) so existing callers that never decoded a
+    /// `quant_matrix_extension()` keep the prior behaviour.
+    ///
+    /// Callers that *have* parsed a
+    /// [`crate::quant_matrix_extension::QuantMatrixExtension`]
+    /// thread the resulting [`QuantiserMatrixState`] through here
+    /// (typically by chaining
+    /// [`SliceWalkContext::with_quantiser_matrices`] off one of
+    /// the existing constructors), and the walker forwards the
+    /// matrices verbatim to [`crate::mpeg2_decode_macroblock_blocks`]
+    /// so the §7.4.2.3 reconstruction step uses the
+    /// user-downloaded matrices instead of the defaults. Only
+    /// consumed when [`Self::block_decoding_enabled`] is `true`.
+    ///
+    /// Per §6.3.11 a `sequence_header()` resets every matrix back
+    /// to its §6.3.7 default; the picture-level driver that owns
+    /// the sequence-header parsing event invokes
+    /// [`QuantiserMatrixState::reset_to_defaults`] at that point
+    /// and then passes the (possibly default) state into this
+    /// walker on its next call.
+    pub quantiser_matrices: QuantiserMatrixState,
 }
 
 impl SliceWalkContext {
@@ -341,6 +366,7 @@ impl SliceWalkContext {
             intra_dc_precision: 0,
             q_scale_type: false,
             block_decoding_enabled: false,
+            quantiser_matrices: QuantiserMatrixState::defaults(),
         }
     }
 
@@ -376,6 +402,7 @@ impl SliceWalkContext {
             intra_dc_precision: 0,
             q_scale_type: false,
             block_decoding_enabled: false,
+            quantiser_matrices: QuantiserMatrixState::defaults(),
         }
     }
 
@@ -435,6 +462,7 @@ impl SliceWalkContext {
             intra_dc_precision: 0,
             q_scale_type: false,
             block_decoding_enabled: false,
+            quantiser_matrices: QuantiserMatrixState::defaults(),
         }
     }
 
@@ -470,6 +498,7 @@ impl SliceWalkContext {
             intra_dc_precision: 0,
             q_scale_type: false,
             block_decoding_enabled: false,
+            quantiser_matrices: QuantiserMatrixState::defaults(),
         }
     }
 
@@ -538,7 +567,46 @@ impl SliceWalkContext {
             intra_dc_precision,
             q_scale_type,
             block_decoding_enabled: true,
+            quantiser_matrices: QuantiserMatrixState::defaults(),
         }
+    }
+
+    /// Chain a parsed [`QuantiserMatrixState`] onto a context built
+    /// from any of the other constructors. The state replaces the
+    /// §6.3.7 default matrices for the §7.4.2.3 reconstruction step
+    /// that the §6.2.6 `block(i)` driver runs on every coded block —
+    /// the four `w`-indexed matrices in
+    /// [`QuantiserMatrixState`] are forwarded verbatim through
+    /// [`crate::mpeg2_macroblock_blocks::MacroblockBlockContext::weight_matrices`].
+    ///
+    /// Per §6.3.11 the picture-level driver above this walker
+    /// invokes [`QuantiserMatrixState::reset_to_defaults`] whenever
+    /// a fresh `sequence_header_code` is decoded; after that reset
+    /// the resulting state is once again equivalent to the
+    /// constructor's default and chaining
+    /// [`Self::with_quantiser_matrices`] becomes a no-op.
+    ///
+    /// Used in tandem with
+    /// [`crate::quant_matrix_extension::QuantMatrixExtension::apply`]
+    /// which applies a parsed extension's optional payload onto a
+    /// running [`QuantiserMatrixState`], so the picture-level
+    /// driver's flow per picture is:
+    ///
+    /// ```text
+    /// // once per sequence_header_code (§6.3.11):
+    /// state.reset_to_defaults();
+    /// // for every quant_matrix_extension() between pictures:
+    /// extension.apply(&mut state, chroma_format);
+    /// // when dispatching each slice:
+    /// let ctx = SliceWalkContext::first_slice_with_block_decoding(...)
+    ///     .with_quantiser_matrices(state);
+    /// ```
+    pub const fn with_quantiser_matrices(
+        mut self,
+        quantiser_matrices: QuantiserMatrixState,
+    ) -> Self {
+        self.quantiser_matrices = quantiser_matrices;
+        self
     }
 }
 
@@ -1113,25 +1181,35 @@ pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
             // which is the spec-correct input to Table 7-6 per
             // §7.4.2.2 (the override applies to *this* MB).
             let quantiser_scale_value = quantiser_scale(quantiser_scale_code, ctx.q_scale_type)?;
-            // §6.3.7 default weighting matrices. The
-            // `quant_matrix_extension()` parser
-            // ([`crate::quant_matrix_extension`]) is now in tree
-            // (per §6.2.3.2 / §6.3.11) and emits
-            // [`crate::QuantiserMatrixState`] for the four
-            // §7.4.2.1 Table 7-5 `w`-indices, but the walker's
-            // [`SliceWalkContext`] does not yet carry that
-            // state — surfacing it onto the context (so
-            // user-defined matrices reach
-            // [`MacroblockBlockContext`] verbatim) remains a
-            // follow-up. Until then every `w`-index resolves to
-            // the §6.3.7 default.
-            let mb_block_ctx = MacroblockBlockContext::with_default_weight_matrices(
-                ctx.intra_vlc_format,
-                ctx.alternate_scan,
-                ctx.intra_dc_precision,
+            // §6.3.7 / §6.3.11 weighting matrices. The
+            // [`SliceWalkContext::quantiser_matrices`] field now
+            // carries a [`QuantiserMatrixState`] that the
+            // picture-level driver maintains across each
+            // `sequence_header_code` reset (§6.3.11 first sentence)
+            // and `quant_matrix_extension()` apply call
+            // ([`crate::quant_matrix_extension::QuantMatrixExtension::apply`]),
+            // so each of the four Table 7-5 `w`-indexed matrices
+            // [`MacroblockBlockContext::weight_matrices`] reads is
+            // the user-downloaded one when an extension overrode
+            // it and the §6.3.7 default otherwise. The
+            // post-reset / no-extension case is byte-identical to
+            // the prior `with_default_weight_matrices` path since
+            // [`QuantiserMatrixState::defaults`] returns exactly
+            // the §6.3.7 defaults.
+            let weight_matrices = [
+                ctx.quantiser_matrices.intra_luma,
+                ctx.quantiser_matrices.non_intra_luma,
+                ctx.quantiser_matrices.intra_chroma,
+                ctx.quantiser_matrices.non_intra_chroma,
+            ];
+            let mb_block_ctx = MacroblockBlockContext {
+                intra_vlc_format: ctx.intra_vlc_format,
+                alternate_scan: ctx.alternate_scan,
+                intra_dc_precision: ctx.intra_dc_precision,
                 quantiser_scale_value,
-                ctx.chroma_format,
-            );
+                chroma_format: ctx.chroma_format,
+                weight_matrices: &weight_matrices,
+            };
             // [`decode_macroblock_blocks`] internally derives
             // `pattern_code` from the same CBP / macroblock_type
             // we already computed above, so when the macroblock
