@@ -8,6 +8,37 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 260: §6.3.12 `FrameCentreOffsetDriver` picture-level state
+  machine that owns the running `FrameCentreOffsetState` across one
+  MPEG-2 sequence and exposes the two §6.3.12 carry-over events as
+  named methods, mirroring the round-254 `QuantMatrixDriver` shape so
+  picture-driver authors stop spelling the
+  `state.reset_to_zero()` / `state.apply(&ext)` dance themselves.
+  `FrameCentreOffsetDriver::on_sequence_header()` invokes
+  `FrameCentreOffsetState::reset_to_zero` per *"Following a
+  `sequence_header()` the value zero shall be used for all frame
+  centre offsets until a `picture_display_extension()` defines
+  non-zero values"* (§6.3.12 rule 1).
+  `FrameCentreOffsetDriver::on_picture_display_extension(ext)`
+  composes a parsed `PictureDisplayExtension` onto the running state
+  through the already-landed `FrameCentreOffsetState::apply`,
+  adopting the first (transmission-order) `(horizontal, vertical)`
+  pair as the new "most recently decoded frame centre offset" the
+  §6.3.12 NOTE clarifies is sufficient even when two or three pairs
+  are carried. `FrameCentreOffsetDriver::state()` returns a `Copy`
+  snapshot a display-side caller can plumb downstream without
+  borrowing the driver — pictures that omit the extension simply
+  skip the second call and the carried snapshot threads forward per
+  §6.3.12 rule 2 *"In the case that a given picture does not have a
+  `picture_display_extension()` then the most recently decoded
+  frame centre offset shall be used"*. Seven new unit tests cover
+  the driver surface (`new` ↔ §6.3.12 zero baseline,
+  `Default` ↔ `new`, sequence-header reset after an extension
+  mutation, first-pair adoption matches the field-level
+  `FrameCentreOffsetState::apply` byte-for-byte on a 3-pair payload,
+  no-event picture carries the previous offset unchanged, two-cycle
+  reset → apply → reset → apply idempotency, snapshot returned by
+  value so local mutations leave the running state intact).
 - round 254: §6.3.11 `QuantMatrixDriver` picture-level state machine
   that owns the running `QuantiserMatrixState` across one MPEG-2
   sequence and exposes the two §6.3.11 lifecycle events as named

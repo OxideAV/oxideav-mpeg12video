@@ -460,9 +460,9 @@ pub use mpeg2_macroblock_blocks::{
     DEFAULT_WEIGHT_MATRICES as MPEG2_DEFAULT_WEIGHT_MATRICES,
 };
 pub use picture_display_extension::{
-    number_of_frame_centre_offsets, FieldUsage, FrameCentreOffset, FrameCentreOffsetState,
-    PictureDisplayContext, PictureDisplayExtension, MAX_FRAME_CENTRE_OFFSETS,
-    PICTURE_DISPLAY_EXTENSION_ID,
+    number_of_frame_centre_offsets, FieldUsage, FrameCentreOffset, FrameCentreOffsetDriver,
+    FrameCentreOffsetState, PictureDisplayContext, PictureDisplayExtension,
+    MAX_FRAME_CENTRE_OFFSETS, PICTURE_DISPLAY_EXTENSION_ID,
 };
 pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,

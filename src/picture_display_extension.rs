@@ -375,6 +375,115 @@ impl FrameCentreOffsetState {
     }
 }
 
+/// Picture-level state machine that owns the running §6.3.12
+/// [`FrameCentreOffsetState`] across the lifetime of one MPEG-2
+/// video sequence and emits the snapshot a display-side caller
+/// applies to every picture (whether it carries a
+/// `picture_display_extension()` or not).
+///
+/// §6.3.12 imposes two carry-over rules that a picture-level driver
+/// has to thread between the §6.2.2.1 `sequence_header()` and §6.2.3.3
+/// `picture_display_extension()` events:
+///
+/// 1. *"Following a `sequence_header()` the value zero shall be used
+///    for all frame centre offsets until a `picture_display_extension()`
+///    defines non-zero values."*
+/// 2. *"In the case that a given picture does not have a
+///    `picture_display_extension()` then the most recently decoded
+///    frame centre offset shall be used."*
+///
+/// The driver collapses both rules into two named lifecycle events
+/// that mirror the [`crate::QuantMatrixDriver`] shape so callers
+/// reading the spec flow line-for-line never have to spell out the
+/// `state.reset_to_zero()` / `state.apply(&ext)` dance themselves:
+///
+/// ```text
+/// // Every time a sequence_header_code (§6.2.2.1) is decoded:
+/// driver.on_sequence_header();
+///
+/// // Every time a picture_display_extension() (§6.2.3.3) is decoded:
+/// driver.on_picture_display_extension(ext);
+///
+/// // When dispatching any picture (whether it carries the extension
+/// // or not), the §6.3.12 carry-over pair the display side applies:
+/// let centre = driver.state().current;
+/// ```
+///
+/// [`Self::on_sequence_header`] implements rule 1 above by deferring
+/// to [`FrameCentreOffsetState::reset_to_zero`].
+/// [`Self::on_picture_display_extension`] composes a parsed
+/// [`PictureDisplayExtension`] onto the running state through
+/// [`FrameCentreOffsetState::apply`], adopting the first
+/// (transmission-order) offset pair as the new
+/// "most recently decoded frame centre offset" §6.3.12 quotes.
+/// Pictures that omit the extension simply skip the second call —
+/// the driver's `state().current` carries the previous pair verbatim
+/// per rule 2.
+///
+/// The state surface stays small on purpose: the §6.3.12 zero
+/// baseline lives behind a single accessor [`Self::state`] (and a
+/// `Copy` of that snapshot is what a display-process caller would
+/// consume), and the driver itself is `Copy` so callers can keep a
+/// freshly-initialised driver alongside the rest of their
+/// per-sequence parser state without ceremony. A freshly-`Default`-ed
+/// driver is byte-identical to one that just observed a
+/// sequence-header reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameCentreOffsetDriver {
+    state: FrameCentreOffsetState,
+}
+
+impl FrameCentreOffsetDriver {
+    /// Construct a fresh driver at the §6.3.12 post-`sequence_header()`
+    /// zero baseline. Equivalent to constructing a driver and
+    /// immediately calling [`Self::on_sequence_header`] — both paths
+    /// reach the same `FrameCentreOffsetState::zero()` snapshot.
+    pub const fn new() -> Self {
+        Self {
+            state: FrameCentreOffsetState::zero(),
+        }
+    }
+
+    /// §6.3.12 sequence-header event. *"Following a
+    /// `sequence_header()` the value zero shall be used for all frame
+    /// centre offsets until a `picture_display_extension()` defines
+    /// non-zero values."* The driver invokes
+    /// [`FrameCentreOffsetState::reset_to_zero`] verbatim.
+    pub fn on_sequence_header(&mut self) {
+        self.state.reset_to_zero();
+    }
+
+    /// §6.2.3.3 / §6.3.12 picture-display-extension event. Composes
+    /// the parsed extension onto the running
+    /// [`FrameCentreOffsetState`] through
+    /// [`FrameCentreOffsetState::apply`], adopting the first
+    /// (transmission-order) `(horizontal, vertical)` pair as the new
+    /// "most recently decoded frame centre offset" §6.3.12 quotes.
+    /// The §6.3.12 NOTE clarifies that even when two or three offset
+    /// pairs are carried, the missing offsets between pictures all
+    /// have the same value, so the first-pair adoption is sufficient
+    /// to model the between-picture carry-over.
+    pub fn on_picture_display_extension(&mut self, ext: PictureDisplayExtension) {
+        self.state.apply(&ext);
+    }
+
+    /// Read-only snapshot of the running [`FrameCentreOffsetState`].
+    /// Returns by value so callers can plumb it into a display-side
+    /// pipeline without borrowing the driver. The carried
+    /// [`FrameCentreOffsetState::current`] pair is what the §6.3.12
+    /// rule 2 *"the most recently decoded frame centre offset shall
+    /// be used"* applies to any picture that omits the extension.
+    pub const fn state(&self) -> FrameCentreOffsetState {
+        self.state
+    }
+}
+
+impl Default for FrameCentreOffsetDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Hand-built bit-exact `picture_display_extension()` fixtures
@@ -675,5 +784,148 @@ mod tests {
         write_picture_display_extension(&mut bw, &pairs);
         let bytes = bw.finish();
         assert_eq!(bytes.len(), 9);
+    }
+
+    // ---- FrameCentreOffsetDriver (§6.3.12 lifecycle) -------------
+
+    /// Parse a hand-built `picture_display_extension()` against the
+    /// supplied derivation context.
+    fn parse_ext(pairs: &[(i32, i32)], c: PictureDisplayContext) -> PictureDisplayExtension {
+        let mut bw = BitWriter::new();
+        write_picture_display_extension(&mut bw, pairs);
+        let bytes = bw.finish();
+        PictureDisplayExtension::parse(&bytes, c).expect("parse")
+    }
+
+    #[test]
+    fn driver_new_matches_zero_baseline() {
+        // §6.3.12 rule 1: a fresh driver is at the post-
+        // `sequence_header()` zero baseline.
+        let driver = FrameCentreOffsetDriver::new();
+        assert_eq!(driver.state(), FrameCentreOffsetState::zero());
+        assert_eq!(driver.state().current, FrameCentreOffset::default());
+    }
+
+    #[test]
+    fn driver_default_matches_new() {
+        assert_eq!(
+            FrameCentreOffsetDriver::default(),
+            FrameCentreOffsetDriver::new(),
+        );
+    }
+
+    #[test]
+    fn driver_on_sequence_header_restores_zero_baseline() {
+        // Mutate via an extension, then reset; the snapshot returns
+        // to the §6.3.12 zero baseline.
+        let c = ctx(true, PictureStructure::Frame, false, false);
+        let ext = parse_ext(&[(11, 22)], c);
+        let mut driver = FrameCentreOffsetDriver::new();
+        driver.on_picture_display_extension(ext);
+        assert_eq!(
+            driver.state().current,
+            FrameCentreOffset {
+                horizontal: 11,
+                vertical: 22,
+            },
+        );
+        driver.on_sequence_header();
+        assert_eq!(driver.state(), FrameCentreOffsetState::zero());
+    }
+
+    #[test]
+    fn driver_on_picture_display_extension_adopts_first_pair() {
+        // §6.3.12: when two or three pairs are carried, the missing
+        // offsets between pictures all have the same value, so the
+        // driver adopts the first pair as the new "most recently
+        // decoded" offset. Use the rff && tff branch (count == 3).
+        let c = ctx(true, PictureStructure::Frame, true, true);
+        let ext = parse_ext(&[(1, 2), (3, 4), (5, 6)], c);
+        let mut driver = FrameCentreOffsetDriver::new();
+        driver.on_picture_display_extension(ext);
+        assert_eq!(
+            driver.state().current,
+            FrameCentreOffset {
+                horizontal: 1,
+                vertical: 2,
+            },
+        );
+        // Field-level apply on a fresh state agrees with the driver.
+        let mut field_state = FrameCentreOffsetState::zero();
+        field_state.apply(&ext);
+        assert_eq!(driver.state(), field_state);
+    }
+
+    #[test]
+    fn driver_carries_previous_offset_across_picture_omission() {
+        // §6.3.12 rule 2: a picture that does not have its own
+        // `picture_display_extension()` reuses the most recently
+        // decoded offset. The driver models that as "no event for
+        // this picture" — the carried snapshot is unchanged.
+        let c = ctx(true, PictureStructure::Frame, false, false);
+        let ext = parse_ext(&[(7, -8)], c);
+        let mut driver = FrameCentreOffsetDriver::new();
+        driver.on_picture_display_extension(ext);
+        let before = driver.state();
+        // No event fires for the next picture (extension omitted).
+        let after = driver.state();
+        assert_eq!(before, after);
+        assert_eq!(
+            after.current,
+            FrameCentreOffset {
+                horizontal: 7,
+                vertical: -8,
+            },
+        );
+    }
+
+    #[test]
+    fn driver_two_sequence_cycles_idempotent() {
+        // Walk reset → apply → reset → apply twice and confirm the
+        // two cycles agree byte-for-byte, the same invariant
+        // QuantMatrixDriver's lifecycle test pins.
+        let c = ctx(false, PictureStructure::Frame, false, true);
+        let ext = parse_ext(&[(50, -60), (-70, 80)], c);
+
+        let mut driver = FrameCentreOffsetDriver::new();
+        driver.on_sequence_header();
+        driver.on_picture_display_extension(ext);
+        let after_first = driver.state();
+
+        driver.on_sequence_header();
+        driver.on_picture_display_extension(ext);
+        let after_second = driver.state();
+
+        assert_eq!(after_first, after_second);
+        assert_eq!(
+            after_first.current,
+            FrameCentreOffset {
+                horizontal: 50,
+                vertical: -60,
+            },
+        );
+    }
+
+    #[test]
+    fn driver_state_returns_by_value() {
+        // Returning by value means mutating the snapshot leaves the
+        // running state intact.
+        let c = ctx(true, PictureStructure::Frame, false, false);
+        let ext = parse_ext(&[(13, 14)], c);
+        let mut driver = FrameCentreOffsetDriver::new();
+        driver.on_picture_display_extension(ext);
+        let mut snap = driver.state();
+        snap.current.horizontal = 0;
+        snap.current.vertical = 0;
+        // The snapshot is zeroed locally, proving it is independent.
+        assert_eq!(snap, FrameCentreOffsetState::zero());
+        // Driver still carries the original pair.
+        assert_eq!(
+            driver.state().current,
+            FrameCentreOffset {
+                horizontal: 13,
+                vertical: 14,
+            },
+        );
     }
 }

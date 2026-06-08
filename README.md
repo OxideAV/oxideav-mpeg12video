@@ -360,6 +360,40 @@ r251 walker doc-comment that still spelled `state.reset_to_defaults();
 extension.apply(...)` as picture-driver-author work is now backed by
 a single-call API.
 
+Round 260 adds the **§6.3.12 `FrameCentreOffsetDriver`** picture-
+level state machine that owns the running `FrameCentreOffsetState`
+across one MPEG-2 sequence, mirroring the round-254 `QuantMatrixDriver`
+shape so picture-driver authors stop spelling the
+`state.reset_to_zero()` / `state.apply(&ext)` dance themselves. The
+driver collapses §6.3.12's two carry-over rules into two named
+lifecycle methods: `FrameCentreOffsetDriver::on_sequence_header()`
+defers to `FrameCentreOffsetState::reset_to_zero` per *"Following a
+`sequence_header()` the value zero shall be used for all frame
+centre offsets until a `picture_display_extension()` defines
+non-zero values"* (§6.3.12 rule 1), and
+`FrameCentreOffsetDriver::on_picture_display_extension(ext)`
+composes a parsed `PictureDisplayExtension` onto the running state
+through `FrameCentreOffsetState::apply`, adopting the first
+(transmission-order) `(horizontal, vertical)` pair as the new "most
+recently decoded frame centre offset" the §6.3.12 NOTE clarifies is
+sufficient even when two or three pairs are carried. A
+`state()` accessor returns a `Copy` snapshot a display-side caller
+can plumb downstream without borrowing the driver; pictures that
+omit the extension simply skip the second call and the carried
+snapshot threads forward verbatim per §6.3.12 rule 2 *"the most
+recently decoded frame centre offset shall be used"*. The driver
+itself is `Copy + Default`, and `FrameCentreOffsetDriver::default()`
+is byte-identical to `FrameCentreOffsetDriver::new()` — both reach
+the §6.3.12 zero baseline. Seven new unit tests cover the surface
+(`new` ↔ §6.3.12 zero baseline, `Default` ↔ `new`,
+`on_sequence_header` restores zero after an extension mutation,
+`on_picture_display_extension` matches the field-level
+`FrameCentreOffsetState::apply` byte-for-byte on a three-pair
+payload, a no-event picture carries the previous offset unchanged,
+a two-cycle reset → apply → reset → apply lifecycle threads
+idempotently, and `state()` returns by value so mutating the
+snapshot leaves the running state intact).
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not
