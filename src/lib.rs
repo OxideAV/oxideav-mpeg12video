@@ -367,6 +367,7 @@ pub mod picture_header;
 pub mod pmv;
 pub mod quant_matrix_extension;
 pub mod quantizer_scale;
+pub mod sequence_display_extension;
 pub mod sequence_extension;
 pub mod sequence_header;
 pub mod skipped_macroblock;
@@ -478,6 +479,9 @@ pub use quant_matrix_extension::{
     QUANT_MATRIX_EXTENSION_ID,
 };
 pub use quantizer_scale::{QuantizerScale, QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
+pub use sequence_display_extension::{
+    ColourDescription, SequenceDisplayExtension, VideoFormat, SEQUENCE_DISPLAY_EXTENSION_ID,
+};
 pub use sequence_extension::{
     ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension, EXTENSION_START_CODE,
     SEQUENCE_EXTENSION_ID,

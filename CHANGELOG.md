@@ -8,6 +8,47 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 261: §6.2.2.4 `sequence_display_extension()` parser plus the
+  §6.3.6 field semantics in a new `sequence_display_extension` module
+  — the first of the two sequence-layer elements the §6.3.12 ordering
+  constraint (*"a `picture_display_extension()` shall not occur unless
+  a `sequence_display_extension()` followed the previous
+  `sequence_header()`"*) binds, flagged as unhandled by the r244
+  order-constraint note the r260 `FrameCentreOffsetDriver` inherited.
+  New types: `SequenceDisplayExtension` (the parsed element),
+  `VideoFormat` (Table 6-6 — component / PAL / NTSC / SECAM / MAC /
+  unspecified, with the reserved `110` / `111` codes preserved raw per
+  the `AspectRatio::Reserved` policy since §6.3.6 says the field does
+  not affect the decoding process; `Default` is pinned to
+  `Unspecified` per the §6.3.6 absence rule), `ColourDescription`
+  (the optional `colour_primaries` / `transfer_characteristics` /
+  `matrix_coefficients` triple gated on the wire's
+  `colour_description` flag, raw 8-bit components with the
+  *"(forbidden)"* value `0` of each defining Table 6-7 / 6-8 / 6-9
+  rejected at parse time and the reserved upper codes preserved), and
+  the constant `SEQUENCE_DISPLAY_EXTENSION_ID = 0b0010` naming the
+  Table 6-2 identifier. `ColourDescription::ASSUMED` exposes the
+  §6.3.6 absence/flag-clear default (every component = the value-1
+  row, Rec. ITU-R BT.709);
+  `SequenceDisplayExtension::effective_colour_description()` applies
+  that rule for parsed-but-flag-clear extensions. Parser enforces
+  every §6.2.2.4 rejection site: 32-bit `extension_start_code`
+  (`0x000001B5`), 4-bit `extension_start_code_identifier` (`0010`),
+  the three forbidden-zero colour bytes, and the `marker_bit` between
+  the two 14-bit `display_horizontal_size` / `display_vertical_size`
+  fields (§6.3.6 units: samples / lines of the encoded frames). The
+  §6.3.5 repeat-sequence-header occurrence constraint and the §6.3.12
+  ordering gate remain sequence-layer driver work — the module
+  doc-comment quotes both so the follow-up driver round can wire the
+  presence fact into `FrameCentreOffsetDriver` without re-reading the
+  spec. 18 new bit-exact unit tests cover the no-colour and
+  full-colour positive parses, all six described Table 6-6 codes plus
+  the two reserved codes, the 14-bit `0x3FFF` display-size
+  round-trip, reserved colour codes above the described rows, the
+  encoded bit-length accounting for both shapes (69 / 93 bits → 9 /
+  12 padded bytes), the six rejection paths (wrong start code, wrong
+  id, three forbidden-zero colour bytes, zero marker bit), two
+  truncation points, and the three §6.3.6 absence-default rules.
 - round 260: §6.3.12 `FrameCentreOffsetDriver` picture-level state
   machine that owns the running `FrameCentreOffsetState` across one
   MPEG-2 sequence and exposes the two §6.3.12 carry-over events as

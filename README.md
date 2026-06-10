@@ -394,6 +394,51 @@ a two-cycle reset → apply → reset → apply lifecycle threads
 idempotently, and `state()` returns by value so mutating the
 snapshot leaves the running state intact).
 
+Round 261 lands the **§6.2.2.4 `sequence_display_extension()`
+parser** with the §6.3.6 field semantics in a new
+`sequence_display_extension` module — the first of the two
+sequence-layer elements the §6.3.12 ordering constraint (*"a
+`picture_display_extension()` shall not occur unless a
+`sequence_display_extension()` followed the previous
+`sequence_header()`"*) binds, flagged as unhandled by the r244
+order-constraint note that the r260 `FrameCentreOffsetDriver`
+inherited. `SEQUENCE_DISPLAY_EXTENSION_ID = 0b0010` names the
+Table 6-2 identifier; `VideoFormat` transcribes Table 6-6
+(component / PAL / NTSC / SECAM / MAC / unspecified, with the
+reserved `110` / `111` codes preserved raw per the
+`AspectRatio::Reserved` policy since §6.3.6 says the field does
+not affect the decoding process, and `Default` pinned to
+`Unspecified` per the §6.3.6 absence rule); `ColourDescription`
+carries the optional `colour_primaries` /
+`transfer_characteristics` / `matrix_coefficients` triple gated
+on the wire's `colour_description` flag, rejecting the
+*"(forbidden)"* value `0` of each defining table (6-7 / 6-8 /
+6-9) while preserving the reserved upper codes raw, with
+`ColourDescription::ASSUMED` exposing the §6.3.6
+absence/flag-clear default (every component = the value-1 row,
+Rec. ITU-R BT.709) and
+`SequenceDisplayExtension::effective_colour_description()`
+applying that rule for parsed-but-flag-clear extensions. The
+parser enforces every §6.2.2.4 rejection site: 32-bit
+`extension_start_code` (`0x000001B5`), 4-bit
+`extension_start_code_identifier` (`0010`), the three
+forbidden-zero colour bytes, and the `marker_bit` between the
+two 14-bit `display_horizontal_size` / `display_vertical_size`
+fields (whose §6.3.6 units are samples / lines of the encoded
+frames). The §6.3.5 repeat-sequence-header occurrence constraint
+and the §6.3.12 ordering gate remain sequence-layer driver work
+— the module doc-comment quotes both so the follow-up driver
+round can wire the presence fact into `FrameCentreOffsetDriver`
+without re-reading the spec. 18 new bit-exact unit tests cover
+the no-colour and full-colour positive parses, all six described
+Table 6-6 codes plus the two reserved codes, the 14-bit
+`0x3FFF` display-size round-trip, reserved colour codes above
+the described rows, the encoded bit-length accounting for both
+shapes (69 / 93 bits → 9 / 12 padded bytes), the six rejection
+paths (wrong start code, wrong id, three forbidden-zero colour
+bytes, zero marker bit), two truncation points, and the three
+§6.3.6 absence-default rules.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not
@@ -2569,7 +2614,16 @@ Every line in this crate's `src/` traces to:
   cited by round 23) and §7.6.3.6 (the field-parity numbering
   "top field has parity zero, the bottom field has parity one",
   already cited by round 22 for dual-prime) for the
-  same-parity field-reference rule.
+  same-parity field-reference rule. Round 261 adds §6.2.2.4
+  (`sequence_display_extension()` syntax), §6.3.6 (field
+  semantics: the display-process disclaimer, the
+  video-format/colourimetry absence defaults, and the
+  display-size units), §6.3.5 (the repeat-sequence-header
+  occurrence constraint quoted for the future sequence-layer
+  driver), and Tables 6-6 (`video_format`), 6-7
+  (`colour_primaries`), 6-8 (`transfer_characteristics`), and
+  6-9 (`matrix_coefficients`), re-using the Table 6-2
+  identifier list already cited by rounds 2 / 241 / 244.
 * `docs/video/h262/IEC-13818-2_Specs.pdf` — second copy of the
   same spec, cross-referenced for typography.
 * `docs/video/mpeg1/ISO_IEC_11172-2-MPEG1-Video-1993.pdf` —
