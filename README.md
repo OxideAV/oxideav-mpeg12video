@@ -439,6 +439,38 @@ paths (wrong start code, wrong id, three forbidden-zero colour
 bytes, zero marker bit), two truncation points, and the three
 §6.3.6 absence-default rules.
 
+Round 271 lands the **§6.3.5 / §6.3.12 `SequenceDisplayOrderDriver`**
+sequence-layer ordering driver in a new `sequence_display_order`
+module — the two cross-element occurrence constraints r261's
+`sequence_display_extension()` parser deferred to "sequence-layer
+driver work". The driver owns the running
+`sequence_display_extension()` presence/value fact across one MPEG-2
+sequence: `on_sequence_header_window(Option<SequenceDisplayExtension>)`
+pins the §6.3.5 requirement on the first
+`sequence_header()`-to-`picture_header()` window
+(`Requirement::Forbidden` when absent,
+`Requirement::RequiredEqual(first)` when present) and checks every
+repeat window against the pin (rejecting present-where-forbidden,
+absent-where-required, and differing-value repeats per §6.3.5 *"all
+data elements are the same as in the first … Conversely if no
+`sequence_display_extension()` occurs … then
+`sequence_display_extension()` shall not occur in the bitstream"*),
+while `check_picture_display_extension()` /
+`picture_display_extension_permitted()` answer the §6.3.12 gate *"a
+`picture_display_extension()` shall not occur unless a
+`sequence_display_extension()` followed the previous
+`sequence_header()`"* from the same presence fact. The driver is
+`Copy + Default` (`Default` ↔ `new`, both at the
+pre-first-`sequence_header()` baseline); `Requirement` (`Unpinned` /
+`Forbidden` / `RequiredEqual`) and `SequenceDisplayOrderDriver` are
+re-exported at the crate root. The r261 doc-comment notes that flagged
+both rules as pending now point at the driver. 14 new unit tests cover
+the pre-window baseline, the two first-window pins, the Forbidden
+absent-ok / present-rejected pair, the RequiredEqual equal-ok /
+absent-rejected / differing-size-rejected / differing-colour-rejected
+quartet, the §6.3.12 gate before/after a present/absent window, and
+the two multi-window idempotency chains.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

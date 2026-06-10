@@ -49,13 +49,13 @@
 //! `sequence_display_extension()` occurs between the first
 //! `sequence_header()` and the first `picture_header()` then
 //! `sequence_display_extension()` shall not occur in the bitstream."*
-//! Enforcing that cross-element rule is sequence-layer driver work;
-//! this module supplies the parsed value the driver compares. The
-//! §6.3.12 ordering constraint on `picture_display_extension()` (*"…
-//! shall not occur unless a `sequence_display_extension()` followed
-//! the previous `sequence_header()`"*) keys off the same presence
-//! fact — see the order-constraint note in
-//! [`crate::picture_display_extension`].
+//! That cross-element rule is enforced by
+//! [`crate::SequenceDisplayOrderDriver`]; this module supplies the
+//! parsed value the driver compares. The §6.3.12 ordering constraint
+//! on `picture_display_extension()` (*"… shall not occur unless a
+//! `sequence_display_extension()` followed the previous
+//! `sequence_header()`"*) keys off the same presence fact, also
+//! enforced by [`crate::SequenceDisplayOrderDriver`].
 //!
 //! ## Defaults when the extension is absent (§6.3.6)
 //!

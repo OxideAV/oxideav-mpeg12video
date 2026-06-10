@@ -8,6 +8,41 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 271: §6.3.5 / §6.3.12 `SequenceDisplayOrderDriver` sequence-layer
+  ordering driver in a new `sequence_display_order` module — the two
+  cross-element occurrence constraints r261's
+  `sequence_display_extension()` parser deferred to "sequence-layer
+  driver work". The driver owns the running
+  `sequence_display_extension()` presence/value fact across one MPEG-2
+  sequence and exposes the two checks as named methods, mirroring the
+  `FrameCentreOffsetDriver` / `QuantMatrixDriver` shape.
+  `on_sequence_header_window(Option<SequenceDisplayExtension>)` observes
+  each `sequence_header()`-to-`picture_header()` window: the first call
+  pins the §6.3.5 requirement (`Requirement::Forbidden` when absent,
+  `Requirement::RequiredEqual(first)` when present), and every later
+  call is checked against the pin per §6.3.5 *"all subsequent sequence
+  headers shall be followed by `sequence_display_extension()` in which
+  all data elements are the same as in the first … Conversely if no
+  `sequence_display_extension()` occurs … then
+  `sequence_display_extension()` shall not occur in the bitstream"* —
+  rejecting a present-where-forbidden, absent-where-required, or
+  differing-value repeat as `InvalidBitstream`.
+  `check_picture_display_extension()` (and the bool accessor
+  `picture_display_extension_permitted()`) answer the §6.3.12 gate
+  *"a `picture_display_extension()` shall not occur unless a
+  `sequence_display_extension()` followed the previous
+  `sequence_header()`"* from the running presence fact. New types
+  `SequenceDisplayOrderDriver` (`Copy + Default`; `Default` ↔ `new`,
+  both at the pre-first-`sequence_header()` baseline) and `Requirement`
+  (`Unpinned` / `Forbidden` / `RequiredEqual`) are re-exported at the
+  crate root. The r261 doc-comment notes in `sequence_display_extension`
+  and the `picture_display_extension` "Order constraint" note now point
+  at the driver instead of flagging the rules as pending. 14 new unit
+  tests cover the pre-window baseline, the two first-window pins, the
+  Forbidden absent-ok / present-rejected pair, the RequiredEqual
+  equal-ok / absent-rejected / differing-size-rejected /
+  differing-colour-rejected quartet, the §6.3.12 gate before and after
+  a present/absent window, and the two multi-window idempotency chains.
 - round 261: §6.2.2.4 `sequence_display_extension()` parser plus the
   §6.3.6 field semantics in a new `sequence_display_extension` module
   — the first of the two sequence-layer elements the §6.3.12 ordering

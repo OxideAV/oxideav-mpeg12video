@@ -101,10 +101,12 @@
 //! §6.3.12 requires that *"a `picture_display_extension()` shall not
 //! occur unless a `sequence_display_extension()` followed the previous
 //! `sequence_header()`"*. That ordering constraint binds two
-//! sequence-layer elements that this parser does not yet handle, so
-//! enforcement is left to the sequence-layer driver. [`FieldUsage`]
-//! captures the §6.3.12 application context so a later driver can
-//! cross-check the constraint without re-reading the spec.
+//! sequence-layer elements that this parser does not handle itself; it
+//! is enforced by [`crate::SequenceDisplayOrderDriver`], whose
+//! [`crate::SequenceDisplayOrderDriver::check_picture_display_extension`]
+//! answers the §6.3.12 gate from the running
+//! `sequence_display_extension()` presence fact. [`FieldUsage`]
+//! captures the §6.3.12 application context.
 //!
 //! Spec citations refer to the 1995 base text of ISO/IEC 13818-2
 //! (Recommendation ITU-T H.262 (1995 E)).
