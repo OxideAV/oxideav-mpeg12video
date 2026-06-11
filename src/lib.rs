@@ -346,6 +346,7 @@ pub mod combine_predictions;
 pub mod dct_coeff;
 pub mod dequantize;
 pub mod dual_prime;
+pub mod extension_and_user_data;
 pub mod forming_predictions;
 pub mod gop_header;
 pub mod idct;
@@ -391,6 +392,12 @@ pub use dequantize::{
     IntraDcPredictors, DCT_RECON_MAX, DCT_RECON_MIN, DC_PREDICTOR_RESET, DEFAULT_INTRA_QUANT,
     DEFAULT_NON_INTRA_QUANT,
 };
+pub use extension_and_user_data::{
+    ExtensionAndUserData, ExtensionLocation, UserData, COPYRIGHT_EXTENSION_ID,
+    PICTURE_SPATIAL_SCALABLE_EXTENSION_ID, PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
+    SEQUENCE_SCALABLE_EXTENSION_ID, USER_DATA_START_CODE,
+};
+
 pub use dual_prime::{
     derive_all as derive_dual_prime_all, derive_opposite_parity_vector as derive_dual_prime_vector,
     dual_prime_picture, e_offset, m_factor, DerivedDualPrimeVector, DualPrimePicture, FieldParity,
@@ -515,10 +522,13 @@ pub enum Error {
     /// the syntax element demanded.
     ShortHeader,
     /// Placeholder for syntax paths that are spec-defined but not
-    /// yet implemented in this crate (motion vectors, IDCT, slice
-    /// decoding, …). No code path currently returns this — it is
-    /// kept as the contract for the encoder/decoder traits that
-    /// later rounds will wire up.
+    /// yet implemented in this crate. Returned by the §6.2.2.2
+    /// `extension_and_user_data(i)` dispatcher when a conformant
+    /// bitstream carries an extension this crate has no parser for
+    /// yet (`sequence_scalable_extension()`, `copyright_extension()`,
+    /// `picture_spatial_scalable_extension()`,
+    /// `picture_temporal_scalable_extension()`), so callers can tell
+    /// "cannot decode yet" apart from "bitstream is broken".
     NotImplemented,
 }
 

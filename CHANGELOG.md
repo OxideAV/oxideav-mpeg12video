@@ -8,6 +8,48 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 279: §6.2.2.2 `extension_and_user_data(i)` dispatcher plus
+  §6.2.2.2.1 `extension_data(i)` and §6.2.2.2.2 `user_data()` in a new
+  `extension_and_user_data` module — the §6.2.2 `video_sequence()`
+  element invoked at `i = 0` (after `sequence_extension()`), `i = 1`
+  (after `group_of_pictures_header()`), and `i = 2` (after
+  `picture_coding_extension()`), tying the r261 / r241 / r244
+  `sequence_display_extension()` / `quant_matrix_extension()` /
+  `picture_display_extension()` parsers into one §5.2.3 start-code
+  loop. New types: `ExtensionLocation` (the `i` argument; the `i = 2`
+  arm carries `chroma_format` + `PictureDisplayContext`), `UserData`
+  (the §6.3.4.1 byte series, terminated by *"receipt of another start
+  code"* with the *"no string of 23 or more consecutive zero bits"*
+  emulation guard enforced), and `ExtensionAndUserData` (the parsed
+  optionals + `user_data` vec + `discarded_reserved_ids` +
+  `byte_position_after`, the offset of the foreign start code that
+  ended the loop). Enforced rejection sites: §6.2.2.2.1 NOTE
+  (`extension_data()` never follows a `group_of_pictures_header()`),
+  §6.3.1 at-most-once per extension type, §6.3.1 allowable-set
+  (defined ID at the wrong invocation point), §5.2.3 non-zero
+  stuffing bytes between elements and non-zero stuffing bits after an
+  unaligned extension, and truncation at every lookahead. The §6.3.1
+  reserved-identifier rule (*"discard all subsequent data until the
+  next start code"*) is a recorded skip, not an error. The four
+  spec-defined extensions without crate parsers yet
+  (`sequence_scalable_extension()`, `copyright_extension()`,
+  `picture_spatial_scalable_extension()`,
+  `picture_temporal_scalable_extension()`) surface
+  `Error::NotImplemented` — the variant's first user. New constants
+  `USER_DATA_START_CODE`, `COPYRIGHT_EXTENSION_ID`,
+  `SEQUENCE_SCALABLE_EXTENSION_ID`,
+  `PICTURE_SPATIAL_SCALABLE_EXTENSION_ID`,
+  `PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID`; all new types re-exported
+  at the crate root. The `i = 0` result's
+  `sequence_display_extension` field feeds the r271
+  `SequenceDisplayOrderDriver::on_sequence_header_window` directly
+  (pinned end-to-end by a test). 31 new unit tests: the `user_data()`
+  surface (7), positive dispatch shapes across all three locations
+  including zero-stuffing and reserved-discard paths (11), every
+  rejection site (12), and the §6.3.5 / §6.3.12 driver hand-off (1).
+  Follow-up parsers for the four `NotImplemented` extensions
+  (§6.2.2.5 / §6.2.3.6 / §6.2.3.5 / §6.2.3.4) and the top-level
+  §6.2.2 `video_sequence()` walker remain future rounds.
 - round 271: §6.3.5 / §6.3.12 `SequenceDisplayOrderDriver` sequence-layer
   ordering driver in a new `sequence_display_order` module — the two
   cross-element occurrence constraints r261's

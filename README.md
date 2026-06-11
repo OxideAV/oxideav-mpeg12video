@@ -471,6 +471,48 @@ absent-rejected / differing-size-rejected / differing-colour-rejected
 quartet, the §6.3.12 gate before/after a present/absent window, and
 the two multi-window idempotency chains.
 
+Round 279 lands the **§6.2.2.2 `extension_and_user_data(i)`
+dispatcher** (with §6.2.2.2.1 `extension_data(i)` and §6.2.2.2.2
+`user_data()`) in a new `extension_and_user_data` module — the
+syntax element the §6.2.2 `video_sequence()` invokes at the three
+points `i = 0` (after `sequence_extension()`), `i = 1` (after
+`group_of_pictures_header()`), and `i = 2` (after
+`picture_coding_extension()`), tying the already-landed
+`sequence_display_extension()` / `quant_matrix_extension()` /
+`picture_display_extension()` parsers into one start-code loop.
+`ExtensionLocation` carries the `i` argument (the `i = 2` arm
+bundles the `chroma_format` + `PictureDisplayContext` its
+allowable extensions need); `ExtensionAndUserData::parse` walks
+the §5.2.3 zero-stuffed start codes, dispatches each
+`extension_start_code_identifier` per the §6.2.2.2.1
+location-dependent allowable set, collects every `user_data()`
+element (§6.3.4.1 *"continues until receipt of another start
+code"*, with the *"no string of 23 or more consecutive zero
+bits"* emulation guard enforced), and stops without consuming at
+the first foreign start code, reporting it as
+`byte_position_after`. Enforced rejection sites: the §6.2.2.2.1
+NOTE (`extension_data()` never follows a
+`group_of_pictures_header()`), the §6.3.1 at-most-once rule per
+extension type, the §6.3.1 allowable-set rule (a defined ID at
+the wrong point), §5.2.3 non-zero stuffing (bytes between
+elements and bits after an unaligned extension), and truncation
+at every lookahead. The §6.3.1 reserved-identifier rule (*"discard
+all subsequent data until the next start code"*) is implemented
+as a skip with the IDs recorded in `discarded_reserved_ids`.
+Spec-defined extensions this crate has no parser for yet
+(`sequence_scalable_extension()`, `copyright_extension()`,
+`picture_spatial_scalable_extension()`,
+`picture_temporal_scalable_extension()`) surface
+`Error::NotImplemented` — the first user of that variant — so
+"cannot decode yet" stays distinct from "bitstream broken". The
+`i = 0` result's `sequence_display_extension` field is exactly the
+`Option<SequenceDisplayExtension>` the r271
+`SequenceDisplayOrderDriver::on_sequence_header_window` consumes
+(pinned by an end-to-end test). 31 new unit tests cover the
+`user_data()` surface (7), the positive dispatch shapes across all
+three locations including stuffing and reserved-discard paths
+(11), every rejection site (12), and the driver hand-off (1).
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not
