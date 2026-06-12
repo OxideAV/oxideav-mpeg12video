@@ -513,6 +513,41 @@ Spec-defined extensions this crate has no parser for yet
 three locations including stuffing and reserved-discard paths
 (11), every rejection site (12), and the driver hand-off (1).
 
+Round 283 lands the **§6.2.2.5 `sequence_scalable_extension()` and
+§6.2.3.6 `copyright_extension()` parsers** in two new modules —
+the first two of the four extensions the r279 dispatcher stubbed
+as `Error::NotImplemented`, picked because `scalable_mode` gates
+the remaining two (the picture spatial/temporal scalable
+extensions are only legal in a scalable hierarchy) and because
+copyright is the lone non-scalable picture-level straggler.
+`SequenceScalableExtension` carries `ScalableMode` (Table 6-10 —
+data partitioning / spatial / SNR / temporal, with the
+mode-conditional parameter block in the variant:
+`SpatialScalabilityParams` for the lower-layer prediction sizes +
+the four §7.7.2 subsampling factors, `TemporalScalabilityParams`
+for the picture-mux remultiplex fields) and the 4-bit `layer_id`,
+enforcing the §6.3.7 zero-forbidden subsampling factors, the
+reserved `picture_mux_factor` `'000'` when `picture_mux_enable`
+is set, and the §6.1 / §6.3.7 `layer_id` pins (data partitioning
+⇒ 0 or 1; other modes ⇒ ≥ 1, since the base layer carries no
+`sequence_scalable_extension()` outside data partitioning).
+`CopyrightExtension` enforces the §6.3.15 zero `reserved` field,
+the three marker bits, and the clear-flag / zero-identifier
+constraints on `copyright_identifier` + the 64-bit
+`copyright_number()` accessor ((n1 << 44) + (n2 << 22) + n3). Both
+are wired into the r279 dispatcher's `i = 0` / `i = 2` allowable
+sets (new `ExtensionAndUserData` fields), shrinking the
+`NotImplemented` surface to the two picture scalable extensions.
+The §6.1.1.6 / §6.3.7 cross-sequence occurrence rule (*"a
+bitstream is either scalable or it is not scalable"*) awaits a
+`SequenceDisplayOrderDriver`-shaped follow-up driver. 34 new unit
+tests (936 total, was 902): the sequence-scalable wire surface and
+its seven rejection sites (16), the copyright wire surface and its
+seven rejection sites (13), and the dispatcher integration —
+positive `i = 0` / `i = 2` parses, both-extensions window,
+wrong-location rejections, and the two remaining `NotImplemented`
+stubs (5 net).
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

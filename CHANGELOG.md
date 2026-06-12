@@ -8,6 +8,59 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 283: §6.2.2.5 `sequence_scalable_extension()` parser (field
+  semantics §6.3.7) in a new `sequence_scalable_extension` module and
+  §6.2.3.6 `copyright_extension()` parser (field semantics §6.3.15)
+  in a new `copyright_extension` module — the first two of the four
+  extensions the r279 `extension_and_user_data(i)` dispatcher
+  surfaced as `Error::NotImplemented`. New types:
+  `SequenceScalableExtension` (`scalable_mode` + `layer_id`),
+  `ScalableMode` (Table 6-10 — all four 2-bit codes are defined, no
+  reserved row; each scalability type carries its §6.2.2.5
+  mode-conditional parameter block in the variant),
+  `SpatialScalabilityParams` (the two 14-bit lower-layer prediction
+  sizes + the four 5-bit §7.7.2 subsampling factors, *"the value
+  zero is forbidden"* enforced on each), `TemporalScalabilityParams`
+  (`picture_mux_enable`, the conditionally-present
+  `mux_to_progressive_sequence`, `picture_mux_order`,
+  `picture_mux_factor` with the §6.3.7 reserved `'000'` rejected
+  when `picture_mux_enable` is set — the only case the field is
+  used — and preserved raw otherwise), and `CopyrightExtension`
+  (`copyright_flag` / `copyright_identifier` / `original_or_copy` +
+  the three number fields and the §6.3.15 64-bit
+  `copyright_number()` derivation `(n1 << 44) + (n2 << 22) + n3`).
+  Enforced rejection sites beyond the wire shape: the §6.1 / §6.3.7
+  `layer_id` pins (data partitioning ⇒ partition 0 or 1; spatial /
+  SNR / temporal ⇒ at least 1, because the base layer carries no
+  `sequence_scalable_extension()` outside data partitioning), the
+  spatial-block marker bit, the §6.3.15 *"shall have the value
+  zero"* 7-bit `reserved` field, the three copyright marker bits,
+  and the §6.3.15 clear-flag (`copyright_identifier` and
+  `copyright_number` shall be 0) and zero-identifier
+  (`copyright_number` shall be 0) constraints. Both parsers expose
+  the crate-standard `parse` / `parse_with_reader` pair and are
+  wired into the r279 dispatcher's `i = 0` / `i = 2` allowable sets
+  via two new `ExtensionAndUserData` fields
+  (`sequence_scalable_extension`, `copyright_extension`); the
+  `Error::NotImplemented` surface shrinks to
+  `picture_spatial_scalable_extension()` (§6.2.3.5) and
+  `picture_temporal_scalable_extension()` (§6.2.3.4). The
+  `SEQUENCE_SCALABLE_EXTENSION_ID` / `COPYRIGHT_EXTENSION_ID`
+  constants moved into the new modules (still re-exported at the
+  crate root, along with all new types). Follow-ups: the §6.1.1.6 /
+  §6.3.7 cross-sequence occurrence rule (*"a bitstream is either
+  scalable or it is not scalable"*; all data elements equal across
+  repeat sequence headers) needs a
+  `SequenceDisplayOrderDriver`-shaped sequence-layer driver, and the
+  two picture scalable extension parsers plus the top-level §6.2.2
+  `video_sequence()` walker remain future rounds. 34 new unit tests
+  (936 total, was 902): the sequence-scalable wire surface across
+  all four modes with per-mode encoded-length accounting and seven
+  rejection sites (16), the copyright wire surface with the
+  concatenation identity and seven rejection sites (13), and the
+  dispatcher integration — positive `i = 0` / `i = 2` parses, a
+  both-sequence-extensions window, the two wrong-location
+  rejections, and the two remaining `NotImplemented` stubs (5 net).
 - round 279: §6.2.2.2 `extension_and_user_data(i)` dispatcher plus
   §6.2.2.2.1 `extension_data(i)` and §6.2.2.2.2 `user_data()` in a new
   `extension_and_user_data` module — the §6.2.2 `video_sequence()`

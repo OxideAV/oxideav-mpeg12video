@@ -343,6 +343,7 @@ pub mod add_coefficients;
 pub mod block_dc;
 pub mod coded_block_pattern;
 pub mod combine_predictions;
+pub mod copyright_extension;
 pub mod dct_coeff;
 pub mod dequantize;
 pub mod dual_prime;
@@ -372,6 +373,7 @@ pub mod sequence_display_extension;
 pub mod sequence_display_order;
 pub mod sequence_extension;
 pub mod sequence_header;
+pub mod sequence_scalable_extension;
 pub mod skipped_macroblock;
 pub mod slice_header;
 pub mod slice_macroblock_walk;
@@ -386,6 +388,7 @@ pub use combine_predictions::{
     average_dual_prime_predictions, average_predictions, average_predictions_in_place,
     combine_directional_predictions, PredictionDirection,
 };
+pub use copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
 pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
 pub use dequantize::{
     dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
@@ -393,9 +396,8 @@ pub use dequantize::{
     DEFAULT_NON_INTRA_QUANT,
 };
 pub use extension_and_user_data::{
-    ExtensionAndUserData, ExtensionLocation, UserData, COPYRIGHT_EXTENSION_ID,
-    PICTURE_SPATIAL_SCALABLE_EXTENSION_ID, PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
-    SEQUENCE_SCALABLE_EXTENSION_ID, USER_DATA_START_CODE,
+    ExtensionAndUserData, ExtensionLocation, UserData, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
+    PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID, USER_DATA_START_CODE,
 };
 
 pub use dual_prime::{
@@ -496,6 +498,10 @@ pub use sequence_extension::{
     SEQUENCE_EXTENSION_ID,
 };
 pub use sequence_header::{AspectRatio, Mpeg2SequenceHeader, SEQUENCE_HEADER_CODE};
+pub use sequence_scalable_extension::{
+    ScalableMode, SequenceScalableExtension, SpatialScalabilityParams, TemporalScalabilityParams,
+    SEQUENCE_SCALABLE_EXTENSION_ID,
+};
 pub use skipped_macroblock::{
     apply_to_pmv as skipped_macroblock_apply_to_pmv, describe_skipped_macroblock,
     SkippedMacroblock, SkippedMacroblockContext, SkippedMotionVector,
@@ -525,8 +531,7 @@ pub enum Error {
     /// yet implemented in this crate. Returned by the §6.2.2.2
     /// `extension_and_user_data(i)` dispatcher when a conformant
     /// bitstream carries an extension this crate has no parser for
-    /// yet (`sequence_scalable_extension()`, `copyright_extension()`,
-    /// `picture_spatial_scalable_extension()`,
+    /// yet (`picture_spatial_scalable_extension()`,
     /// `picture_temporal_scalable_extension()`), so callers can tell
     /// "cannot decode yet" apart from "bitstream is broken".
     NotImplemented,

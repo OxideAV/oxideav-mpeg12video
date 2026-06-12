@@ -57,8 +57,7 @@
 //! `i = 2`) is rejected — §6.3.1 *"The set of allowed extensions is
 //! different at each different point in the syntax"*. Identifiers
 //! whose extensions are defined by the spec but not yet implemented
-//! by this crate (`sequence_scalable_extension()`,
-//! `copyright_extension()`, `picture_spatial_scalable_extension()`,
+//! by this crate (`picture_spatial_scalable_extension()`,
 //! `picture_temporal_scalable_extension()`) surface
 //! [`Error::NotImplemented`] so callers can tell "this crate cannot
 //! decode this yet" apart from "this bitstream is broken".
@@ -84,27 +83,21 @@
 
 use oxideav_core::bits::BitReader;
 
+use crate::copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
 use crate::picture_display_extension::{
     PictureDisplayContext, PictureDisplayExtension, PICTURE_DISPLAY_EXTENSION_ID,
 };
 use crate::quant_matrix_extension::{QuantMatrixExtension, QUANT_MATRIX_EXTENSION_ID};
 use crate::sequence_display_extension::{SequenceDisplayExtension, SEQUENCE_DISPLAY_EXTENSION_ID};
 use crate::sequence_extension::{ChromaFormat, EXTENSION_START_CODE};
+use crate::sequence_scalable_extension::{
+    SequenceScalableExtension, SEQUENCE_SCALABLE_EXTENSION_ID,
+};
 use crate::{Error, Result};
 
 /// 32-bit `user_data_start_code`, byte string `00 00 01 B2`
 /// (§6.3.4.1 / Table 6-1).
 pub const USER_DATA_START_CODE: u32 = 0x0000_01B2;
-
-/// `extension_start_code_identifier` value for
-/// `copyright_extension()` (Table 6-2 entry `0100`). The extension
-/// itself is not yet implemented by this crate.
-pub const COPYRIGHT_EXTENSION_ID: u32 = 0b0100;
-
-/// `extension_start_code_identifier` value for
-/// `sequence_scalable_extension()` (Table 6-2 entry `0101`). The
-/// extension itself is not yet implemented by this crate.
-pub const SEQUENCE_SCALABLE_EXTENSION_ID: u32 = 0b0101;
 
 /// `extension_start_code_identifier` value for
 /// `picture_spatial_scalable_extension()` (Table 6-2 entry `1001`).
@@ -165,8 +158,12 @@ pub struct ExtensionAndUserData {
     /// Feed this straight into
     /// [`crate::SequenceDisplayOrderDriver::on_sequence_header_window`].
     pub sequence_display_extension: Option<SequenceDisplayExtension>,
+    /// `sequence_scalable_extension()` when present (`i = 0` only).
+    pub sequence_scalable_extension: Option<SequenceScalableExtension>,
     /// `quant_matrix_extension()` when present (`i = 2` only).
     pub quant_matrix_extension: Option<QuantMatrixExtension>,
+    /// `copyright_extension()` when present (`i = 2` only).
+    pub copyright_extension: Option<CopyrightExtension>,
     /// `picture_display_extension()` when present (`i = 2` only).
     pub picture_display_extension: Option<PictureDisplayExtension>,
     /// Every `user_data()` element, in bitstream order. `user_data()`
@@ -383,9 +380,8 @@ impl ExtensionAndUserData {
                             Some(SequenceDisplayExtension::parse_with_reader(&mut br)?);
                     }
                     SEQUENCE_SCALABLE_EXTENSION_ID => {
-                        // Defined by §6.2.2.5 but not yet implemented
-                        // by this crate.
-                        return Err(Error::NotImplemented);
+                        out.sequence_scalable_extension =
+                            Some(SequenceScalableExtension::parse_with_reader(&mut br)?);
                     }
                     _ => {
                         return Err(Error::InvalidBitstream(
@@ -408,11 +404,14 @@ impl ExtensionAndUserData {
                             PictureDisplayExtension::parse_with_reader(&mut br, picture_display)?,
                         );
                     }
-                    COPYRIGHT_EXTENSION_ID
-                    | PICTURE_SPATIAL_SCALABLE_EXTENSION_ID
+                    COPYRIGHT_EXTENSION_ID => {
+                        out.copyright_extension =
+                            Some(CopyrightExtension::parse_with_reader(&mut br)?);
+                    }
+                    PICTURE_SPATIAL_SCALABLE_EXTENSION_ID
                     | PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID => {
-                        // Defined by §6.2.3.6 / §6.2.3.5 / §6.2.3.4
-                        // but not yet implemented by this crate.
+                        // Defined by §6.2.3.5 / §6.2.3.4 but not yet
+                        // implemented by this crate.
                         return Err(Error::NotImplemented);
                     }
                     _ => {
@@ -802,26 +801,128 @@ mod tests {
     }
 
     #[test]
-    fn i0_sequence_scalable_extension_is_not_implemented() {
+    fn i0_parses_sequence_scalable_extension() {
+        use crate::sequence_scalable_extension::ScalableMode;
+
+        // SNR scalability, layer_id 1 — 42 bits → 6 bytes with §5.2.3
+        // zero stuffing.
         let mut bw = BitWriter::new();
         bw.write_u32(EXTENSION_START_CODE, 32);
         bw.write_u32(SEQUENCE_SCALABLE_EXTENSION_ID, 4);
+        bw.write_u32(0b10, 2); // scalable_mode = SNR (Table 6-10)
+        bw.write_u32(1, 4); // layer_id
+        bw.align_to_byte();
+        write_picture_start_code_prefix(&mut bw);
+        let buf = bw.into_bytes();
+        let out = ExtensionAndUserData::parse(&buf, ExtensionLocation::AfterSequenceExtension)
+            .expect("i=0 with sequence_scalable_extension");
+        let sse = out.sequence_scalable_extension.expect("parsed extension");
+        assert_eq!(sse.scalable_mode, ScalableMode::SnrScalability);
+        assert_eq!(sse.layer_id, 1);
+        assert_eq!(out.byte_position_after, 6);
+    }
+
+    #[test]
+    fn i2_parses_copyright_extension() {
+        // copyright_flag '0' shape: identifier and number all zero
+        // (§6.3.15) — 120 bits, exactly 15 bytes.
+        let mut bw = BitWriter::new();
+        bw.write_u32(EXTENSION_START_CODE, 32);
+        bw.write_u32(COPYRIGHT_EXTENSION_ID, 4);
+        bw.write_u32(0, 1); // copyright_flag
+        bw.write_u32(0, 8); // copyright_identifier
+        bw.write_u32(1, 1); // original_or_copy
+        bw.write_u32(0, 7); // reserved
+        bw.write_u32(1, 1); // marker_bit
+        bw.write_u32(0, 20); // copyright_number_1
+        bw.write_u32(1, 1); // marker_bit
+        bw.write_u32(0, 22); // copyright_number_2
+        bw.write_u32(1, 1); // marker_bit
+        bw.write_u32(0, 22); // copyright_number_3
+        write_picture_start_code_prefix(&mut bw);
+        let buf = bw.into_bytes();
+        let out =
+            ExtensionAndUserData::parse(&buf, i2_location()).expect("i=2 copyright_extension");
+        let ce = out.copyright_extension.expect("parsed extension");
+        assert!(!ce.copyright_flag);
+        assert!(ce.original_or_copy);
+        assert_eq!(ce.copyright_number(), 0);
+        assert_eq!(out.byte_position_after, 15);
+    }
+
+    #[test]
+    fn i0_parses_both_sequence_layer_extensions() {
+        // §6.3.1: any number of extensions from the allowable set, in
+        // any order — both i=0 extensions in one window.
+        let mut bw = BitWriter::new();
+        write_sequence_display_extension(&mut bw);
+        bw.write_u32(EXTENSION_START_CODE, 32);
+        bw.write_u32(SEQUENCE_SCALABLE_EXTENSION_ID, 4);
+        bw.write_u32(0b00, 2); // scalable_mode = data partitioning
+        bw.write_u32(0, 4); // layer_id = partition zero
+        bw.align_to_byte();
+        write_picture_start_code_prefix(&mut bw);
+        let buf = bw.into_bytes();
+        let out = ExtensionAndUserData::parse(&buf, ExtensionLocation::AfterSequenceExtension)
+            .expect("i=0 with both extensions");
+        assert!(out.sequence_display_extension.is_some());
+        let sse = out.sequence_scalable_extension.expect("scalable");
+        assert_eq!(sse.layer_id, 0);
+        assert_eq!(out.byte_position_after, 9 + 6);
+    }
+
+    #[test]
+    fn i0_rejects_copyright_extension_id() {
+        // Copyright Extension ID is in the i=2 allowable set only.
+        let mut bw = BitWriter::new();
+        bw.write_u32(EXTENSION_START_CODE, 32);
+        bw.write_u32(COPYRIGHT_EXTENSION_ID, 4);
         bw.write_u32(0, 4);
         write_picture_start_code_prefix(&mut bw);
-        assert_eq!(
+        assert!(matches!(
             ExtensionAndUserData::parse(
                 &bw.into_bytes(),
                 ExtensionLocation::AfterSequenceExtension
             ),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    #[test]
+    fn i2_rejects_sequence_scalable_extension_id() {
+        // Sequence Scalable Extension ID is in the i=0 allowable set
+        // only.
+        let mut bw = BitWriter::new();
+        bw.write_u32(EXTENSION_START_CODE, 32);
+        bw.write_u32(SEQUENCE_SCALABLE_EXTENSION_ID, 4);
+        bw.write_u32(0b10, 2);
+        bw.write_u32(1, 4);
+        bw.align_to_byte();
+        write_picture_start_code_prefix(&mut bw);
+        assert!(matches!(
+            ExtensionAndUserData::parse(&bw.into_bytes(), i2_location()),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    #[test]
+    fn i2_picture_spatial_scalable_extension_is_not_implemented() {
+        let mut bw = BitWriter::new();
+        bw.write_u32(EXTENSION_START_CODE, 32);
+        bw.write_u32(PICTURE_SPATIAL_SCALABLE_EXTENSION_ID, 4);
+        bw.write_u32(0, 4);
+        write_picture_start_code_prefix(&mut bw);
+        assert_eq!(
+            ExtensionAndUserData::parse(&bw.into_bytes(), i2_location()),
             Err(Error::NotImplemented)
         );
     }
 
     #[test]
-    fn i2_copyright_extension_is_not_implemented() {
+    fn i2_picture_temporal_scalable_extension_is_not_implemented() {
         let mut bw = BitWriter::new();
         bw.write_u32(EXTENSION_START_CODE, 32);
-        bw.write_u32(COPYRIGHT_EXTENSION_ID, 4);
+        bw.write_u32(PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID, 4);
         bw.write_u32(0, 4);
         write_picture_start_code_prefix(&mut bw);
         assert_eq!(
