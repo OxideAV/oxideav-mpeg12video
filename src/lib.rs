@@ -366,6 +366,8 @@ pub mod mpeg2_inverse_scan;
 pub mod mpeg2_macroblock_blocks;
 pub mod picture_display_extension;
 pub mod picture_header;
+pub mod picture_spatial_scalable_extension;
+pub mod picture_temporal_scalable_extension;
 pub mod pmv;
 pub mod quant_matrix_extension;
 pub mod quantizer_scale;
@@ -396,8 +398,7 @@ pub use dequantize::{
     DEFAULT_NON_INTRA_QUANT,
 };
 pub use extension_and_user_data::{
-    ExtensionAndUserData, ExtensionLocation, UserData, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
-    PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID, USER_DATA_START_CODE,
+    ExtensionAndUserData, ExtensionLocation, UserData, USER_DATA_START_CODE,
 };
 
 pub use dual_prime::{
@@ -479,6 +480,12 @@ pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
 };
+pub use picture_spatial_scalable_extension::{
+    PictureSpatialScalableExtension, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
+};
+pub use picture_temporal_scalable_extension::{
+    PictureTemporalScalableExtension, PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
+};
 pub use pmv::{
     compute_delta, decode_motion_vector, reconstruct_component, reconstruct_motion_vector,
     scale_chroma, update_predictors, vector_range, Component, Direction, Pmv, PmvUpdateContext,
@@ -528,12 +535,11 @@ pub enum Error {
     /// the syntax element demanded.
     ShortHeader,
     /// Placeholder for syntax paths that are spec-defined but not
-    /// yet implemented in this crate. Returned by the §6.2.2.2
-    /// `extension_and_user_data(i)` dispatcher when a conformant
-    /// bitstream carries an extension this crate has no parser for
-    /// yet (`picture_spatial_scalable_extension()`,
-    /// `picture_temporal_scalable_extension()`), so callers can tell
-    /// "cannot decode yet" apart from "bitstream is broken".
+    /// yet implemented in this crate, so callers can tell "cannot
+    /// decode yet" apart from "bitstream is broken". No §6.2.2.2
+    /// `extension_and_user_data(i)` path returns it any longer — every
+    /// Table 6-2 extension this crate's dispatcher reaches now has a
+    /// parser — but the variant is retained for future syntax surfaces.
     NotImplemented,
 }
 

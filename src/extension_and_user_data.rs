@@ -55,12 +55,11 @@
 //! An identifier that names a *defined* extension outside the
 //! location's allowable set (e.g. a Sequence Display Extension ID at
 //! `i = 2`) is rejected — §6.3.1 *"The set of allowed extensions is
-//! different at each different point in the syntax"*. Identifiers
-//! whose extensions are defined by the spec but not yet implemented
-//! by this crate (`picture_spatial_scalable_extension()`,
-//! `picture_temporal_scalable_extension()`) surface
-//! [`Error::NotImplemented`] so callers can tell "this crate cannot
-//! decode this yet" apart from "this bitstream is broken".
+//! different at each different point in the syntax"*. Every Table 6-2
+//! extension this dispatcher can reach now has a parser, including the
+//! two picture-layer scalable extensions
+//! (`picture_spatial_scalable_extension()` /
+//! `picture_temporal_scalable_extension()`).
 //!
 //! `user_data()` (§6.2.2.2.2 / §6.3.4.1) collects the 8-bit
 //! `user_data` bytes that follow a `user_data_start_code`
@@ -87,6 +86,8 @@ use crate::copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
 use crate::picture_display_extension::{
     PictureDisplayContext, PictureDisplayExtension, PICTURE_DISPLAY_EXTENSION_ID,
 };
+use crate::picture_spatial_scalable_extension::PictureSpatialScalableExtension;
+use crate::picture_temporal_scalable_extension::PictureTemporalScalableExtension;
 use crate::quant_matrix_extension::{QuantMatrixExtension, QUANT_MATRIX_EXTENSION_ID};
 use crate::sequence_display_extension::{SequenceDisplayExtension, SEQUENCE_DISPLAY_EXTENSION_ID};
 use crate::sequence_extension::{ChromaFormat, EXTENSION_START_CODE};
@@ -99,15 +100,8 @@ use crate::{Error, Result};
 /// (§6.3.4.1 / Table 6-1).
 pub const USER_DATA_START_CODE: u32 = 0x0000_01B2;
 
-/// `extension_start_code_identifier` value for
-/// `picture_spatial_scalable_extension()` (Table 6-2 entry `1001`).
-/// The extension itself is not yet implemented by this crate.
-pub const PICTURE_SPATIAL_SCALABLE_EXTENSION_ID: u32 = 0b1001;
-
-/// `extension_start_code_identifier` value for
-/// `picture_temporal_scalable_extension()` (Table 6-2 entry `1010`).
-/// The extension itself is not yet implemented by this crate.
-pub const PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID: u32 = 0b1010;
+pub use crate::picture_spatial_scalable_extension::PICTURE_SPATIAL_SCALABLE_EXTENSION_ID;
+pub use crate::picture_temporal_scalable_extension::PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID;
 
 /// The `i` argument of `extension_and_user_data(i)` — which of the
 /// three §6.2.2 invocation points this dispatch services. The
@@ -166,6 +160,12 @@ pub struct ExtensionAndUserData {
     pub copyright_extension: Option<CopyrightExtension>,
     /// `picture_display_extension()` when present (`i = 2` only).
     pub picture_display_extension: Option<PictureDisplayExtension>,
+    /// `picture_spatial_scalable_extension()` when present (`i = 2`
+    /// only — legal only in a spatially-scalable sequence).
+    pub picture_spatial_scalable_extension: Option<PictureSpatialScalableExtension>,
+    /// `picture_temporal_scalable_extension()` when present (`i = 2`
+    /// only — legal only in a temporally-scalable sequence).
+    pub picture_temporal_scalable_extension: Option<PictureTemporalScalableExtension>,
     /// Every `user_data()` element, in bitstream order. `user_data()`
     /// is not an extension, so the §6.3.1 at-most-once rule does not
     /// bound it.
@@ -408,11 +408,14 @@ impl ExtensionAndUserData {
                         out.copyright_extension =
                             Some(CopyrightExtension::parse_with_reader(&mut br)?);
                     }
-                    PICTURE_SPATIAL_SCALABLE_EXTENSION_ID
-                    | PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID => {
-                        // Defined by §6.2.3.5 / §6.2.3.4 but not yet
-                        // implemented by this crate.
-                        return Err(Error::NotImplemented);
+                    PICTURE_SPATIAL_SCALABLE_EXTENSION_ID => {
+                        out.picture_spatial_scalable_extension =
+                            Some(PictureSpatialScalableExtension::parse_with_reader(&mut br)?);
+                    }
+                    PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID => {
+                        out.picture_temporal_scalable_extension = Some(
+                            PictureTemporalScalableExtension::parse_with_reader(&mut br)?,
+                        );
                     }
                     _ => {
                         return Err(Error::InvalidBitstream(
@@ -906,29 +909,44 @@ mod tests {
     }
 
     #[test]
-    fn i2_picture_spatial_scalable_extension_is_not_implemented() {
+    fn i2_parses_picture_spatial_scalable_extension() {
         let mut bw = BitWriter::new();
         bw.write_u32(EXTENSION_START_CODE, 32);
         bw.write_u32(PICTURE_SPATIAL_SCALABLE_EXTENSION_ID, 4);
-        bw.write_u32(0, 4);
+        bw.write_u32(9, 10); // lower_layer_temporal_reference
+        bw.write_bit(true); // marker_bit
+        bw.write_i32(4, 15); // lower_layer_horizontal_offset (even for 4:2:0)
+        bw.write_bit(true); // marker_bit
+        bw.write_i32(-6, 15); // lower_layer_vertical_offset (even for 4:2:0)
+        bw.write_u32(0b00, 2); // spatial_temporal_weight_code_table_index
+        bw.write_bit(true); // lower_layer_progressive_frame
+        bw.write_bit(false); // lower_layer_deinterlaced_field_select
+        bw.align_to_byte();
         write_picture_start_code_prefix(&mut bw);
-        assert_eq!(
-            ExtensionAndUserData::parse(&bw.into_bytes(), i2_location()),
-            Err(Error::NotImplemented)
-        );
+        let out = ExtensionAndUserData::parse(&bw.into_bytes(), i2_location()).unwrap();
+        let ext = out.picture_spatial_scalable_extension.unwrap();
+        assert_eq!(ext.lower_layer_temporal_reference, 9);
+        assert_eq!(ext.lower_layer_horizontal_offset, 4);
+        assert_eq!(ext.lower_layer_vertical_offset, -6);
+        assert!(ext.lower_layer_progressive_frame);
     }
 
     #[test]
-    fn i2_picture_temporal_scalable_extension_is_not_implemented() {
+    fn i2_parses_picture_temporal_scalable_extension() {
         let mut bw = BitWriter::new();
         bw.write_u32(EXTENSION_START_CODE, 32);
         bw.write_u32(PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID, 4);
-        bw.write_u32(0, 4);
+        bw.write_u32(0b01, 2); // reference_select_code
+        bw.write_u32(5, 10); // forward_temporal_reference
+        bw.write_bit(true); // marker_bit
+        bw.write_u32(7, 10); // backward_temporal_reference
+        bw.align_to_byte();
         write_picture_start_code_prefix(&mut bw);
-        assert_eq!(
-            ExtensionAndUserData::parse(&bw.into_bytes(), i2_location()),
-            Err(Error::NotImplemented)
-        );
+        let out = ExtensionAndUserData::parse(&bw.into_bytes(), i2_location()).unwrap();
+        let ext = out.picture_temporal_scalable_extension.unwrap();
+        assert_eq!(ext.reference_select_code, 0b01);
+        assert_eq!(ext.forward_temporal_reference, 5);
+        assert_eq!(ext.backward_temporal_reference, 7);
     }
 
     #[test]

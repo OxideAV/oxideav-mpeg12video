@@ -548,6 +548,33 @@ positive `i = 0` / `i = 2` parses, both-extensions window,
 wrong-location rejections, and the two remaining `NotImplemented`
 stubs (5 net).
 
+Round 291 lands the **§6.2.3.5 `picture_spatial_scalable_extension()`
+and §6.2.3.4 `picture_temporal_scalable_extension()` parsers** in two
+new modules — the last two of the four extensions the r279 dispatcher
+stubbed as `Error::NotImplemented`, closing that surface so no
+`extension_and_user_data(i)` path returns the variant any longer.
+`PictureSpatialScalableExtension` (§6.3.14) carries
+`lower_layer_temporal_reference`, the two 15-bit `simsbf`
+`lower_layer_horizontal_offset` / `lower_layer_vertical_offset` (read
+via `read_i32`, full `[-16384, 16383]` range),
+`spatial_temporal_weight_code_table_index` (§7.7 Tables 7-20 / 7-21),
+`lower_layer_progressive_frame`, and
+`lower_layer_deinterlaced_field_select`; its `validate(chroma_format)`
+enforces the §6.3.14 even-offset rules (horizontal even for 4:2:0 /
+4:2:2, vertical even for 4:2:0) that the bare wire parse cannot see.
+`PictureTemporalScalableExtension` (§6.3.13) carries
+`reference_select_code`, `forward_temporal_reference`, and
+`backward_temporal_reference`; its `validate(picture_coding_type)`
+enforces the §7.9 / Table 7-28 / Table 7-29 `reference_select_code`
+constraints (I-pictures shall be `'11'`, `'11'` forbidden in
+P-pictures, `'00'` forbidden in B-pictures). Both carry the two
+start-code / identifier / `marker_bit` rejection sites; both are wired
+into the r279 dispatcher's `i = 2` allowable set as new
+`ExtensionAndUserData` fields. 29 new bit-exact unit tests cover the
+two parsers' wire surfaces and rejection sites, the picture-type /
+chroma-format cross-checks, and the two dispatcher hand-offs that
+replaced the former `NotImplemented` stubs.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

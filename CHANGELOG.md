@@ -8,6 +8,36 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 291: §6.2.3.5 `picture_spatial_scalable_extension()` parser
+  (field semantics §6.3.14) in a new
+  `picture_spatial_scalable_extension` module and §6.2.3.4
+  `picture_temporal_scalable_extension()` parser (field semantics
+  §6.3.13) in a new `picture_temporal_scalable_extension` module —
+  the last two of the four extensions the r279
+  `extension_and_user_data(i)` dispatcher surfaced as
+  `Error::NotImplemented`, closing that surface entirely.
+  `PictureSpatialScalableExtension` carries
+  `lower_layer_temporal_reference`, the two 15-bit `simsbf`
+  `lower_layer_horizontal_offset` / `lower_layer_vertical_offset`
+  (read via `read_i32`, full `[-16384, 16383]` range),
+  `spatial_temporal_weight_code_table_index` (§7.7 Table 7-20/7-21),
+  `lower_layer_progressive_frame`, and
+  `lower_layer_deinterlaced_field_select`; its `validate(chroma_format)`
+  helper enforces the §6.3.14 even-offset rules (horizontal even for
+  4:2:0/4:2:2, vertical even for 4:2:0) the bare wire parse cannot
+  see. `PictureTemporalScalableExtension` carries
+  `reference_select_code`, `forward_temporal_reference`, and
+  `backward_temporal_reference`; its `validate(picture_coding_type)`
+  helper enforces the §7.9 / Table 7-28 / Table 7-29
+  `reference_select_code` constraints (I-pictures shall be `'11'`,
+  `'11'` forbidden in P-pictures, `'00'` forbidden in B-pictures).
+  Both are wired into the r279 dispatcher's `i = 2` allowable set
+  (new `ExtensionAndUserData` fields
+  `picture_spatial_scalable_extension` /
+  `picture_temporal_scalable_extension`), so no
+  `extension_and_user_data(i)` path returns `Error::NotImplemented`
+  any longer. Both `marker_bit` / start-code / identifier rejection
+  sites are covered. 29 new bit-exact unit tests.
 - round 283: §6.2.2.5 `sequence_scalable_extension()` parser (field
   semantics §6.3.7) in a new `sequence_scalable_extension` module and
   §6.2.3.6 `copyright_extension()` parser (field semantics §6.3.15)
