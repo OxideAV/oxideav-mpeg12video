@@ -125,9 +125,11 @@ pub struct SkippedMacroblockContext {
     /// `sequence_scalable_extension()` with
     /// `scalable_mode = "SNR scalability"` is in force, in which
     /// case the §7.6.6 preamble allows skipped MBs in the I-picture.
-    /// The scalability parsers are not yet in this crate, so the
-    /// gate is exposed but a future round must wire it from those
-    /// extensions; non-scalable callers leave it `false` and the
+    /// The scalability parsers now live in this crate
+    /// ([`crate::SequenceScalableExtension`] /
+    /// [`crate::PictureSpatialScalableExtension`]); a future
+    /// picture-level driver round must wire this gate from those
+    /// extensions. Non-scalable callers leave it `false` and the
     /// I-picture path is rejected per the §7.6.6 preamble's main
     /// rule.
     pub scalable_i_picture: bool,
