@@ -1426,6 +1426,7 @@ pub fn reconstruct_record_motion_vectors(
 /// is replayed from the record's `body_bit_position` snapshot.
 fn derive_tail(record: &MacroblockRecord) -> MacroblockModesTail {
     MacroblockModesTail {
+        spatial_temporal_weight: None,
         motion_type: record.motion_type,
         dct_type: record.dct_type,
         bit_position_after: record.body_bit_position,

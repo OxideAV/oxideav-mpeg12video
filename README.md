@@ -607,6 +607,40 @@ three B-8 codewords across all picture types, the Table 6-10 selector,
 prefix-freeness of all four new tables, and parse / parse_with_table
 equivalence.
 
+Round 301 lands the **§6.2.5.1 `spatial_temporal_weight_code` read
+and Table 7-21 (§7.7.4) class resolution** — the r294 follow-up that
+was deferred as "the `spatial_temporal_weight_code` read … remain a
+follow-up". `macroblock_modes::MacroblockModesTail::parse` previously
+rejected any `mb_type` whose r294 scalable
+`spatial_temporal_weight_code_flag` was set; it now reads the 2-bit
+code per the §6.2.5.1 gate (`flag == 1 &&
+spatial_temporal_weight_code_table_index != '00'`) and resolves it
+against the full Table 7-21 grid into a new `SpatialTemporalWeight`
+(re-exported at the crate root). That type carries the resolved
+`weight_class` (`1`/`2`/`3`), the per-field `spatial_temporal_weight(s)`
+pair as fixed-point sixteenths (`0` / `8` = 0,5 / `16` = 1), the
+`is_single` `(a)`-vs-`(a; b)` shape, and the
+`spatial_temporal_integer_weight` flag (the codes also usable with
+dual-prime per Tables 7-22 / 7-23). The resolved class then drives
+the §6.3.17.2 Field-based motion-vector-count split (Table 6-17),
+replacing the always-`0` context default. `MacroblockModesContext`
+grows `spatial_temporal_weight_code_table_index` (from the
+`picture_spatial_scalable_extension()`, §6.3.14) via a new
+`MacroblockModesContext::scalable` constructor; the existing `new`
+seeds it to `0` so non-scalable callers stay byte-identical.
+`MacroblockModesTail` grows `spatial_temporal_weight:
+Option<SpatialTemporalWeight>`. Empirical correction: §6.3.17.1 cites
+"Table 7-20" for the flag-set class derivation, but Table 7-20 carries
+only the allowed table-index values; §7.7.4 authoritatively derives
+the class from Table 7-21, which this code follows. The §7.7.4
+spatial-temporal prediction *combination* (weighting the spatial and
+temporal predictions) remains a follow-up — this round lands the
+syntax read + table resolution. 8 new unit tests (867 lib total):
+the full Table 7-21 grid plus out-of-range index, the code-read +
+class-resolution path (classes 1 and 3 driving the 2-vs-1 vector
+split), the `table_index == 00` no-code `00*` row, the flag-clear
+no-read path, truncation, and the scalable-context seeding.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

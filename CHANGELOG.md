@@ -8,6 +8,35 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 301: §6.2.5.1 `spatial_temporal_weight_code` read +
+  Table 7-21 (§7.7.4) resolution wired into
+  `macroblock_modes::MacroblockModesTail::parse`. The former
+  rejection of `mb_type`s carrying
+  `spatial_temporal_weight_code_flag == true` (set by the r294
+  scalable B-5/B-6/B-7 tables) is replaced by the actual 2-bit code
+  read, gated per §6.2.5.1 on `spatial_temporal_weight_code_flag == 1
+  && spatial_temporal_weight_code_table_index != '00'`. New
+  `SpatialTemporalWeight` type (re-exported at the crate root) carries
+  the resolved `weight_class` (`1`/`2`/`3`), the per-field
+  `spatial_temporal_weight(s)` pair (in sixteenths: `0`/`8`/`16`),
+  the `is_single` `(a)`-vs-`(a; b)` shape, and the
+  `spatial_temporal_integer_weight` flag — all transcribed from the
+  Table 7-21 grid. The resolved class now drives the §6.3.17.2
+  Field-based motion-vector-count split (Table 6-17) instead of the
+  always-`0` context default. `MacroblockModesContext` grows
+  `spatial_temporal_weight_code_table_index` (from
+  `picture_spatial_scalable_extension()`, §6.3.14) with a new
+  `MacroblockModesContext::scalable` constructor; the existing `new`
+  seeds it to `0` so non-scalable callers are byte-identical.
+  `MacroblockModesTail` grows `spatial_temporal_weight:
+  Option<SpatialTemporalWeight>`. 8 new unit tests (867 lib total):
+  the full Table 7-21 grid + out-of-range index, the code-read +
+  class-resolution path (classes 1 and 3 driving the 2-vs-1 vector
+  split), the `table_index == 00` no-code `00*` row, the flag-clear
+  no-read path, truncation, and the scalable-context seeding.
+  Empirical note: §6.3.17.1 cites "Table 7-20" for the class
+  derivation, but Table 7-20 has no class column; §7.7.4
+  authoritatively derives the class from Table 7-21 (used here).
 - round 294: Annex B scalable `macroblock_type` tables — B-5
   (I-pictures, spatial scalability), B-6 (P-pictures, spatial
   scalability), B-7 (B-pictures, spatial scalability) and B-8 (I/P/B,

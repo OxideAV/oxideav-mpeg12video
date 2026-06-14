@@ -101,6 +101,7 @@ fn spliced_p_picture_two_macroblock_pmv_chain_predicts_correctly() {
         picture_structure: PictureStructure::Frame,
         frame_pred_frame_dct: false,
         spatial_temporal_weight_class: 0,
+        spatial_temporal_weight_code_table_index: 0,
     };
     let mv_ctx = MotionVectorsContext {
         f_code_fwd_horiz: 2,

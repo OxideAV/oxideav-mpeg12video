@@ -417,6 +417,7 @@ pub use idct::{
 };
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
+    SpatialTemporalWeight,
 };
 pub use macroblock_pipeline::{
     blocks_per_macroblock, decode_block as pipeline_decode_block,
