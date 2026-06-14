@@ -45,6 +45,7 @@ fn mt_intra() -> MacroblockType {
         macroblock_pattern: false,
         macroblock_intra: true,
         spatial_temporal_weight_code_flag: false,
+        spatial_temporal_weight_class: Some(0),
         bit_position_after: 0,
     }
 }
@@ -286,6 +287,7 @@ fn integration_non_intra_macroblock_with_no_coded_blocks_resets_predictors() {
         macroblock_pattern: false,
         macroblock_intra: false,
         spatial_temporal_weight_code_flag: false,
+        spatial_temporal_weight_class: Some(0),
         bit_position_after: 0,
     };
     let cbp = CodedBlockPattern {

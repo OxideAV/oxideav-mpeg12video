@@ -25,6 +25,7 @@ fn mt_intra() -> MacroblockType {
         macroblock_pattern: false,
         macroblock_intra: true,
         spatial_temporal_weight_code_flag: false,
+        spatial_temporal_weight_class: Some(0),
         bit_position_after: 0,
     }
 }
@@ -37,6 +38,7 @@ fn mt_inter(forward: bool, backward: bool, pattern: bool) -> MacroblockType {
         macroblock_pattern: pattern,
         macroblock_intra: false,
         spatial_temporal_weight_code_flag: false,
+        spatial_temporal_weight_class: Some(0),
         bit_position_after: 0,
     }
 }

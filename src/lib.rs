@@ -423,7 +423,7 @@ pub use macroblock_pipeline::{
     decode_macroblock as pipeline_decode_macroblock, BlockInputs, DecodedBlock, MacroblockKind,
     PipelineError,
 };
-pub use macroblock_type::MacroblockType;
+pub use macroblock_type::{MacroblockType, MacroblockTypeTable};
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 pub use motion_vector::{
     MotionVector, MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,

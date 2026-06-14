@@ -465,6 +465,7 @@ mod tests {
             macroblock_pattern: false,
             macroblock_intra: true,
             spatial_temporal_weight_code_flag: false,
+            spatial_temporal_weight_class: Some(0),
             bit_position_after: 0,
         }
     }
@@ -477,6 +478,7 @@ mod tests {
             macroblock_pattern: pattern,
             macroblock_intra: false,
             spatial_temporal_weight_code_flag: false,
+            spatial_temporal_weight_class: Some(0),
             bit_position_after: 0,
         }
     }

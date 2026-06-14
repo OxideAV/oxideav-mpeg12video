@@ -8,6 +8,31 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 294: Annex B scalable `macroblock_type` tables — B-5
+  (I-pictures, spatial scalability), B-6 (P-pictures, spatial
+  scalability), B-7 (B-pictures, spatial scalability) and B-8 (I/P/B,
+  SNR scalability) — added to the `macroblock_type` module alongside
+  the existing non-scalable B-2/B-3/B-4 tables. The `Row` type and
+  `MacroblockType` now carry the two extra §6.3.17.1 columns:
+  `spatial_temporal_weight_code_flag` (now set per-row, no longer a
+  hard `false`) and `spatial_temporal_weight_class`
+  (`Option<u8>` — `Some(0)` / `Some(4)` for resolved classes,
+  `None` when the flag is set and the class is one of `{1,2,3}` to be
+  derived later from `spatial_temporal_weight_code` via Table 7-21).
+  New `MacroblockTypeTable` enum + `MacroblockTypeTable::select`
+  derive the table family from `scalable_mode` + picture type + the
+  `picture_spatial_scalable_extension()`-present flag per Table 6-10
+  (spatial scalability falls back to the non-scalable tables when the
+  current picture lacks the spatial-scalable extension; data
+  partitioning and temporal scalability always use B-2/B-3/B-4; SNR
+  uses B-8). `MacroblockType::parse` keeps the non-scalable default;
+  `MacroblockType::parse_with_table` takes an explicit family. The
+  longest-first VLC walk now spans 1..=9 bits (B-7's deepest
+  codewords). 11 new unit tests (861 lib total): every B-5/B-7 row,
+  the B-6 compatible-vs-class-4 split, all three B-8 codewords across
+  every picture type, the Table 6-10 selector, prefix-freeness of all
+  four new tables, and parse/parse_with_table equivalence.
+
 - round 291: §6.2.3.5 `picture_spatial_scalable_extension()` parser
   (field semantics §6.3.14) in a new
   `picture_spatial_scalable_extension` module and §6.2.3.4

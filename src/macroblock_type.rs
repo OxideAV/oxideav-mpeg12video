@@ -18,17 +18,27 @@
 //!   present and which prediction is formed.
 //! * `macroblock_pattern` — when set, `coded_block_pattern()` follows.
 //! * `macroblock_intra` — selects intra coding for the macroblock.
-//! * `spatial_temporal_weight_code_flag` — for the non-scalable
-//!   B-2 / B-3 / B-4 tables this is always `0`; it is surfaced for
-//!   completeness so a later scalable-mode round can reuse the type.
+//! * `spatial_temporal_weight_code_flag` — `0` for the non-scalable
+//!   B-2 / B-3 / B-4 tables; set per-row by the scalable Tables
+//!   B-5 / B-6 / B-7. It indicates whether a `spatial_temporal_weight_code`
+//!   follows in `macroblock_modes()` (§6.3.17.1).
 //!
-//! Round 7 covers **only** the non-scalable tables B-2 (I-pictures),
-//! B-3 (P-pictures) and B-4 (B-pictures). Per Table 6-10 those are
-//! exactly the tables a decoder selects when no
-//! `sequence_scalable_extension()` is present — which is every stream
-//! this crate can currently parse. The scalable tables B-5 .. B-8
-//! (spatial / SNR scalability) require `sequence_scalable_extension()`
-//! parsing that no earlier round has landed; they are out of scope.
+//! Round 7 covered the non-scalable tables B-2 (I-pictures), B-3
+//! (P-pictures) and B-4 (B-pictures). Per Table 6-10 those are the
+//! tables a decoder selects when no `sequence_scalable_extension()` is
+//! present (or for data-partitioning / temporal scalability, or for a
+//! spatial-scalable sequence whose current picture lacks a
+//! `picture_spatial_scalable_extension()`). Round 294 adds the
+//! **scalable Tables B-5 (I, spatial), B-6 (P, spatial), B-7
+//! (B, spatial) and B-8 (I/P/B, SNR scalability)** now that the
+//! `sequence_scalable_extension()` (r283) and
+//! `picture_spatial_scalable_extension()` (r291) parsers make scalable
+//! streams reachable. [`MacroblockType::parse`] keeps its non-scalable
+//! Table 6-10 default; [`MacroblockType::parse_with_table`] takes an
+//! explicit [`MacroblockTypeTable`] (which [`MacroblockTypeTable::select`]
+//! derives from `scalable_mode` + picture type + the
+//! spatial-scalable-extension-present flag per Table 6-10).
+//!
 //! The fields *after* `macroblock_type` inside `macroblock_modes()`
 //! (`spatial_temporal_weight_code`, `frame_motion_type`,
 //! `field_motion_type`, `dct_type`) are likewise deferred — they
@@ -57,12 +67,16 @@ use oxideav_core::bits::BitReader;
 use crate::picture_header::PictureCodingType;
 use crate::{Error, Result};
 
-/// The six boolean flags derived from a `macroblock_type` VLC per
-/// §6.3.17.1, together with the `spatial_temporal_weight_code_flag`.
+/// The flags derived from a `macroblock_type` VLC per §6.3.17.1.
 ///
 /// For the non-scalable Tables B-2 / B-3 / B-4 the
-/// `spatial_temporal_weight_code_flag` is always `false`; it is kept
-/// here so the same type can be reused once the scalable tables land.
+/// `spatial_temporal_weight_code_flag` is always `false` and
+/// `spatial_temporal_weight_class` is `Some(0)`. The scalable Tables
+/// B-5 / B-6 / B-7 set both columns per-row (and may leave the class
+/// unresolved — `None` — when `spatial_temporal_weight_code_flag` is
+/// `true`, because the class is then derived from the
+/// `spatial_temporal_weight_code` via Table 7-21). Table B-8 (SNR
+/// scalability) always reports class `Some(0)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacroblockType {
     /// `macroblock_quant`: a `quantiser_scale_code` follows in the
@@ -79,9 +93,26 @@ pub struct MacroblockType {
     pub macroblock_pattern: bool,
     /// `macroblock_intra`: the macroblock is intra-coded.
     pub macroblock_intra: bool,
-    /// `spatial_temporal_weight_code_flag`: always `false` for the
-    /// non-scalable Tables B-2 / B-3 / B-4 (§6.3.17.1).
+    /// `spatial_temporal_weight_code_flag`: `false` for the
+    /// non-scalable Tables B-2 / B-3 / B-4 and for the Table B-8
+    /// SNR-scalability rows; set per-row by the spatial-scalable
+    /// Tables B-5 / B-6 / B-7. When `true` a `spatial_temporal_weight_code`
+    /// follows in `macroblock_modes()` (§6.3.17.1).
     pub spatial_temporal_weight_code_flag: bool,
+    /// `spatial_temporal_weight_class` derived directly from the
+    /// macroblock_type table (§6.3.17.1, "permitted
+    /// spatial_temporal_weight_classes" column):
+    ///
+    /// * `Some(0)` — non-scalable, SNR-scalable, or a spatial-scalable
+    ///   row with no compatible prediction (the macroblock is
+    ///   temporal-only / intra).
+    /// * `Some(4)` — a spatial-scalable "Compatible" / "Coded,
+    ///   Compatible" row whose prediction is spatial-only.
+    /// * `None` — a spatial-scalable row with
+    ///   `spatial_temporal_weight_code_flag == true`; the class is one
+    ///   of `{1, 2, 3}` and is resolved later from the
+    ///   `spatial_temporal_weight_code` via Table 7-21.
+    pub spatial_temporal_weight_class: Option<u8>,
     /// Bit position (relative to the start of the buffer the
     /// [`BitReader`] was created from) right after the consumed
     /// `macroblock_type` VLC. Lets callers chain into the next
@@ -91,16 +122,21 @@ pub struct MacroblockType {
 }
 
 /// One Annex B table row: a right-justified MSB-first VLC code, its
-/// bit length, and the five spec flag columns. The
-/// `spatial_temporal_weight_code_flag` column is `0` for every row of
-/// B-2 / B-3 / B-4, so it is not stored per-row — it is reported as
-/// `false` by [`MacroblockType`].
+/// bit length, and the spec flag columns.
+///
+/// The two trailing columns (`stwcf` / `weight_class`) only vary on
+/// the scalable Tables B-5 .. B-8. For the non-scalable Tables
+/// B-2 / B-3 / B-4 they are constructed with [`Row::plain`], which
+/// fixes `stwcf == false` and `weight_class == Some(0)` (the §6.3.17.1
+/// non-scalable defaults). The longer scalable tables list the column
+/// explicitly.
 #[derive(Clone, Copy)]
 struct Row {
-    /// VLC code right-justified into a `u8` — e.g. the bit string
+    /// VLC code right-justified into a `u16` — e.g. the bit string
     /// `0000 01` becomes `0b00_0001` (decimal 1) with `bits == 6`.
-    code: u8,
-    /// Length of `code` in bits (`1..=6` across B-2 / B-3 / B-4).
+    /// Table B-7 needs up to 9 bits, so a `u16` is used.
+    code: u16,
+    /// Length of `code` in bits (`1..=9` across B-2 .. B-8).
     bits: u8,
     /// `macroblock_quant` column.
     quant: bool,
@@ -112,6 +148,68 @@ struct Row {
     pattern: bool,
     /// `macroblock_intra` column.
     intra: bool,
+    /// `spatial_temporal_weight_code_flag` column (`false` for
+    /// B-2 / B-3 / B-4 / B-8; per-row for B-5 / B-6 / B-7).
+    stwcf: bool,
+    /// `spatial_temporal_weight_class` column. `Some(c)` when the
+    /// table pins a single class (`0` or `4`); `None` when
+    /// `stwcf == true` and the class is one of `{1, 2, 3}` to be
+    /// resolved from `spatial_temporal_weight_code` (Table 7-21).
+    weight_class: Option<u8>,
+}
+
+impl Row {
+    /// Construct a non-scalable (B-2 / B-3 / B-4) row: the two
+    /// spatial-temporal columns take their §6.3.17.1 non-scalable
+    /// defaults (`stwcf == false`, `weight_class == Some(0)`).
+    const fn plain(
+        code: u16,
+        bits: u8,
+        quant: bool,
+        fwd: bool,
+        bwd: bool,
+        pattern: bool,
+        intra: bool,
+    ) -> Self {
+        Self {
+            code,
+            bits,
+            quant,
+            fwd,
+            bwd,
+            pattern,
+            intra,
+            stwcf: false,
+            weight_class: Some(0),
+        }
+    }
+
+    /// Construct a scalable (B-5 / B-6 / B-7 / B-8) row with the two
+    /// extra columns spelled out.
+    #[allow(clippy::too_many_arguments)]
+    const fn scalable(
+        code: u16,
+        bits: u8,
+        quant: bool,
+        fwd: bool,
+        bwd: bool,
+        pattern: bool,
+        intra: bool,
+        stwcf: bool,
+        weight_class: Option<u8>,
+    ) -> Self {
+        Self {
+            code,
+            bits,
+            quant,
+            fwd,
+            bwd,
+            pattern,
+            intra,
+            stwcf,
+            weight_class,
+        }
+    }
 }
 
 /// Table B-2 — `macroblock_type` in I-pictures.
@@ -122,24 +220,9 @@ struct Row {
 /// 01    1     0   0   0   1     Intra, Quant
 /// ```
 const TABLE_B2_I: &[Row] = &[
-    Row {
-        code: 0b1,
-        bits: 1,
-        quant: false,
-        fwd: false,
-        bwd: false,
-        pattern: false,
-        intra: true,
-    },
-    Row {
-        code: 0b01,
-        bits: 2,
-        quant: true,
-        fwd: false,
-        bwd: false,
-        pattern: false,
-        intra: true,
-    },
+    //          code      bits quant fwd    bwd    pat    intra
+    Row::plain(0b1, 1, false, false, false, false, true),
+    Row::plain(0b01, 2, true, false, false, false, true),
 ];
 
 /// Table B-3 — `macroblock_type` in P-pictures.
@@ -155,69 +238,14 @@ const TABLE_B2_I: &[Row] = &[
 /// 0000 01   1     0   0   0   1     Intra, Quant
 /// ```
 const TABLE_B3_P: &[Row] = &[
-    Row {
-        code: 0b1,
-        bits: 1,
-        quant: false,
-        fwd: true,
-        bwd: false,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b01,
-        bits: 2,
-        quant: false,
-        fwd: false,
-        bwd: false,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b001,
-        bits: 3,
-        quant: false,
-        fwd: true,
-        bwd: false,
-        pattern: false,
-        intra: false,
-    },
-    Row {
-        code: 0b0001_1,
-        bits: 5,
-        quant: false,
-        fwd: false,
-        bwd: false,
-        pattern: false,
-        intra: true,
-    },
-    Row {
-        code: 0b0001_0,
-        bits: 5,
-        quant: true,
-        fwd: true,
-        bwd: false,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b0000_1,
-        bits: 5,
-        quant: true,
-        fwd: false,
-        bwd: false,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b0000_01,
-        bits: 6,
-        quant: true,
-        fwd: false,
-        bwd: false,
-        pattern: false,
-        intra: true,
-    },
+    //          code        bits quant fwd    bwd    pat    intra
+    Row::plain(0b1, 1, false, true, false, true, false), // MC, Coded
+    Row::plain(0b01, 2, false, false, false, true, false), // No MC, Coded
+    Row::plain(0b001, 3, false, true, false, false, false), // MC, Not Coded
+    Row::plain(0b0001_1, 5, false, false, false, false, true), // Intra
+    Row::plain(0b0001_0, 5, true, true, false, true, false), // MC, Coded, Quant
+    Row::plain(0b0000_1, 5, true, false, false, true, false), // No MC, Coded, Quant
+    Row::plain(0b0000_01, 6, true, false, false, false, true), // Intra, Quant
 ];
 
 /// Table B-4 — `macroblock_type` in B-pictures.
@@ -237,129 +265,398 @@ const TABLE_B3_P: &[Row] = &[
 /// 0000 01   1     0   0   0   1     Intra, Quant
 /// ```
 const TABLE_B4_B: &[Row] = &[
-    Row {
-        code: 0b10,
-        bits: 2,
-        quant: false,
-        fwd: true,
-        bwd: true,
-        pattern: false,
-        intra: false,
-    },
-    Row {
-        code: 0b11,
-        bits: 2,
-        quant: false,
-        fwd: true,
-        bwd: true,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b010,
-        bits: 3,
-        quant: false,
-        fwd: false,
-        bwd: true,
-        pattern: false,
-        intra: false,
-    },
-    Row {
-        code: 0b011,
-        bits: 3,
-        quant: false,
-        fwd: false,
-        bwd: true,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b0010,
-        bits: 4,
-        quant: false,
-        fwd: true,
-        bwd: false,
-        pattern: false,
-        intra: false,
-    },
-    Row {
-        code: 0b0011,
-        bits: 4,
-        quant: false,
-        fwd: true,
-        bwd: false,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b0001_1,
-        bits: 5,
-        quant: false,
-        fwd: false,
-        bwd: false,
-        pattern: false,
-        intra: true,
-    },
-    Row {
-        code: 0b0001_0,
-        bits: 5,
-        quant: true,
-        fwd: true,
-        bwd: true,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b0000_11,
-        bits: 6,
-        quant: true,
-        fwd: true,
-        bwd: false,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b0000_10,
-        bits: 6,
-        quant: true,
-        fwd: false,
-        bwd: true,
-        pattern: true,
-        intra: false,
-    },
-    Row {
-        code: 0b0000_01,
-        bits: 6,
-        quant: true,
-        fwd: false,
-        bwd: false,
-        pattern: false,
-        intra: true,
-    },
+    //          code        bits quant fwd    bwd    pat    intra
+    Row::plain(0b10, 2, false, true, true, false, false), // Interp, Not Coded
+    Row::plain(0b11, 2, false, true, true, true, false),  // Interp, Coded
+    Row::plain(0b010, 3, false, false, true, false, false), // Bwd, Not Coded
+    Row::plain(0b011, 3, false, false, true, true, false), // Bwd, Coded
+    Row::plain(0b0010, 4, false, true, false, false, false), // Fwd, Not Coded
+    Row::plain(0b0011, 4, false, true, false, true, false), // Fwd, Coded
+    Row::plain(0b0001_1, 5, false, false, false, false, true), // Intra
+    Row::plain(0b0001_0, 5, true, true, true, true, false), // Interp, Coded, Quant
+    Row::plain(0b0000_11, 6, true, true, false, true, false), // Fwd, Coded, Quant
+    Row::plain(0b0000_10, 6, true, false, true, true, false), // Bwd, Coded, Quant
+    Row::plain(0b0000_01, 6, true, false, false, false, true), // Intra, Quant
 ];
 
-/// Select the non-scalable `macroblock_type` table for a picture
-/// coding type per Table 6-10 (no `sequence_scalable_extension()`).
-fn table_for(picture_coding_type: PictureCodingType) -> Result<&'static [Row]> {
-    match picture_coding_type {
-        PictureCodingType::Intra => Ok(TABLE_B2_I),
-        PictureCodingType::Predictive => Ok(TABLE_B3_P),
-        PictureCodingType::Bidirectional => Ok(TABLE_B4_B),
+/// Table B-5 — `macroblock_type` in I-pictures with spatial
+/// scalability.
+///
+/// Columns after `intra` are `spatial_temporal_weight_code_flag`
+/// (`stwcf`) and the permitted `spatial_temporal_weight_class`.
+///
+/// ```text
+/// VLC    quant fwd bwd pat intra stwcf  class  Description
+/// 1       0     0   0   1   0     0     4      Coded, Compatible
+/// 01      1     0   0   1   0     0     4      Coded, Compatible, Quant
+/// 0011    0     0   0   0   1     0     0      Intra
+/// 0010    1     0   0   0   1     0     0      Intra, Quant
+/// 0001    0     0   0   0   0     0     4      Not Coded, Compatible
+/// ```
+const TABLE_B5_I_SPATIAL: &[Row] = &[
+    //             code      bits quant fwd    bwd    pat    intra  stwcf  class
+    Row::scalable(0b1, 1, false, false, false, true, false, false, Some(4)),
+    Row::scalable(0b01, 2, true, false, false, true, false, false, Some(4)),
+    Row::scalable(0b0011, 4, false, false, false, false, true, false, Some(0)),
+    Row::scalable(0b0010, 4, true, false, false, false, true, false, Some(0)),
+    Row::scalable(0b0001, 4, false, false, false, false, false, false, Some(4)),
+];
+
+/// Table B-6 — `macroblock_type` in P-pictures with spatial
+/// scalability.
+///
+/// ```text
+/// VLC       quant fwd bwd pat intra stwcf  class    Description
+/// 10         0     1   0   1   0     0     0        MC, Coded
+/// 011        0     1   0   1   0     1     1,2,3    MC, Coded, Compatible
+/// 0000 100   0     0   0   1   0     0     0        No MC, Coded
+/// 0001 11    0     0   0   1   0     1     1,2,3    No MC, Coded, Compatible
+/// 0010       0     1   0   0   0     0     0        MC, Not Coded
+/// 0000 111   0     0   0   0   1     0     0        Intra
+/// 0011       0     1   0   0   0     1     1,2,3    MC, Not coded, Compatible
+/// 010        1     1   0   1   0     0     0        MC, Coded, Quant
+/// 0001 00    1     0   0   1   0     0     0        No MC, Coded, Quant
+/// 0000 110   1     0   0   0   1     0     0        Intra, Quant
+/// 11         1     1   0   1   0     1     1,2,3    MC, Coded, Compatible, Quant
+/// 0001 01    1     0   0   1   0     1     1,2,3    No MC, Coded, Compatible, Quant
+/// 0001 10    0     0   0   0   0     1     1,2,3    No MC, Not Coded, Compatible
+/// 0000 101   0     0   0   1   0     0     4        Coded, Compatible
+/// 0000 010   1     0   0   1   0     0     4        Coded, Compatible, Quant
+/// 0000 011   0     0   0   0   0     0     4        Not Coded, Compatible
+/// ```
+const TABLE_B6_P_SPATIAL: &[Row] = &[
+    //             code         bits quant fwd    bwd    pat    intra  stwcf  class
+    Row::scalable(0b10, 2, false, true, false, true, false, false, Some(0)),
+    Row::scalable(0b011, 3, false, true, false, true, false, true, None),
+    Row::scalable(
+        0b0000_100,
+        7,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        Some(0),
+    ),
+    Row::scalable(0b0001_11, 6, false, false, false, true, false, true, None),
+    Row::scalable(0b0010, 4, false, true, false, false, false, false, Some(0)),
+    Row::scalable(
+        0b0000_111,
+        7,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        Some(0),
+    ),
+    Row::scalable(0b0011, 4, false, true, false, false, false, true, None),
+    Row::scalable(0b010, 3, true, true, false, true, false, false, Some(0)),
+    Row::scalable(
+        0b0001_00,
+        6,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        Some(0),
+    ),
+    Row::scalable(
+        0b0000_110,
+        7,
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        Some(0),
+    ),
+    Row::scalable(0b11, 2, true, true, false, true, false, true, None),
+    Row::scalable(0b0001_01, 6, true, false, false, true, false, true, None),
+    Row::scalable(0b0001_10, 6, false, false, false, false, false, true, None),
+    Row::scalable(
+        0b0000_101,
+        7,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        Some(4),
+    ),
+    Row::scalable(
+        0b0000_010,
+        7,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        Some(4),
+    ),
+    Row::scalable(
+        0b0000_011,
+        7,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        Some(4),
+    ),
+];
+
+/// Table B-7 — `macroblock_type` in B-pictures with spatial
+/// scalability.
+///
+/// ```text
+/// VLC         quant fwd bwd pat intra stwcf class   Description
+/// 10           0     1   1   0   0     0    0       Interp, Not coded
+/// 11           0     1   1   1   0     0    0       Interp, Coded
+/// 010          0     0   1   0   0     0    0       Back, Not coded
+/// 011          0     0   1   1   0     0    0       Back, Coded
+/// 0010         0     1   0   0   0     0    0       For, Not coded
+/// 0011         0     1   0   1   0     0    0       For, Coded
+/// 0001 10      0     0   1   0   0     1    1,2,3   Back, Not Coded, Compatible
+/// 0001 11      0     0   1   1   0     1    1,2,3   Back, Coded, Compatible
+/// 0001 00      0     1   0   0   0     1    1,2,3   For, Not Coded, Compatible
+/// 0001 01      0     1   0   1   0     1    1,2,3   For, Coded, Compatible
+/// 0000 110     0     0   0   0   1     0    0       Intra
+/// 0000 111     1     1   1   1   0     0    0       Interp, Coded, Quant
+/// 0000 100     1     1   0   1   0     0    0       For, Coded, Quant
+/// 0000 101     1     0   1   1   0     0    0       Back, Coded, Quant
+/// 0000 0100    1     0   0   0   1     0    0       Intra, Quant
+/// 0000 0101    1     1   0   1   0     1    1,2,3   For, Coded, Compatible, Quant
+/// 0000 0110 0  1     0   1   1   0     1    1,2,3   Back, Coded, Compatible, Quant
+/// 0000 0111 0  0     0   0   0   0     0    4       Not Coded, Compatible
+/// 0000 0110 1  1     0   0   1   0     0    4       Coded, Compatible, Quant
+/// 0000 0111 1  0     0   0   1   0     0    4       Coded, Compatible
+/// ```
+const TABLE_B7_B_SPATIAL: &[Row] = &[
+    //             code          bits quant fwd    bwd    pat    intra  stwcf  class
+    Row::scalable(0b10, 2, false, true, true, false, false, false, Some(0)),
+    Row::scalable(0b11, 2, false, true, true, true, false, false, Some(0)),
+    Row::scalable(0b010, 3, false, false, true, false, false, false, Some(0)),
+    Row::scalable(0b011, 3, false, false, true, true, false, false, Some(0)),
+    Row::scalable(0b0010, 4, false, true, false, false, false, false, Some(0)),
+    Row::scalable(0b0011, 4, false, true, false, true, false, false, Some(0)),
+    Row::scalable(0b0001_10, 6, false, false, true, false, false, true, None),
+    Row::scalable(0b0001_11, 6, false, false, true, true, false, true, None),
+    Row::scalable(0b0001_00, 6, false, true, false, false, false, true, None),
+    Row::scalable(0b0001_01, 6, false, true, false, true, false, true, None),
+    Row::scalable(
+        0b0000_110,
+        7,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        Some(0),
+    ),
+    Row::scalable(0b0000_111, 7, true, true, true, true, false, false, Some(0)),
+    Row::scalable(
+        0b0000_100,
+        7,
+        true,
+        true,
+        false,
+        true,
+        false,
+        false,
+        Some(0),
+    ),
+    Row::scalable(
+        0b0000_101,
+        7,
+        true,
+        false,
+        true,
+        true,
+        false,
+        false,
+        Some(0),
+    ),
+    Row::scalable(
+        0b0000_0100,
+        8,
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        Some(0),
+    ),
+    Row::scalable(0b0000_0101, 8, true, true, false, true, false, true, None),
+    Row::scalable(0b0000_0110_0, 9, true, false, true, true, false, true, None),
+    Row::scalable(
+        0b0000_0111_0,
+        9,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        Some(4),
+    ),
+    Row::scalable(
+        0b0000_0110_1,
+        9,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        Some(4),
+    ),
+    Row::scalable(
+        0b0000_0111_1,
+        9,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        Some(4),
+    ),
+];
+
+/// Table B-8 — `macroblock_type` in I-, P- and B-pictures with SNR
+/// scalability. The same three codewords serve every picture type
+/// (the NOTE in Annex B: "There is no differentiation between picture
+/// types, since macroblocks are processed identically"). The
+/// `spatial_temporal_weight_code_flag` is always `0`; the NOTE under
+/// the table records that this table never sets it.
+///
+/// ```text
+/// VLC   quant fwd bwd pat intra stwcf class  Description
+/// 1      0     0   0   1   0     0     0      Coded
+/// 01     1     0   0   1   0     0     0      Coded, Quant
+/// 001    0     0   0   0   0     0     0      Not Coded
+/// ```
+const TABLE_B8_SNR: &[Row] = &[
+    //          code   bits quant fwd    bwd    pat    intra
+    Row::plain(0b1, 1, false, false, false, true, false), // Coded
+    Row::plain(0b01, 2, true, false, false, true, false), // Coded, Quant
+    Row::plain(0b001, 3, false, false, false, false, false), // Not Coded
+];
+
+/// Which Annex B `macroblock_type` table family applies, per Table
+/// 6-10. The picture-type variants of each family are resolved inside
+/// [`table_for`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacroblockTypeTable {
+    /// Tables B-2 / B-3 / B-4 — the non-scalable tables. Selected when
+    /// no `sequence_scalable_extension()` is present, for
+    /// `data partitioning` and `temporal scalability`, and for a
+    /// spatial-scalable sequence whose current picture carries no
+    /// `picture_spatial_scalable_extension()` (Table 6-10).
+    NonScalable,
+    /// Tables B-5 / B-6 / B-7 — spatial scalability, selected when
+    /// `scalable_mode == spatial scalability` and the current picture
+    /// carries a `picture_spatial_scalable_extension()` (Table 6-10).
+    SpatialScalable,
+    /// Table B-8 — SNR scalability (Table 6-10). One codeword set for
+    /// every picture type.
+    SnrScalable,
+}
+
+impl MacroblockTypeTable {
+    /// Resolve the §6.2.5.1 / Table 6-10 table family from the three
+    /// inputs that drive the selection:
+    ///
+    /// * `scalable_mode` — `None` when no `sequence_scalable_extension()`
+    ///   is present; otherwise the 2-bit `scalable_mode` code (`00` =
+    ///   data partitioning, `01` = spatial, `10` = SNR, `11` =
+    ///   temporal) from §6.3.5 Table 6-10.
+    /// * `picture_spatial_scalable_extension_present` — whether the
+    ///   current picture carries a `picture_spatial_scalable_extension()`.
+    ///   Only consulted for the spatial-scalability mode.
+    ///
+    /// Per Table 6-10 a spatial-scalable sequence whose current picture
+    /// has no `picture_spatial_scalable_extension()` is decoded with
+    /// the non-scalable tables ("that picture shall be decoded in a
+    /// non-scalable manner").
+    pub fn select(
+        scalable_mode: Option<u8>,
+        picture_spatial_scalable_extension_present: bool,
+    ) -> Self {
+        match scalable_mode {
+            // No sequence_scalable_extension(): always non-scalable.
+            None => Self::NonScalable,
+            // 00 data partitioning, 11 temporal scalability → B-2/B-3/B-4.
+            Some(0b00) | Some(0b11) => Self::NonScalable,
+            // 01 spatial scalability: B-5/B-6/B-7 only when the picture
+            // carries the spatial-scalable extension; otherwise
+            // non-scalable.
+            Some(0b01) => {
+                if picture_spatial_scalable_extension_present {
+                    Self::SpatialScalable
+                } else {
+                    Self::NonScalable
+                }
+            }
+            // 10 SNR scalability → B-8.
+            Some(0b10) => Self::SnrScalable,
+            // scalable_mode is a 2-bit field; no other value is reachable.
+            Some(_) => Self::NonScalable,
+        }
     }
 }
 
-/// Walk the picture-type-selected table longest-first so a shorter
-/// codeword can never be matched on the high bits of a longer one.
-fn match_row(br: &mut BitReader<'_>, table: &'static [Row]) -> Result<Row> {
-    // Distinct code widths across B-2 / B-3 / B-4, descending. Walking
-    // longest-first guarantees an exact full-width equality match.
-    for &width in &[6u8, 5, 4, 3, 2, 1] {
+/// Select the `macroblock_type` row table for a `(table family,
+/// picture coding type)` pair per Table 6-10.
+fn table_for(table: MacroblockTypeTable, picture_coding_type: PictureCodingType) -> &'static [Row] {
+    match table {
+        MacroblockTypeTable::NonScalable => match picture_coding_type {
+            PictureCodingType::Intra => TABLE_B2_I,
+            PictureCodingType::Predictive => TABLE_B3_P,
+            PictureCodingType::Bidirectional => TABLE_B4_B,
+        },
+        MacroblockTypeTable::SpatialScalable => match picture_coding_type {
+            PictureCodingType::Intra => TABLE_B5_I_SPATIAL,
+            PictureCodingType::Predictive => TABLE_B6_P_SPATIAL,
+            PictureCodingType::Bidirectional => TABLE_B7_B_SPATIAL,
+        },
+        // Table B-8 is picture-type-independent.
+        MacroblockTypeTable::SnrScalable => TABLE_B8_SNR,
+    }
+}
+
+/// Widths to probe for a given table family, longest-first, so a
+/// shorter codeword can never be matched on the high bits of a longer
+/// one. The non-scalable / SNR tables top out at 6 bits; the spatial
+/// tables (B-7) reach 9 bits.
+fn widths_for(table: MacroblockTypeTable) -> &'static [u8] {
+    match table {
+        MacroblockTypeTable::NonScalable | MacroblockTypeTable::SnrScalable => &[6, 5, 4, 3, 2, 1],
+        MacroblockTypeTable::SpatialScalable => &[9, 8, 7, 6, 5, 4, 3, 2, 1],
+    }
+}
+
+/// Walk the selected table longest-first so a shorter codeword can
+/// never be matched on the high bits of a longer one.
+fn match_row(br: &mut BitReader<'_>, table: &'static [Row], widths: &[u8]) -> Result<Row> {
+    for &width in widths {
         if br.bits_remaining() < u64::from(width) {
             continue;
         }
         let peeked = br
             .peek_u32(u32::from(width))
-            .map_err(|_| Error::ShortHeader)? as u8;
+            .map_err(|_| Error::ShortHeader)? as u16;
         for &row in table.iter().filter(|r| r.bits == width) {
             if row.code == peeked {
                 br.consume(u32::from(width))
@@ -369,7 +666,7 @@ fn match_row(br: &mut BitReader<'_>, table: &'static [Row]) -> Result<Row> {
         }
     }
     Err(Error::InvalidBitstream(
-        "macroblock_type: no Table B-2/B-3/B-4 codeword matches the bit prefix (§6.2.5.1)",
+        "macroblock_type: no Annex B (B-2 .. B-8) codeword matches the bit prefix (§6.2.5.1)",
     ))
 }
 
@@ -385,16 +682,39 @@ impl MacroblockType {
     /// * [`Error::ShortHeader`] if the bitstream ends before a full
     ///   codeword could be read.
     pub fn parse(br: &mut BitReader<'_>, picture_coding_type: PictureCodingType) -> Result<Self> {
-        let table = table_for(picture_coding_type)?;
-        let row = match_row(br, table)?;
+        Self::parse_with_table(br, picture_coding_type, MacroblockTypeTable::NonScalable)
+    }
+
+    /// Parse one `macroblock_type` VLC starting at the current position
+    /// of `br`, using an explicit [`MacroblockTypeTable`] family
+    /// (Table 6-10). Use [`MacroblockTypeTable::select`] to derive the
+    /// family from `scalable_mode` and the
+    /// `picture_spatial_scalable_extension()`-present flag, then pass it
+    /// here. [`MacroblockType::parse`] is the
+    /// [`MacroblockTypeTable::NonScalable`] shorthand.
+    ///
+    /// Consumes from `br` on success.
+    ///
+    /// Errors:
+    /// * [`Error::InvalidBitstream`] if no codeword in the selected
+    ///   table matches the upcoming bits.
+    /// * [`Error::ShortHeader`] if the bitstream ends before a full
+    ///   codeword could be read.
+    pub fn parse_with_table(
+        br: &mut BitReader<'_>,
+        picture_coding_type: PictureCodingType,
+        table: MacroblockTypeTable,
+    ) -> Result<Self> {
+        let rows = table_for(table, picture_coding_type);
+        let row = match_row(br, rows, widths_for(table))?;
         Ok(Self {
             macroblock_quant: row.quant,
             macroblock_motion_forward: row.fwd,
             macroblock_motion_backward: row.bwd,
             macroblock_pattern: row.pattern,
             macroblock_intra: row.intra,
-            // Always 0 for the non-scalable B-2 / B-3 / B-4 tables.
-            spatial_temporal_weight_code_flag: false,
+            spatial_temporal_weight_code_flag: row.stwcf,
+            spatial_temporal_weight_class: row.weight_class,
             bit_position_after: br.bit_position(),
         })
     }
@@ -406,6 +726,11 @@ mod tests {
     //! B-2, B-3 and B-4 plus the rejection / truncation paths.
     use super::*;
     use oxideav_core::bits::BitWriter;
+
+    /// One scalable-table expectation row used by the B-5 / B-7
+    /// per-row assertions: `(code, bits, quant, fwd, bwd, pattern,
+    /// intra, stwcf, spatial_temporal_weight_class)`.
+    type ScalableCase = (u32, u32, bool, bool, bool, bool, bool, bool, Option<u8>);
 
     /// Emit a code into a fresh buffer, padded with a trailing `'1'`
     /// (so the reader has a valid trailing byte the parser will never
@@ -601,11 +926,222 @@ mod tests {
     }
 
     #[test]
+    fn table_b5_is_prefix_free() {
+        assert_prefix_free(TABLE_B5_I_SPATIAL);
+    }
+
+    #[test]
+    fn table_b6_is_prefix_free() {
+        assert_prefix_free(TABLE_B6_P_SPATIAL);
+    }
+
+    #[test]
+    fn table_b7_is_prefix_free() {
+        assert_prefix_free(TABLE_B7_B_SPATIAL);
+    }
+
+    #[test]
+    fn table_b8_is_prefix_free() {
+        assert_prefix_free(TABLE_B8_SNR);
+    }
+
+    #[test]
     fn table_sizes_match_spec() {
-        // B-2 has 2 rows, B-3 has 7, B-4 has 11 (Annex B).
+        // Annex B row counts.
         assert_eq!(TABLE_B2_I.len(), 2);
         assert_eq!(TABLE_B3_P.len(), 7);
         assert_eq!(TABLE_B4_B.len(), 11);
+        assert_eq!(TABLE_B5_I_SPATIAL.len(), 5);
+        assert_eq!(TABLE_B6_P_SPATIAL.len(), 16);
+        assert_eq!(TABLE_B7_B_SPATIAL.len(), 20);
+        assert_eq!(TABLE_B8_SNR.len(), 3);
+    }
+
+    /// Parse a codeword against an explicit table family.
+    fn parse_table(
+        code: u32,
+        bits: u32,
+        pct: PictureCodingType,
+        table: MacroblockTypeTable,
+    ) -> MacroblockType {
+        let buf = buf_for(code, bits);
+        let mut br = BitReader::new(&buf);
+        MacroblockType::parse_with_table(&mut br, pct, table)
+            .expect("scalable codeword should parse")
+    }
+
+    #[test]
+    fn b5_spatial_all_rows() {
+        // (code, bits, quant, fwd, bwd, pat, intra, stwcf, class)
+        let cases: &[ScalableCase] = &[
+            (0b1, 1, false, false, false, true, false, false, Some(4)), // Coded, Compatible
+            (0b01, 2, true, false, false, true, false, false, Some(4)), // Coded, Compatible, Quant
+            (0b0011, 4, false, false, false, false, true, false, Some(0)), // Intra
+            (0b0010, 4, true, false, false, false, true, false, Some(0)), // Intra, Quant
+            (0b0001, 4, false, false, false, false, false, false, Some(4)), // Not Coded, Compatible
+        ];
+        for &(code, bits, quant, fwd, bwd, pat, intra, stwcf, class) in cases {
+            let mt = parse_table(
+                code,
+                bits,
+                PictureCodingType::Intra,
+                MacroblockTypeTable::SpatialScalable,
+            );
+            assert_eq!(mt.macroblock_quant, quant, "quant code {code:b}");
+            assert_eq!(mt.macroblock_motion_forward, fwd, "fwd code {code:b}");
+            assert_eq!(mt.macroblock_motion_backward, bwd, "bwd code {code:b}");
+            assert_eq!(mt.macroblock_pattern, pat, "pattern code {code:b}");
+            assert_eq!(mt.macroblock_intra, intra, "intra code {code:b}");
+            assert_eq!(
+                mt.spatial_temporal_weight_code_flag, stwcf,
+                "stwcf code {code:b}"
+            );
+            assert_eq!(
+                mt.spatial_temporal_weight_class, class,
+                "class code {code:b}"
+            );
+            assert_eq!(mt.bit_position_after, u64::from(bits));
+        }
+    }
+
+    #[test]
+    fn b6_spatial_compatible_rows_set_flag_and_unresolved_class() {
+        // The "Compatible" rows of Table B-6 set
+        // spatial_temporal_weight_code_flag and leave the class
+        // unresolved (one of {1,2,3} from Table 7-21).
+        let mt = parse_table(
+            0b011,
+            3,
+            PictureCodingType::Predictive,
+            MacroblockTypeTable::SpatialScalable,
+        );
+        // 011 → MC, Coded, Compatible.
+        assert!(mt.macroblock_motion_forward);
+        assert!(mt.macroblock_pattern);
+        assert!(mt.spatial_temporal_weight_code_flag);
+        assert_eq!(mt.spatial_temporal_weight_class, None);
+
+        // 0000 101 → Coded, Compatible (class 4, flag clear).
+        let mt = parse_table(
+            0b0000_101,
+            7,
+            PictureCodingType::Predictive,
+            MacroblockTypeTable::SpatialScalable,
+        );
+        assert!(!mt.spatial_temporal_weight_code_flag);
+        assert_eq!(mt.spatial_temporal_weight_class, Some(4));
+        assert!(mt.macroblock_pattern);
+    }
+
+    #[test]
+    fn b7_spatial_nine_bit_rows_parse() {
+        // The longest Table B-7 codewords are 9 bits; verify the
+        // longest-first walk resolves them without being hijacked by a
+        // shorter prefix.
+        let mt = parse_table(
+            0b0000_0110_0,
+            9,
+            PictureCodingType::Bidirectional,
+            MacroblockTypeTable::SpatialScalable,
+        );
+        // Back, Coded, Compatible, Quant.
+        assert!(mt.macroblock_quant);
+        assert!(mt.macroblock_motion_backward);
+        assert!(mt.macroblock_pattern);
+        assert!(mt.spatial_temporal_weight_code_flag);
+        assert_eq!(mt.spatial_temporal_weight_class, None);
+        assert_eq!(mt.bit_position_after, 9);
+
+        let mt = parse_table(
+            0b0000_0111_0,
+            9,
+            PictureCodingType::Bidirectional,
+            MacroblockTypeTable::SpatialScalable,
+        );
+        // Not Coded, Compatible (class 4).
+        assert!(!mt.macroblock_pattern);
+        assert!(!mt.spatial_temporal_weight_code_flag);
+        assert_eq!(mt.spatial_temporal_weight_class, Some(4));
+    }
+
+    #[test]
+    fn b8_snr_all_rows() {
+        // Table B-8 is picture-type-independent; the same three
+        // codewords resolve for every picture type and never set the
+        // weight-code flag.
+        let cases: &[(u32, u32, bool, bool)] = &[
+            (0b1, 1, false, true),    // Coded
+            (0b01, 2, true, true),    // Coded, Quant
+            (0b001, 3, false, false), // Not Coded
+        ];
+        for pct in [
+            PictureCodingType::Intra,
+            PictureCodingType::Predictive,
+            PictureCodingType::Bidirectional,
+        ] {
+            for &(code, bits, quant, pattern) in cases {
+                let mt = parse_table(code, bits, pct, MacroblockTypeTable::SnrScalable);
+                assert_eq!(mt.macroblock_quant, quant, "quant code {code:b}");
+                assert_eq!(mt.macroblock_pattern, pattern, "pattern code {code:b}");
+                assert!(!mt.macroblock_intra);
+                assert!(!mt.macroblock_motion_forward);
+                assert!(!mt.macroblock_motion_backward);
+                assert!(!mt.spatial_temporal_weight_code_flag);
+                assert_eq!(mt.spatial_temporal_weight_class, Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn table_select_follows_table_6_10() {
+        use MacroblockTypeTable::*;
+        // No sequence_scalable_extension() → non-scalable.
+        assert_eq!(MacroblockTypeTable::select(None, false), NonScalable);
+        assert_eq!(MacroblockTypeTable::select(None, true), NonScalable);
+        // 00 data partitioning, 11 temporal → non-scalable.
+        assert_eq!(MacroblockTypeTable::select(Some(0b00), true), NonScalable);
+        assert_eq!(MacroblockTypeTable::select(Some(0b11), true), NonScalable);
+        // 01 spatial: B-5/B-6/B-7 only when the picture carries the
+        // spatial-scalable extension.
+        assert_eq!(
+            MacroblockTypeTable::select(Some(0b01), true),
+            SpatialScalable
+        );
+        assert_eq!(MacroblockTypeTable::select(Some(0b01), false), NonScalable);
+        // 10 SNR → B-8.
+        assert_eq!(MacroblockTypeTable::select(Some(0b10), false), SnrScalable);
+        assert_eq!(MacroblockTypeTable::select(Some(0b10), true), SnrScalable);
+    }
+
+    #[test]
+    fn spatial_table_rejects_unknown_codeword() {
+        // '0000 0000 0' (9 bits) matches no Table B-7 codeword.
+        let buf = [0u8; 2];
+        let mut br = BitReader::new(&buf);
+        let err = MacroblockType::parse_with_table(
+            &mut br,
+            PictureCodingType::Bidirectional,
+            MacroblockTypeTable::SpatialScalable,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    #[test]
+    fn non_scalable_parse_matches_default() {
+        // parse() and parse_with_table(.., NonScalable) must agree.
+        let buf = buf_for(0b0001_1, 5);
+        let mut a = BitReader::new(&buf);
+        let mut b = BitReader::new(&buf);
+        let via_default = MacroblockType::parse(&mut a, PictureCodingType::Predictive).unwrap();
+        let via_table = MacroblockType::parse_with_table(
+            &mut b,
+            PictureCodingType::Predictive,
+            MacroblockTypeTable::NonScalable,
+        )
+        .unwrap();
+        assert_eq!(via_default, via_table);
+        assert_eq!(via_default.spatial_temporal_weight_class, Some(0));
     }
 
     #[test]
@@ -617,6 +1153,7 @@ mod tests {
             macroblock_pattern: false,
             macroblock_intra: true,
             spatial_temporal_weight_code_flag: false,
+            spatial_temporal_weight_class: Some(0),
             bit_position_after: 2,
         };
         let s = format!("{mt:?}");

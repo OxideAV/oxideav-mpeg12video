@@ -575,6 +575,38 @@ two parsers' wire surfaces and rejection sites, the picture-type /
 chroma-format cross-checks, and the two dispatcher hand-offs that
 replaced the former `NotImplemented` stubs.
 
+Round 294 lands the **Annex B scalable `macroblock_type` tables —
+B-5 / B-6 / B-7 (spatial scalability) and B-8 (SNR scalability)**,
+the codeword sets a decoder selects (Table 6-10) once a
+`sequence_scalable_extension()` (r283) and, for spatial scalability,
+a `picture_spatial_scalable_extension()` (r291) are present. The
+`macroblock_type` module previously held only the non-scalable
+B-2 / B-3 / B-4 tables with `spatial_temporal_weight_code_flag`
+hard-wired `false`. `MacroblockType` now carries the two §6.3.17.1
+columns the scalable tables populate: `spatial_temporal_weight_code_flag`
+(set per-row by B-5 / B-6 / B-7 — when `true` a
+`spatial_temporal_weight_code` follows in `macroblock_modes()`) and
+`spatial_temporal_weight_class: Option<u8>` (`Some(0)` non-scalable /
+SNR / temporal-only, `Some(4)` for a spatial-only "Compatible" row,
+`None` when the flag is set and the class is one of `{1,2,3}` to be
+resolved from the weight code via Table 7-21). A new
+`MacroblockTypeTable` enum with `MacroblockTypeTable::select` resolves
+the table family from `scalable_mode` + picture type + whether the
+current picture carries a `picture_spatial_scalable_extension()`:
+spatial scalability falls back to the non-scalable tables when that
+extension is absent ("decoded in a non-scalable manner"), data
+partitioning / temporal scalability always use B-2 / B-3 / B-4, and
+SNR scalability uses B-8 for every picture type. `MacroblockType::parse`
+keeps the non-scalable default; `MacroblockType::parse_with_table`
+takes an explicit family. The longest-first VLC walk now spans
+1..=9 bits to cover B-7's deepest codewords. The
+`spatial_temporal_weight_code` read and the §7.7 spatial-scalable
+prediction it gates remain a follow-up. 11 new unit tests (861 lib
+total): every B-5 / B-7 row, the B-6 compatible-vs-class-4 split, all
+three B-8 codewords across all picture types, the Table 6-10 selector,
+prefix-freeness of all four new tables, and parse / parse_with_table
+equivalence.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not
