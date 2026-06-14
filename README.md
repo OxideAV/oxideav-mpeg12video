@@ -641,6 +641,29 @@ class-resolution path (classes 1 and 3 driving the 2-vs-1 vector
 split), the `table_index == 00` no-code `00*` row, the flag-clear
 no-read path, truncation, and the scalable-context seeding.
 
+Round 308 lands the **§7.7.5.1 "Resetting motion vector predictors"**
+spatial-scalability PMV reset — the additive rule the r301 resolved
+`spatial_temporal_weight_class` enables. §7.7.5.1 states that, *"in
+addition to the cases identified in 7.6.3.4"*, the predictors shall be
+reset in a P-picture or a B-picture when a macroblock is purely
+spatially predicted (`spatial_temporal_weight_class == 4`, signalled
+by the scalable `macroblock_type` Tables B-5/B-6/B-7). A spatial-only
+macroblock carries no motion vector, so its PMV reset would otherwise
+slip through the gaps: it is non-intra (so the §7.6.3.4 intra reset in
+`update_predictors` does not fire) and not skipped (so the §7.6.6
+`skipped_macroblock::apply_to_pmv` hook does not fire). The new
+`pmv::apply_spatial_temporal_reset(pmv, picture_coding_type,
+spatial_temporal_weight_class)` (re-exported at the crate root) closes
+that gap, zeroing every PMV slot via the existing `Pmv::reset` and
+returning `true` when the reset fired so a macroblock-loop driver can
+label the side-effect. Intra pictures (not listed by §7.7.5.1 — §7.7.4
+spatial-only intra coding aside) and classes `0..=3` take the
+no-reset path. 5 new unit tests (872 lib total): the P/B class-4
+reset, the intra-picture skip, the classes-`0..=3` no-reset sweep
+across P and B, and an out-of-range-class guard. The §7.7.5 motion-
+vector-count / Tables 7-21 / 7-22 predictor-update grid and the
+§7.7.4 spatial-temporal prediction *combination* remain follow-ups.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

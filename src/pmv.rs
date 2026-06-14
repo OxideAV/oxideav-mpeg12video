@@ -40,7 +40,7 @@
 
 use crate::macroblock_modes::{MvFormat, PredictionType};
 use crate::motion_vector::MotionVector;
-use crate::picture_header::PictureStructure;
+use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::sequence_extension::ChromaFormat;
 use crate::{Error, Result};
 
@@ -720,6 +720,64 @@ fn copy_r0_to_r1(pmv: &mut Pmv, s: Direction) {
     let v = pmv.get(VectorIndex::First, s, Component::Vertical);
     pmv.set(VectorIndex::Second, s, Component::Horizontal, h);
     pmv.set(VectorIndex::Second, s, Component::Vertical, v);
+}
+
+/// §7.7.5.1 "Resetting motion vector predictors" — the
+/// spatial-scalability extension to the §7.6.3.4 reset rules.
+///
+/// The spec states:
+///
+/// > In addition to the cases identified in 7.6.3.4 the motion vector
+/// > predictors shall be reset in the following cases;
+/// >
+/// > * In a P-picture when a macroblock is purely spatially predicted
+/// >   (`spatial_temporal_weight_class == 4`)
+/// > * In a B-picture when a macroblock is purely spatially predicted
+/// >   (`spatial_temporal_weight_class == 4`)
+///
+/// A `spatial_temporal_weight_class` of `4` (§7.7.5: *"Class 4
+/// indicates spatial-only prediction"*) is signalled by the scalable
+/// `macroblock_type` Tables B-5 / B-6 / B-7 (see
+/// [`crate::macroblock_type`]); the resolved class is carried by
+/// [`crate::macroblock_modes::MacroblockModesContext`] /
+/// [`crate::SpatialTemporalWeight`]. When such a macroblock occurs in a
+/// predicted (`P`) or interpolated (`B`) picture, no motion vector is
+/// present for the macroblock and the running PMV state is zeroed exactly
+/// as the §7.6.3.4 [`Pmv::reset`] does — so a subsequent temporally
+/// predicted macroblock differentially decodes against a cleared
+/// predictor rather than a stale enhancement-layer vector.
+///
+/// This is independent of (and additive to) the §7.6.3.4 cases already
+/// handled by [`update_predictors`] (non-concealment intra reset, the
+/// `§`-footnote zero-motion reset) and the §7.6.6 skipped-macroblock
+/// reset ([`crate::skipped_macroblock::apply_to_pmv`]): a spatial-only
+/// macroblock in a P/B picture takes neither of those paths (it is
+/// non-intra and not skipped, yet carries no motion vectors), so its
+/// reset would otherwise be missed.
+///
+/// Returns `true` when the reset fired (and zeroed `pmv`), `false`
+/// otherwise (leaving `pmv` untouched) so a macroblock-loop driver can
+/// label which side-effect ran. The reset only ever fires for
+/// `PictureCodingType::Predictive` / `PictureCodingType::Bidirectional`;
+/// an `Intra`-picture spatial-only macroblock (§7.7.4: *"In intra
+/// pictures … the prediction is spatial-only"*) is **not** listed by
+/// §7.7.5.1 and does not reset here.
+pub fn apply_spatial_temporal_reset(
+    pmv: &mut Pmv,
+    picture_coding_type: PictureCodingType,
+    spatial_temporal_weight_class: u8,
+) -> bool {
+    let spatial_only = spatial_temporal_weight_class == 4;
+    let resettable_picture = matches!(
+        picture_coding_type,
+        PictureCodingType::Predictive | PictureCodingType::Bidirectional
+    );
+    if spatial_only && resettable_picture {
+        pmv.reset();
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -2213,5 +2271,81 @@ mod tests {
         };
         let s = format!("{rc:?}");
         assert!(s.contains("ReconstructedComponent"));
+    }
+
+    // ---- §7.7.5.1 spatial-only PMV reset ----
+
+    fn assert_pmv_all_zero(pmv: &Pmv) {
+        for r in [VectorIndex::First, VectorIndex::Second] {
+            for s in [Direction::Forward, Direction::Backward] {
+                for t in [Component::Horizontal, Component::Vertical] {
+                    assert_eq!(pmv.get(r, s, t), 0, "PMV[{r:?}][{s:?}][{t:?}] != 0");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spatial_temporal_reset_fires_in_p_picture_class_4() {
+        // §7.7.5.1 bullet 1: P-picture, spatial-only (class 4) → reset.
+        let mut pmv = seeded_pmv();
+        let fired = apply_spatial_temporal_reset(&mut pmv, PictureCodingType::Predictive, 4);
+        assert!(fired);
+        assert_pmv_all_zero(&pmv);
+    }
+
+    #[test]
+    fn spatial_temporal_reset_fires_in_b_picture_class_4() {
+        // §7.7.5.1 bullet 2: B-picture, spatial-only (class 4) → reset.
+        let mut pmv = seeded_pmv();
+        let fired = apply_spatial_temporal_reset(&mut pmv, PictureCodingType::Bidirectional, 4);
+        assert!(fired);
+        assert_pmv_all_zero(&pmv);
+    }
+
+    #[test]
+    fn spatial_temporal_reset_skips_intra_picture_class_4() {
+        // §7.7.5.1 lists only P/B pictures; an intra picture is not a
+        // listed reset case (§7.7.4 spatial-only intra coding aside).
+        let mut pmv = seeded_pmv();
+        let before = pmv;
+        let fired = apply_spatial_temporal_reset(&mut pmv, PictureCodingType::Intra, 4);
+        assert!(!fired);
+        assert_eq!(pmv.values, before.values);
+    }
+
+    #[test]
+    fn spatial_temporal_reset_skips_non_spatial_only_classes() {
+        // Classes 0..=3 (temporal-only or combined) do not trigger the
+        // §7.7.5.1 reset — only the purely-spatial class 4 does.
+        for class in [0u8, 1, 2, 3] {
+            let mut pmv = seeded_pmv();
+            let before = pmv;
+            let fired =
+                apply_spatial_temporal_reset(&mut pmv, PictureCodingType::Predictive, class);
+            assert!(!fired, "class {class} should not reset");
+            assert_eq!(pmv.values, before.values, "class {class} mutated PMV");
+
+            let mut pmv_b = seeded_pmv();
+            let before_b = pmv_b;
+            let fired_b =
+                apply_spatial_temporal_reset(&mut pmv_b, PictureCodingType::Bidirectional, class);
+            assert!(!fired_b, "class {class} (B) should not reset");
+            assert_eq!(
+                pmv_b.values, before_b.values,
+                "class {class} (B) mutated PMV"
+            );
+        }
+    }
+
+    #[test]
+    fn spatial_temporal_reset_ignores_out_of_range_class() {
+        // A weight class outside {0..4} (never produced by Table 7-19,
+        // but defensive) is not class 4, so no reset fires.
+        let mut pmv = seeded_pmv();
+        let before = pmv;
+        let fired = apply_spatial_temporal_reset(&mut pmv, PictureCodingType::Predictive, 5);
+        assert!(!fired);
+        assert_eq!(pmv.values, before.values);
     }
 }

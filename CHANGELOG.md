@@ -8,6 +8,22 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 308: §7.7.5.1 "Resetting motion vector predictors" — the
+  spatial-scalability extension to the §7.6.3.4 PMV reset rules, as a
+  new `pmv::apply_spatial_temporal_reset(pmv, picture_coding_type,
+  spatial_temporal_weight_class)` (re-exported at the crate root). The
+  spec adds two reset cases on top of §7.6.3.4: a P-picture or
+  B-picture macroblock that is purely spatially predicted
+  (`spatial_temporal_weight_class == 4`, signalled by the scalable
+  `macroblock_type` Tables B-5/B-6/B-7) carries no motion vector, so
+  the running PMV state must be zeroed exactly as `Pmv::reset` does.
+  The helper returns `true` when the reset fired (P/B + class 4),
+  `false` otherwise (leaving the PMV untouched), so a macroblock-loop
+  driver can label the side-effect. Intra pictures (not listed by
+  §7.7.5.1) and classes `0..=3` (temporal-only or combined) take the
+  no-reset path. 5 new bit-exact unit tests (872 lib total, was 867):
+  the P/B class-4 reset, the intra-picture skip, the classes-0..3
+  no-reset sweep across P and B, and an out-of-range-class guard.
 - round 301: §6.2.5.1 `spatial_temporal_weight_code` read +
   Table 7-21 (§7.7.4) resolution wired into
   `macroblock_modes::MacroblockModesTail::parse`. The former

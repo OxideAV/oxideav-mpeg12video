@@ -488,9 +488,10 @@ pub use picture_temporal_scalable_extension::{
     PictureTemporalScalableExtension, PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
 };
 pub use pmv::{
-    compute_delta, decode_motion_vector, reconstruct_component, reconstruct_motion_vector,
-    scale_chroma, update_predictors, vector_range, Component, Direction, Pmv, PmvUpdateContext,
-    PmvUpdateOutcome, ReconstructedComponent, ScaledMotionVector, VectorIndex,
+    apply_spatial_temporal_reset, compute_delta, decode_motion_vector, reconstruct_component,
+    reconstruct_motion_vector, scale_chroma, update_predictors, vector_range, Component, Direction,
+    Pmv, PmvUpdateContext, PmvUpdateOutcome, ReconstructedComponent, ScaledMotionVector,
+    VectorIndex,
 };
 pub use quant_matrix_extension::{
     QuantMatrixDriver, QuantMatrixExtension, QuantiserMatrixPayload, QuantiserMatrixState,
