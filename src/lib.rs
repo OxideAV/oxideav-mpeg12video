@@ -380,6 +380,7 @@ pub mod sequence_scalable_extension;
 pub mod skipped_macroblock;
 pub mod slice_header;
 pub mod slice_macroblock_walk;
+pub mod spatial_temporal_combine;
 
 pub use add_coefficients::{
     add_intra_block, add_prediction_and_coefficients, add_prediction_and_coefficients_in_place,
@@ -525,6 +526,9 @@ pub use slice_header::{
 pub use slice_macroblock_walk::{
     reconstruct_record_motion_vectors, walk_slice, MacroblockRecord, ReconstructedMotionVectors,
     ReconstructedVector, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
+};
+pub use spatial_temporal_combine::{
+    combine_field_interleaved, combine_spatial_temporal, combine_uniform, SpatialWeight,
 };
 
 /// Crate-local error type. Each variant is raised at most by the

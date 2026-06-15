@@ -52,6 +52,12 @@ The decode pipeline is implemented end-to-end at the module level:
 - **Motion compensation**: the §7.6 pipeline — §7.6.4 forming
   predictions (pel reader), §7.6.7 combine predictions, §7.6.8 add
   coefficients with the `[0, 255]` clamp.
+- **Spatial-scalable prediction combination**: the §7.7.4 *"precise
+  method for predictor calculation"* — combining the temporal
+  enhancement-layer prediction with the spatial lower-layer prediction
+  under the Table 7-21 `spatial_temporal_weight`, in both the single
+  `(a)` whole-block form and the per-field `(a; b)` even/odd-row form
+  (the `weight ∈ {0, 0.5, 1}` cases, with the `// 2` average for `0.5`).
 - **Block / macroblock drivers**: `mpeg2_block_decoder::decode_block`
   chains DC prelude → residual VLC → inverse scan → inverse quant →
   IDCT into a single bitstream→plane entry point, and
@@ -67,7 +73,10 @@ verifying the parsers against known-good encoded streams.
 - A single top-level frame-decode / encode entry point; the pipeline is
   driven through the per-stage module APIs.
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
-  (parsed structurally, decode not composed).
+  (parsed structurally; the §7.7.4 spatial/temporal prediction
+  combination and §7.7.5.1 PMV reset are implemented, but the §7.7.3
+  lower-layer resampling and the full enhancement-layer decode loop are
+  not yet composed).
 
 ## Clean-room provenance
 

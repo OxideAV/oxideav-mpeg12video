@@ -8,6 +8,28 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 315: §7.7.4 "Selection and combination of spatial and temporal
+  predictions" — the *"precise method for predictor calculation"* in a
+  new `spatial_temporal_combine` module that blends the temporal
+  enhancement-layer prediction (`pel_pred_temp`) with the spatial
+  lower-layer prediction (`pel_pred_spat`) under the Table 7-21
+  `spatial_temporal_weight`. New `SpatialWeight` enum
+  (`Temporal`/`Half`/`Spatial` for the only legal weights `{0, 0.5, 1}`)
+  with `from_sixteenths()` mapping the `SpatialTemporalWeight`
+  sixteenths (`0`/`8`/`16`) and `combine_sample()` implementing the
+  page-115 per-sample formulae (`weight 0` → temporal,
+  `weight 1` → spatial, `weight 0.5` → `(temp+spat)//2` with the §4.1
+  away-from-zero rounding, identical to the §7.6.7 `avg2`). Block-level
+  endpoints (all re-exported at the crate root): `combine_uniform` (the
+  single `(a)` whole-block form, `table_index == '00'`),
+  `combine_field_interleaved` (the per-field `(a; b)` form — `top_weight`
+  to even rows / `bottom_weight` to odd rows, also the
+  `progressive_frame == 0` interlaced-chroma case), and the
+  `combine_spatial_temporal` driver keyed off
+  `SpatialTemporalWeight::is_single`. Length / width / multiple-of-width
+  geometry mismatches and out-of-table weights are rejected as
+  `InvalidBitstream`. 21 unit tests incl. an exhaustive 256×256
+  half-weight cross-check and Table-7-21-row reconstructions.
 - round 310: §7.6.5 "Motion vector selection" (Tables 7-13 field
   pictures / 7-14 frame pictures) in a new `motion_vector_selection`
   module — the table driver that sits between §7.6.3 motion-vector
