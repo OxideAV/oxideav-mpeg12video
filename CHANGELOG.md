@@ -8,6 +8,46 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 310: §7.6.5 "Motion vector selection" (Tables 7-13 field
+  pictures / 7-14 frame pictures) in a new `motion_vector_selection`
+  module — the table driver that sits between §7.6.3 motion-vector
+  reconstruction and the §7.6.4 pel reader, naming *which*
+  reconstructed `vector'[r][s]` each prediction uses, *which reference*
+  it is formed from, and *which region* of the 16×16 macroblock it
+  covers. `select_predictions(&MacroblockPrediction) ->
+  Result<Vec<PredictionOp>>` returns the ordered op list in bitstream
+  order (the table NOTE) keyed off `picture_structure` +
+  `prediction_type` (`field_motion_type`/`frame_motion_type`) + the
+  three §6.3.17.1 flags. New types (all re-exported at the crate root):
+  `PredictionOp` (`vector_index` r / `direction` s / `reference` /
+  `region`), `ReferenceTarget` (`Frame` / `WholeField(parity)` /
+  `DualPrimeSameParity(parity)` / `DualPrimeOppositeParity(parity)` —
+  the latter two name the §7.6.3.6 derived vectors `vector'[2][0]` /
+  `vector'[3][0]`), `PredictionRegion` (`Whole` 16×16 / `Upper16x8` /
+  `Lower16x8`, with `luma_block_size()` → `BlockSize` and
+  `luma_top_offset()` → 0/8), and `MacroblockPrediction` (the parsed
+  inputs incl. the two `motion_vertical_field_select` parities §7.6.4
+  needs in field pictures). Covers every Table 7-13 / 7-14 row:
+  Frame-based (frame), Field-based (frame: first vector → top field,
+  second → bottom; field: whole field from the selected parity), 16x8
+  MC (field: upper/lower 16×8 with independent field selects),
+  Dual-Prime (field: 2 same/opposite-parity ops; frame: 4 ops), and
+  the §7.6.3.9 intra-concealment single-forward op. Rejects (via
+  `Error::InvalidBitstream` with §7.6.5-named messages) the three
+  malformed-descriptor cases: intra without
+  `concealment_motion_vectors`, dual-prime with backward motion, and
+  the no-motion-flags §7.6.3.5 implicit-zero (skipped) case that
+  belongs to `skipped_macroblock`. Forms no samples, reconstructs no
+  vectors, runs no §7.6.3.6 dual-prime derivation, and applies no
+  §7.6.3.7 chroma scaling — it is the pure table glue between the
+  already-landed endpoints. 18 new bit-exact unit tests (890 lib
+  total, was 872): the region geometry pair, the Table 7-14 frame rows
+  (Frame-based fwd/bwd/bidirectional, Field-based top-then-bottom and
+  the 4-op bidirectional shape), the Table 7-13 field rows
+  (Field-based field-select, 16x8 independent selects + 4-op
+  bidirectional order), all three dual-prime shapes (field top/bottom,
+  frame 4-op), the two intra-concealment arms (frame/field), and the
+  three rejection paths.
 - round 308: §7.7.5.1 "Resetting motion vector predictors" — the
   spatial-scalability extension to the §7.6.3.4 PMV reset rules, as a
   new `pmv::apply_spatial_temporal_reset(pmv, picture_coding_type,

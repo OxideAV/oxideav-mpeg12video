@@ -664,6 +664,43 @@ across P and B, and an out-of-range-class guard. The §7.7.5 motion-
 vector-count / Tables 7-21 / 7-22 predictor-update grid and the
 §7.7.4 spatial-temporal prediction *combination* remain follow-ups.
 
+Round 310 lands the **§7.6.5 "Motion vector selection" (Tables 7-13
+field pictures / 7-14 frame pictures)** in a new
+`motion_vector_selection` module — the table driver between §7.6.3
+motion-vector reconstruction and the §7.6.4 pel reader.
+`select_predictions(&MacroblockPrediction)` returns the ordered list
+of `PredictionOp`s (in bitstream order, per the table NOTE) that the
+§7.6.4 `predict_block` reader must perform, each naming the
+reconstructed vector slot (`vector_index` r / `direction` s), the
+`ReferenceTarget` (`Frame` / `WholeField(parity)` /
+`DualPrimeSameParity` / `DualPrimeOppositeParity`), and the
+`PredictionRegion` (`Whole` 16×16 / `Upper16x8` / `Lower16x8`, with
+`luma_block_size()` and `luma_top_offset()` accessors). The selector
+is keyed off `picture_structure` + the resolved `prediction_type`
+(`field_motion_type` / `frame_motion_type`, §6.3.17.2) + the three
+§6.3.17.1 flags, covering every Table 7-13 / 7-14 row: Frame-based
+(frame), Field-based (frame top-then-bottom field; field whole-field
+from the `motion_vertical_field_select` parity), 16x8 MC (field,
+upper/lower 16×8 with independent field selects), Dual-Prime (2 ops
+in a field picture, 4 ops in a frame picture, naming the §7.6.3.6
+derived `vector'[2][0]` / `vector'[3][0]` slots), and the §7.6.3.9
+intra-concealment single-forward op. The driver forms no samples,
+reconstructs no vectors, runs no §7.6.3.6 dual-prime derivation, and
+applies no §7.6.3.7 chroma scaling — those endpoints are already
+landed (`dual_prime`, `pmv::scale_chroma`, `predict_block`); this is
+the pure table glue between them. The three malformed-descriptor
+cases are rejected with §7.6.5-named `Error::InvalidBitstream`
+messages: intra without `concealment_motion_vectors`, dual-prime with
+backward motion, and the no-motion-flags §7.6.3.5 implicit-zero
+(skipped) case `skipped_macroblock` owns. 18 new bit-exact unit
+tests (890 lib total, was 872) cover the region geometry, every Table
+7-13 / 7-14 row shape and bitstream ordering, all three dual-prime
+shapes, both intra-concealment arms, and the three rejection paths.
+The remaining §7.6 gap is the per-macroblock orchestration that
+threads `select_predictions` → §7.6.3.6 dual-prime derivation →
+§7.6.3.7 chroma scaling → `predict_block` → `combine_predictions` →
+`add_coefficients` for a complete decoded macroblock.
+
 Master was orphan-rebuilt on **2026-05-18** under the workspace
 [clean-room policy](https://github.com/OxideAV/oxideav/blob/master/docs/IMPLEMENTOR_ROUND.md);
 the prior implementation had VLC table modules whose data could not

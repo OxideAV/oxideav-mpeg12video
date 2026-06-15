@@ -356,6 +356,7 @@ pub mod macroblock_pipeline;
 pub mod macroblock_type;
 pub mod mb_address_increment;
 pub mod motion_vector;
+pub mod motion_vector_selection;
 pub mod mpeg1_motion_vector;
 pub mod mpeg1_reconstruct;
 pub mod mpeg2_block_dc;
@@ -428,6 +429,9 @@ pub use macroblock_type::{MacroblockType, MacroblockTypeTable};
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 pub use motion_vector::{
     MotionVector, MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,
+};
+pub use motion_vector_selection::{
+    select_predictions, MacroblockPrediction, PredictionOp, PredictionRegion, ReferenceTarget,
 };
 pub use mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
 pub use mpeg1_reconstruct::{
