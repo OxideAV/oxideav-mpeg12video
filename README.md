@@ -33,7 +33,13 @@ The decode pipeline is implemented end-to-end at the module level:
   (§2.4.4.2 / §2.4.4.3) and MPEG-2 reconstruction
   (§7.6.3.1 / .3 / .4 / .7) including PMV state, wrap-around arithmetic,
   the vertical-half-prediction rule, inter-vector PMV copy/update, and
-  MPEG-2 dual-prime (§7.6.3.6).
+  MPEG-2 dual-prime (§7.6.3.6). The §7.6.3 predictor bank is now driven
+  across a whole slice by `reconstruct_slice_motion_vectors`, which
+  resets PMV at slice start (§7.6.3.4), reconstructs each coded
+  macroblock's vectors (§7.6.3.1), applies the §7.6.3.3
+  `update_predictors` table row, and runs the §7.6.6 skipped-macroblock
+  PMV side-effect for the run of skipped slots preceding each coded
+  macroblock.
 - **Residual decode**: MPEG-1 intra DC prelude + zig-zag + run-level
   walker (§2.4.2.8 / §2.4.3.7 / §2.4.4.1, Annex B Tables B.5a–B.5f) and
   the MPEG-2 §7.2 residual VLC walker (Annex B Tables B-14 / B-15 /
@@ -71,7 +77,11 @@ verifying the parsers against known-good encoded streams.
 
 - Runtime registration (`register` is a no-op).
 - A single top-level frame-decode / encode entry point; the pipeline is
-  driven through the per-stage module APIs.
+  driven through the per-stage module APIs. The §7.6.3 motion-vector
+  reconstruction is now wired across a whole slice
+  (`reconstruct_slice_motion_vectors`), but the picture-level driver
+  that resets `past_intra_address` across slices and feeds the
+  reconstructed vectors into the §7.6.4 pel reader is not yet composed.
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
   (parsed structurally; the §7.7.4 spatial/temporal prediction
   combination and §7.7.5.1 PMV reset are implemented, but the §7.7.3

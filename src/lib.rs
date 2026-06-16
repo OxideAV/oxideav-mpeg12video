@@ -524,8 +524,9 @@ pub use slice_header::{
     SliceContext, SliceHeader, SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN,
 };
 pub use slice_macroblock_walk::{
-    reconstruct_record_motion_vectors, walk_slice, MacroblockRecord, ReconstructedMotionVectors,
-    ReconstructedVector, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
+    reconstruct_record_motion_vectors, reconstruct_slice_motion_vectors, walk_slice,
+    MacroblockRecord, ReconstructedMotionVectors, ReconstructedVector, SliceMotionRecord,
+    SliceMotionWalk, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
 pub use spatial_temporal_combine::{
     combine_field_interleaved, combine_spatial_temporal, combine_uniform, SpatialWeight,

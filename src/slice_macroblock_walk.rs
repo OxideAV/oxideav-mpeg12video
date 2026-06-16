@@ -151,6 +151,7 @@
 use oxideav_core::bits::BitReader;
 
 use crate::coded_block_pattern::CodedBlockPattern;
+use crate::combine_predictions::PredictionDirection;
 use crate::macroblock_modes::{MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat};
 use crate::macroblock_type::MacroblockType;
 use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
@@ -161,10 +162,16 @@ use crate::mpeg2_macroblock_blocks::{
     decode_macroblock_blocks, DecodedBlock, MacroblockBlockContext,
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
-use crate::pmv::{reconstruct_motion_vector, Direction, Pmv, ReconstructedComponent, VectorIndex};
+use crate::pmv::{
+    reconstruct_motion_vector, update_predictors, Direction, Pmv, PmvUpdateContext,
+    PmvUpdateOutcome, ReconstructedComponent, VectorIndex,
+};
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::quantizer_scale::{QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 use crate::sequence_extension::ChromaFormat;
+use crate::skipped_macroblock::{
+    apply_to_pmv as skipped_apply_to_pmv, describe_skipped_macroblock, SkippedMacroblockContext,
+};
 use crate::{Error, Result};
 
 /// `past_intra_address` sentinel for "no intra macroblock has been
@@ -1417,6 +1424,206 @@ pub fn reconstruct_record_motion_vectors(
         out.backward = Some(recons);
     }
     Ok(out)
+}
+
+/// The §7.6.3 PMV side-effects applied for one macroblock by the
+/// [`reconstruct_slice_motion_vectors`] driver, surfaced so tests and
+/// callers can confirm the right §7.6.3.3 / §7.6.3.4 row fired without
+/// re-reading the running [`Pmv`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SliceMotionRecord {
+    /// `macroblock_address` of the **coded** macroblock this entry
+    /// describes (mirrors [`MacroblockRecord::macroblock_address`]).
+    pub macroblock_address: u32,
+    /// Number of §7.6.6 skipped macroblocks immediately preceding this
+    /// coded macroblock (`address_increment - 1`). Each one applied its
+    /// §7.6.3.4 PMV side-effect via [`skipped_apply_to_pmv`] before the
+    /// coded macroblock's own vectors were reconstructed.
+    pub skipped_before: u32,
+    /// `true` when at least one of the §7.6.6 skipped macroblocks in
+    /// `skipped_before` reset the running PMV (P-picture rule). `false`
+    /// when there were no skipped macroblocks, or the picture is a
+    /// B-picture (§7.6.6.3 / §7.6.6.4 "predictors unaffected").
+    pub skipped_reset_pmv: bool,
+    /// The reconstructed `vector'[r][s][:]` pairs for this coded
+    /// macroblock per §7.6.3.1 (empty `forward` / `backward` mirror the
+    /// wire-parse presence on the [`MacroblockRecord`]).
+    pub reconstructed: ReconstructedMotionVectors,
+    /// The §7.6.3.3 update-row label that fired for this coded
+    /// macroblock (Tables 7-10 / 7-11), or `None` for the MPEG-1
+    /// (ISO/IEC 11172-2) path where §7.6.3.3 does not apply.
+    pub update_outcome: Option<PmvUpdateOutcome>,
+}
+
+/// Per-slice result of [`reconstruct_slice_motion_vectors`]: the
+/// per-coded-macroblock §7.6.3 side-effect log plus the final running
+/// PMV state (to seed the next slice's §7.6.3.4 reset boundary, or to
+/// read the last predictor values from).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SliceMotionWalk {
+    /// One entry per coded macroblock in the slice, in bitstream order.
+    pub records: Vec<SliceMotionRecord>,
+    /// The running [`Pmv`] after the last coded macroblock's §7.6.3.3
+    /// update — i.e. the predictor bank as it stands at the §6.2.4
+    /// stop condition.
+    pub pmv: Pmv,
+}
+
+/// Run the full §7.6.3 motion-vector reconstruction lifecycle across an
+/// already-parsed [`SliceWalk`], carrying the §7.6.3 predictor bank
+/// (`PMV[r][s][t]`) across every macroblock of the slice.
+///
+/// The per-record [`reconstruct_record_motion_vectors`] entry point
+/// reconstructs one macroblock's vectors against a caller-owned [`Pmv`]
+/// but leaves the surrounding lifecycle — the §7.6.3.4 reset at slice
+/// start, the §7.6.3.3 [`update_predictors`] table after each coded
+/// macroblock, and the §7.6.6 skipped-macroblock PMV side-effects — to
+/// the caller. This driver composes those steps into a single pass so a
+/// higher-level picture driver can hand it a `SliceWalk` and read back
+/// the reconstructed vectors plus the running predictor state.
+///
+/// The lifecycle per the spec is:
+///
+/// 1. **§7.6.3.4 slice-start reset.** The predictor bank is zeroed
+///    before the first macroblock — *"At the start of each slice the
+///    motion vector predictors are reset to zero."*
+/// 2. For each coded [`MacroblockRecord`] (in bitstream order):
+///     * **§7.6.6 skipped-macroblock run.** The
+///       `address_increment - 1` macroblocks between this one and the
+///       previous coded one are skipped (§6.3.17.1). For each, the
+///       §7.6.6 description is derived ([`describe_skipped_macroblock`])
+///       and its §7.6.3.4 PMV side-effect applied
+///       ([`skipped_apply_to_pmv`] — a P-picture reset, a B-picture
+///       no-op). The skip run is processed **before** the coded
+///       macroblock's vectors so the coded macroblock differentially
+///       decodes against the post-skip predictor state.
+///     * **§7.6.3.1 reconstruction.** The coded macroblock's parsed
+///       vectors are reconstructed via
+///       [`reconstruct_record_motion_vectors`], writing the
+///       `vector'[r][s][:]` values into the predictor slots per
+///       Table 7-7.
+///     * **§7.6.3.3 update.** [`update_predictors`] applies the
+///       Tables 7-10 / 7-11 "Predictors to Update" column (copy the
+///       first-vector predictor into the second slot, reset on a
+///       zero-motion non-intra macroblock, etc.). Skipped for the
+///       MPEG-1 path (`ctx.mpeg1`), whose §2.4.4.2 / §2.4.4.3
+///       reconstruction owns its own predictor update and is decoded
+///       through [`crate::mpeg1_reconstruct`].
+///
+/// The §7.6.3.4 reset *between* slices is the caller's responsibility:
+/// each call resets at its own start, so a picture-level driver simply
+/// calls this once per slice. The returned [`SliceMotionWalk::pmv`] is
+/// the post-slice predictor state for inspection; it is **not** carried
+/// into the next slice (a fresh slice resets per §7.6.3.4).
+///
+/// # Errors
+///
+/// * Propagates [`Error::InvalidBitstream`] from
+///   [`reconstruct_record_motion_vectors`] (an out-of-range
+///   `motion_code` + `f_code`), from [`update_predictors`] (a
+///   `(prediction_type, fwd, bwd, intra)` combination absent from
+///   Tables 7-10 / 7-11), and from [`describe_skipped_macroblock`] (a
+///   skipped macroblock in a non-scalable I-picture, or a B-picture
+///   skip whose previous macroblock had no encoded direction).
+pub fn reconstruct_slice_motion_vectors(
+    walk: &SliceWalk,
+    ctx: &SliceWalkContext,
+) -> Result<SliceMotionWalk> {
+    // §7.6.3.4: the predictor bank starts the slice zeroed.
+    let mut pmv = Pmv::new();
+    let mut records: Vec<SliceMotionRecord> = Vec::with_capacity(walk.macroblocks.len());
+
+    // §7.6.6.3 / §7.6.6.4: a B-picture skipped macroblock copies the
+    // direction of the *previous coded* macroblock. We carry that
+    // direction across the slice so each skip run can name its source.
+    let mut previous_direction: Option<PredictionDirection> = None;
+
+    for record in &walk.macroblocks {
+        let skipped_before = record.skipped_macroblock_count;
+        let mut skipped_reset_pmv = false;
+
+        // §7.6.6: process the run of skipped macroblocks that precede
+        // this coded one. Their §7.6.3.4 PMV side-effect is applied
+        // before the coded macroblock reconstructs its own vectors.
+        if skipped_before > 0 {
+            let previous = previous_direction.unwrap_or(PredictionDirection::Forward);
+            let skip_ctx = SkippedMacroblockContext {
+                picture_coding_type: ctx.picture_coding_type,
+                picture_structure: ctx.picture_structure,
+                previous_direction: previous,
+                // The §7.6.6 preamble's scalable-I-picture exemption is
+                // not surfaced through the slice walker yet; a
+                // non-scalable I-picture skip is a bitstream error,
+                // which `describe_skipped_macroblock` rejects.
+                scalable_i_picture: false,
+                pmv,
+            };
+            let description = describe_skipped_macroblock(skip_ctx)?;
+            // The §7.6.3.4 side-effect is identical for every skipped MB
+            // in the run (a P-picture reset is idempotent; a B-picture
+            // run is a no-op), so applying it once per run reaches the
+            // same predictor state as applying it per macroblock.
+            skipped_apply_to_pmv(&description, &mut pmv);
+            skipped_reset_pmv = description.reset_pmv;
+        }
+
+        // §7.6.3.1: reconstruct this coded macroblock's vectors against
+        // the running predictor bank. The MPEG-1 path keeps its own
+        // §2.4.4.2 / §2.4.4.3 reconstruction (out of scope for the
+        // MPEG-2 §7.6.3 PMV bank), so the wire-only records carry no
+        // MPEG-2 motion-vector payloads in that mode and this is a no-op
+        // pass-through that records the empty reconstruction.
+        let reconstructed = reconstruct_record_motion_vectors(record, &mut pmv, ctx)?;
+
+        // §7.6.3.3: apply the Tables 7-10 / 7-11 predictor-update row.
+        // MPEG-1 does not have the §7.6.3.3 table; skip it there.
+        let update_outcome = if ctx.mpeg1 {
+            None
+        } else {
+            let mt = &record.macroblock_type;
+            let update_ctx = PmvUpdateContext {
+                picture_structure: ctx.picture_structure,
+                prediction_type: record.motion_type.map(|m| m.prediction_type),
+                macroblock_motion_forward: mt.macroblock_motion_forward,
+                macroblock_motion_backward: mt.macroblock_motion_backward,
+                macroblock_intra: mt.macroblock_intra,
+                concealment_motion_vectors: ctx.concealment_motion_vectors,
+            };
+            Some(update_predictors(&mut pmv, update_ctx)?)
+        };
+
+        previous_direction = Some(record_direction(&record.macroblock_type));
+
+        records.push(SliceMotionRecord {
+            macroblock_address: record.macroblock_address,
+            skipped_before,
+            skipped_reset_pmv,
+            reconstructed,
+            update_outcome,
+        });
+    }
+
+    Ok(SliceMotionWalk { records, pmv })
+}
+
+/// Map a coded macroblock's §6.3.17.1 motion flags to the
+/// [`PredictionDirection`] a following §7.6.6 B-picture skip run copies.
+/// An intra macroblock has no prediction direction; §7.6.6.3 /
+/// §7.6.6.4 forbid a B-picture skip immediately after an intra
+/// macroblock, so [`describe_skipped_macroblock`] rejects the
+/// [`PredictionDirection::Skipped`] sentinel we map intra to.
+fn record_direction(macroblock_type: &MacroblockType) -> PredictionDirection {
+    match (
+        macroblock_type.macroblock_motion_forward,
+        macroblock_type.macroblock_motion_backward,
+    ) {
+        (true, true) => PredictionDirection::Bidirectional,
+        (true, false) => PredictionDirection::Forward,
+        (false, true) => PredictionDirection::Backward,
+        // Intra (or a non-intra MB with no motion, which a B-picture
+        // skip cannot follow): the §7.6.6 driver rejects this sentinel.
+        (false, false) => PredictionDirection::Skipped,
+    }
 }
 
 /// Rebuild the [`MacroblockModesTail`] payload the §6.2.5.1 parser
@@ -2879,5 +3086,169 @@ mod tests {
             .as_ref()
             .expect("§6.2.6 ran");
         assert!(blocks.is_empty());
+    }
+
+    /// Build the two-MB "+1 horizontal forward MV per MB" P-picture
+    /// slice used by the slice-level reconstruction tests, with the
+    /// first macroblock's `macroblock_address_increment` set to
+    /// `first_increment` (so a caller can inject a skipped-MB run before
+    /// the second coded macroblock by passing `2`).
+    fn build_two_mb_forward_slice(second_increment: u16) -> Vec<u8> {
+        let mut bw = BitWriter::new();
+        // MB 0: increment 1, "MC, not coded", frame_motion_type=10,
+        // mv h=+1 (3 bits `010`), mv v=0 (1 bit `1`).
+        write_address_increment(&mut bw, 1);
+        write_mb_type_p_mc_not_coded(&mut bw);
+        bw.write_u32(0b10, 2);
+        bw.write_u32(0b010, 3);
+        bw.write_u32(0b1, 1);
+        // MB 1: same shape, but its address increment may skip MBs.
+        write_address_increment(&mut bw, second_increment);
+        write_mb_type_p_mc_not_coded(&mut bw);
+        bw.write_u32(0b10, 2);
+        bw.write_u32(0b010, 3);
+        bw.write_u32(0b1, 1);
+        end_with_stop(bw)
+    }
+
+    #[test]
+    fn slice_driver_threads_pmv_and_runs_update_across_macroblocks() {
+        // The slice-level driver should (a) reset PMV at slice start
+        // per §7.6.3.4, (b) reconstruct each MB's vectors against the
+        // running predictor bank per §7.6.3.1 — accumulating +1 → +2
+        // across the two MBs — and (c) apply the §7.6.3.3 update row
+        // after each MB. Both MBs are forward-only frame-based
+        // non-intra, so the Tables 7-10 row is "copy forward".
+        let buf = build_two_mb_forward_slice(1);
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            false,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 2);
+
+        let motion = reconstruct_slice_motion_vectors(&walk, &ctx).expect("§7.6.3 slice driver");
+        assert_eq!(motion.records.len(), 2);
+
+        // MB0: PMV started at 0 → vector' = 1.
+        let r0 = &motion.records[0];
+        assert_eq!(r0.skipped_before, 0);
+        assert!(!r0.skipped_reset_pmv);
+        let f0 = r0.reconstructed.forward.as_ref().expect("MB0 forward");
+        assert_eq!(f0[0].horizontal.vector_prime, 1);
+        assert_eq!(
+            r0.update_outcome,
+            Some(PmvUpdateOutcome::NonIntraCopyForward)
+        );
+
+        // MB1: PMV carried 1 → vector' = 2 (accumulation across MBs).
+        let r1 = &motion.records[1];
+        assert_eq!(r1.skipped_before, 0);
+        let f1 = r1.reconstructed.forward.as_ref().expect("MB1 forward");
+        assert_eq!(f1[0].horizontal.vector_prime, 2);
+        assert_eq!(
+            r1.update_outcome,
+            Some(PmvUpdateOutcome::NonIntraCopyForward)
+        );
+
+        // The running PMV ends at the last reconstructed horizontal.
+        assert_eq!(
+            motion.pmv.get(
+                VectorIndex::First,
+                Direction::Forward,
+                crate::pmv::Component::Horizontal,
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn slice_driver_resets_pmv_at_slice_start() {
+        // §7.6.3.4: each call starts with a zeroed predictor bank, so
+        // MB0 of the slice always reconstructs against PMV = 0
+        // regardless of any state a prior slice left behind. We confirm
+        // by decoding the same slice twice and getting identical MB0
+        // vectors.
+        let buf = build_two_mb_forward_slice(1);
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            false,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+
+        let first = reconstruct_slice_motion_vectors(&walk, &ctx).expect("first pass");
+        let second = reconstruct_slice_motion_vectors(&walk, &ctx).expect("second pass");
+        assert_eq!(first.records, second.records);
+        assert_eq!(
+            first.records[0].reconstructed.forward.as_ref().unwrap()[0]
+                .horizontal
+                .vector_prime,
+            1
+        );
+    }
+
+    #[test]
+    fn slice_driver_skipped_macroblock_resets_pmv_in_p_picture() {
+        // MB1 carries `macroblock_address_increment = 2`, so one
+        // macroblock is skipped between MB0 and MB1. In a P-picture the
+        // §7.6.6 skipped macroblock resets the predictor bank
+        // (§7.6.3.4), so MB1 reconstructs against PMV = 0 → vector' = 1
+        // again, NOT the +2 accumulation seen without a skip.
+        let buf = build_two_mb_forward_slice(2);
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Predictive,
+            8,
+            PictureStructure::Frame,
+            false,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 2);
+        assert_eq!(walk.macroblocks[1].skipped_macroblock_count, 1);
+
+        let motion = reconstruct_slice_motion_vectors(&walk, &ctx).expect("§7.6.3 slice driver");
+        let r1 = &motion.records[1];
+        assert_eq!(r1.skipped_before, 1);
+        assert!(r1.skipped_reset_pmv, "P-picture skip resets PMV");
+        let f1 = r1.reconstructed.forward.as_ref().expect("MB1 forward");
+        assert_eq!(
+            f1[0].horizontal.vector_prime, 1,
+            "skip-reset PMV → no accumulation"
+        );
+    }
+
+    #[test]
+    fn slice_driver_rejects_skip_in_non_scalable_i_picture() {
+        // §7.6.6 preamble: skipped macroblocks are forbidden in a
+        // non-scalable I-picture. A second MB with increment 2 in an
+        // I-picture must surface an InvalidBitstream from the driver.
+        let mut bw = BitWriter::new();
+        write_address_increment(&mut bw, 1);
+        write_mb_type_i_intra(&mut bw);
+        write_address_increment(&mut bw, 2);
+        write_mb_type_i_intra(&mut bw);
+        let buf = end_with_stop(bw);
+
+        let ctx = SliceWalkContext::first_slice_with_picture_extension(
+            22,
+            0,
+            PictureCodingType::Intra,
+            8,
+            PictureStructure::Frame,
+            true,
+        );
+        let walk = walk_slice(&buf, ctx).unwrap();
+        assert_eq!(walk.macroblocks.len(), 2);
+        let err = reconstruct_slice_motion_vectors(&walk, &ctx).unwrap_err();
+        assert!(matches!(err, Error::InvalidBitstream(_)));
     }
 }

@@ -8,6 +8,25 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 320: §7.6.3 slice-level motion-vector reconstruction driver
+  `reconstruct_slice_motion_vectors` in `slice_macroblock_walk` — the
+  "walker → PMV state" wiring that composes the per-record
+  `reconstruct_record_motion_vectors` endpoint into a full per-slice
+  pass. It carries the §7.6.3 predictor bank (`PMV[r][s][t]`) across
+  every macroblock of a parsed `SliceWalk`: §7.6.3.4 reset at slice
+  start, §7.6.3.1 reconstruction per coded macroblock (accumulating the
+  differential vectors across MBs), the §7.6.3.3 `update_predictors`
+  table row after each one, and the §7.6.6 skipped-macroblock PMV
+  side-effect (a P-picture reset, a B-picture no-op) for the
+  `address_increment - 1` skipped slots that precede each coded MB. New
+  `SliceMotionRecord` (per-coded-MB log: skipped-run count, whether the
+  skip reset PMV, the reconstructed vectors, and the §7.6.3.3 update
+  outcome) and `SliceMotionWalk` (the record list plus the final
+  running `Pmv`), both re-exported at the crate root. Four unit tests
+  cover the +1 → +2 cross-MB accumulation with the `NonIntraCopyForward`
+  update row, the per-call §7.6.3.4 slice-start reset, the P-picture
+  skipped-MB reset that breaks accumulation, and the §7.6.6 rejection of
+  a skip in a non-scalable I-picture.
 - round 315: §7.7.4 "Selection and combination of spatial and temporal
   predictions" — the *"precise method for predictor calculation"* in a
   new `spatial_temporal_combine` module that blends the temporal
