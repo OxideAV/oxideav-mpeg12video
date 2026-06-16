@@ -8,6 +8,35 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 325: §7.7.3.5 / §7.7.3.6 spatial-scalable lower-layer resampling
+  in a new `spatial_resampling` module — the linear-interpolation
+  upsampling that takes a progressive lower-layer frame (`prog_pic`) and
+  resamples it onto the enhancement-layer sample grid, producing the
+  `pel_pred_spat` input the already-landed §7.7.4 combiner consumes.
+  `vertical_resample` implements §7.7.3.5 (`vert_pic[yh+ll_v_offset][x] =
+  (16-phase)*prog_pic[y1][x] + phase*prog_pic[y2][x]`, deferring its
+  normalisation so it carries the ×16 scale); `horizontal_resample`
+  implements §7.7.3.6 with the single `// 256` that folds both stages'
+  ×16 scaling; `resample_progressive` composes the two for the
+  progressive-to-progressive case (Table 7-15 row 3, no §7.7.3.4
+  deinterlace / §7.7.3.7 reinterlace), where `hor_pic` is `spat_pred_pic`
+  directly. The phase / `y1` / `y2` / `x1` / `x2` index math uses the
+  §4.1 `/` (truncate toward zero) and `//` (round half away from zero,
+  here non-negative so `(s + d/2) / d`) operators; out-of-frame reads use
+  border extension (pad-to-edge clamp). `ResampleParams::luminance` /
+  `ResampleParams::chrominance` derive the Table 7-16 local variables
+  (`ll_*_size`, `ll_*_offset`, the four `*_subs_*` factors) from the raw
+  `sequence_scalable_extension()` /
+  `picture_spatial_scalable_extension()` fields, applying the Table 7-17
+  `chroma_ratio` and Table 7-18 `format_ratio` adjustments for chroma. A
+  `Plane` (`i32` row-major) carries the input / ×16 intermediate.
+  Thirteen unit tests cover the 1:1 identity, vertical / horizontal /
+  full 2× midpoint blends, border extension past the frame edge, the
+  Table 7-16/7-17/7-18 chroma-ratio derivations (4:2:0→4:2:0 and
+  4:2:0→4:4:4), the §4.1 `//` rounding examples, the unlisted-pair
+  rejection, and the zero-size / zero-factor / mismatched-plane guards.
+  All exported at the crate root (`ResamplePlane`, `ResampleParams`,
+  `vertical_resample`, `horizontal_resample`, `resample_progressive`).
 - round 320: §7.6.3 slice-level motion-vector reconstruction driver
   `reconstruct_slice_motion_vectors` in `slice_macroblock_walk` — the
   "walker → PMV state" wiring that composes the per-record

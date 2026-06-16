@@ -380,6 +380,7 @@ pub mod sequence_scalable_extension;
 pub mod skipped_macroblock;
 pub mod slice_header;
 pub mod slice_macroblock_walk;
+pub mod spatial_resampling;
 pub mod spatial_temporal_combine;
 
 pub use add_coefficients::{
@@ -527,6 +528,10 @@ pub use slice_macroblock_walk::{
     reconstruct_record_motion_vectors, reconstruct_slice_motion_vectors, walk_slice,
     MacroblockRecord, ReconstructedMotionVectors, ReconstructedVector, SliceMotionRecord,
     SliceMotionWalk, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
+};
+pub use spatial_resampling::{
+    horizontal_resample, resample_progressive, vertical_resample, Plane as ResamplePlane,
+    ResampleParams,
 };
 pub use spatial_temporal_combine::{
     combine_field_interleaved, combine_spatial_temporal, combine_uniform, SpatialWeight,
