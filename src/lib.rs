@@ -530,8 +530,9 @@ pub use slice_macroblock_walk::{
     SliceMotionWalk, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
 pub use spatial_resampling::{
-    deinterlace, horizontal_resample, reinterlace, resample_progressive, vertical_resample,
-    Field as ResampleField, Plane as ResamplePlane, ResampleParams,
+    deinterlace, horizontal_resample, reinterlace, resample_progressive,
+    upsample_spatial_prediction, vertical_resample, Field as ResampleField, Plane as ResamplePlane,
+    ResampleParams, UpsampleCase,
 };
 pub use spatial_temporal_combine::{
     combine_field_interleaved, combine_spatial_temporal, combine_uniform, SpatialWeight,

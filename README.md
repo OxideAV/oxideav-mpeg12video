@@ -72,7 +72,13 @@ The decode pipeline is implemented end-to-end at the module level:
   field-select line demultiplex) to form `pel_pred_spat` / `spat_pred_pic`,
   with the §4.1 `/` / `//` index-and-phase arithmetic, pad-to-edge border
   extension, and the Table 7-16/7-17/7-18 luma/chroma local-variable
-  derivation.
+  derivation. The §7.7.3.1 / Table 7-15 case dispatch
+  (`UpsampleCase::select`) resolves the five upsampling rows from
+  `(lower_layer_deinterlaced_field_select, lower_layer_progressive_frame,
+  progressive_frame)` — including the two *"field_select shall be '1'"*
+  constraints — and `upsample_spatial_prediction` composes the
+  deinterlace → resample → reinterlace stages per the selected row to
+  emit `spat_pred_pic` for one component.
 - **Spatial-scalable prediction combination**: the §7.7.4 *"precise
   method for predictor calculation"* — combining the temporal
   enhancement-layer prediction with the spatial lower-layer prediction
@@ -99,12 +105,14 @@ verifying the parsers against known-good encoded streams.
   reconstructed vectors into the §7.6.4 pel reader is not yet composed.
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
   (parsed structurally; the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
-  resampling, §7.7.3.7 reinterlace, §7.7.4 spatial/temporal prediction
-  combination, and §7.7.5.1 PMV reset are all implemented, but the full
-  enhancement-layer decode loop that drives them per macroblock — picking
-  the Table 7-15 deinterlace/field-select case from the picture/sequence
-  flags and threading the result into the §7.7.4 combiner — is not yet
-  composed).
+  resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15 upsampling-
+  case dispatch + `upsample_spatial_prediction` driver, the §7.7.4
+  spatial/temporal prediction combination, and §7.7.5.1 PMV reset are all
+  implemented, but the full enhancement-layer decode loop that drives
+  them per macroblock — deriving the Table 7-16 `ResampleParams` from the
+  sequence/picture geometry and threading the per-macroblock
+  `spat_pred_pic` into the §7.7.4 combiner across a whole picture — is not
+  yet composed).
 
 ## Clean-room provenance
 

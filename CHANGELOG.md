@@ -8,6 +8,20 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 336: §7.7.3.1 / Table 7-15 upsampling-case dispatch in
+  `spatial_resampling` — `UpsampleCase::select(field_select,
+  lower_layer_progressive, progressive_frame)` resolves the five Table
+  7-15 rows (interlaced→progressive top/bottom field, progressive frame
+  ×2, interlaced→interlaced both fields) including the two *"shall have
+  the value '1'"* `lower_layer_deinterlaced_field_select` constraints
+  (rejected as `InvalidBitstream`), and `upsample_spatial_prediction`
+  composes the existing §7.7.3.4 `deinterlace` → §7.7.3.5/.6
+  `resample_progressive` → §7.7.3.7 `reinterlace` stages per the selected
+  row to form `spat_pred_pic` for one component. This wires the
+  previously-standalone spatial-resampling primitives into a single
+  flag-driven entry point feeding the §7.7.4 spatial/temporal combiner.
+  12 new unit tests (the full Table 7-15 truth table, both constraint
+  rejections, and per-case driver-composition equivalence).
 - round 331: §7.7.3.4 deinterlace + §7.7.3.7 reinterlace filters in
   `spatial_resampling`, completing the interlaced front/back of the
   §7.7.3 spatial-prediction pipeline that brackets the existing

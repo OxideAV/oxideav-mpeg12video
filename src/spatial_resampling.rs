@@ -796,6 +796,188 @@ pub fn reinterlace(hor_pic: &Plane, field: Option<Field>, fill: i32) -> Result<P
     Plane::new(width, height, out)
 }
 
+/// The §7.7.3.1 / Table 7-15 upsampling case selected from the three
+/// frame-progressiveness flags. Each variant records which stages the
+/// [`upsample_spatial_prediction`] driver composes and which entity of
+/// the lower-layer frame is used to form the prediction.
+///
+/// The columns of Table 7-15 (page 110) are
+/// `lower_layer_deinterlaced_field_select`,
+/// `lower_layer_progressive_frame`, `progressive_frame`, then the
+/// derived *"Apply deinterlace process"* and *"Entity used for
+/// prediction"*:
+///
+/// | field_select | ll_progressive | progressive | deinterlace | entity      |
+/// |:------------:|:--------------:|:-----------:|:-----------:|:------------|
+/// | 0            | 0              | 1           | yes         | top field   |
+/// | 1            | 0              | 1           | yes         | bottom field|
+/// | 1            | 1              | 1           | no          | frame       |
+/// | 1            | 1              | 0           | no          | frame       |
+/// | 1            | 0              | 0           | yes         | both fields |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpsampleCase {
+    /// Row 1/2 — interlaced lower layer, progressive enhancement layer.
+    /// The lower-layer frame is deinterlaced (§7.7.3.4) into a
+    /// progressive `prog_pic`, of which only the selected field's
+    /// reconstruction is required; `prog_pic` is resampled vertically
+    /// (§7.7.3.5) and horizontally (§7.7.3.6) and the progressive
+    /// `hor_pic` is copied to `spat_pred_pic` (§7.7.3.7, *"derived from a
+    /// lower layer progressive frame"* — the enhancement layer is
+    /// progressive). `Top` is row 1 (`field_select == 0`), `Bottom`
+    /// row 2 (`field_select == 1`).
+    DeinterlaceToProgressive(Field),
+    /// Row 3/4 — progressive lower layer. No deinterlace: `dlower` is
+    /// renamed `prog_pic`, resampled vertically (§7.7.3.5) and
+    /// horizontally (§7.7.3.6); `hor_pic` is copied unchanged to
+    /// `spat_pred_pic` (§7.7.3.7). The enhancement layer may be
+    /// progressive (row 3) or interlaced (row 4); the resampling
+    /// arithmetic is identical because the source is progressive.
+    ProgressiveFrame,
+    /// Row 5 — interlaced lower layer, interlaced enhancement layer.
+    /// Both fields are deinterlaced (§7.7.3.4) to a progressive
+    /// `prog_pic`, resampled (§7.7.3.5 / §7.7.3.6), and reinterlaced
+    /// (§7.7.3.7) so that each field contributes its own parity lines to
+    /// `spat_pred_pic` (*"the result … is subsampled to produce an
+    /// interlaced field"*).
+    DeinterlaceBothFields,
+}
+
+impl UpsampleCase {
+    /// Select the Table 7-15 row from the three picture/sequence flags.
+    ///
+    /// * `field_select` is `lower_layer_deinterlaced_field_select`
+    ///   (`picture_spatial_scalable_extension`).
+    /// * `lower_layer_progressive` is `lower_layer_progressive_frame`
+    ///   (`sequence_scalable_extension`, spatial scalability).
+    /// * `progressive_frame` is the enhancement-layer
+    ///   `progressive_frame` (`sequence_extension`).
+    ///
+    /// The five Table 7-15 rows are exhaustive over the
+    /// `(lower_layer_progressive, progressive_frame)` square once the
+    /// spec constraints on `field_select` are taken into account: the
+    /// table fixes `field_select` to `1` for every row except the first
+    /// (top-field) row. The two *"shall have the value '1'"* clauses of
+    /// §7.7.3.1 (progressive lower layer; interlaced-to-interlaced) make
+    /// the only `field_select`-discriminated choice the
+    /// interlaced-lower / progressive-enhancement pair (rows 1 vs 2).
+    ///
+    /// # Errors
+    /// * [`Error::InvalidBitstream`] if the flag combination is the one
+    ///   Table 7-15 omits — `field_select == 0` with anything other than
+    ///   the (interlaced lower, progressive enhancement) row — which the
+    ///   *"shall have the value '1'"* constraints forbid.
+    pub fn select(
+        field_select: bool,
+        lower_layer_progressive: bool,
+        progressive_frame: bool,
+    ) -> Result<Self> {
+        match (lower_layer_progressive, progressive_frame) {
+            // Rows 1/2: interlaced lower layer, progressive enhancement.
+            (false, true) => Ok(Self::DeinterlaceToProgressive(if field_select {
+                Field::Bottom
+            } else {
+                Field::Top
+            })),
+            // Rows 3/4: progressive lower layer (field_select == 1).
+            (true, _) => {
+                if field_select {
+                    Ok(Self::ProgressiveFrame)
+                } else {
+                    Err(Error::InvalidBitstream(
+                        "Table 7-15: lower_layer_deinterlaced_field_select shall be '1' when \
+                         lower_layer_progressive_frame is '1' (§7.7.3.1)",
+                    ))
+                }
+            }
+            // Row 5: interlaced lower layer, interlaced enhancement.
+            (false, false) => {
+                if field_select {
+                    Ok(Self::DeinterlaceBothFields)
+                } else {
+                    Err(Error::InvalidBitstream(
+                        "Table 7-15: lower_layer_deinterlaced_field_select shall be '1' for the \
+                         interlaced-to-interlaced upsampling case (§7.7.3.1)",
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Whether the §7.7.3.4 deinterlace stage is applied for this case
+    /// (the Table 7-15 *"Apply deinterlace process"* column).
+    #[inline]
+    pub fn applies_deinterlace(self) -> bool {
+        !matches!(self, Self::ProgressiveFrame)
+    }
+}
+
+/// §7.7.3.1 / Table 7-15 spatial-prediction driver: form the
+/// `spat_pred_pic` for one component (luminance or one chrominance
+/// plane) by composing the §7.7.3.4 deinterlace, §7.7.3.5 vertical /
+/// §7.7.3.6 horizontal resampling and §7.7.3.7 reinterlace stages
+/// according to the Table 7-15 row selected from the three
+/// progressiveness flags.
+///
+/// `dlower` is the lower-layer reconstructed frame for this component
+/// (§7.7.3.1 *"renamed to prog_pic"*). `params` carries the Table 7-16
+/// local variables for this component (see
+/// [`ResampleParams::luminance`] / [`ResampleParams::chrominance`]).
+/// `out_width` / `out_height` give the upsampled-frame region size on
+/// the enhancement-layer sampling grid (the §7.7.3.5/.6 output extent).
+///
+/// `frame_picture` selects the §7.7.3.4 deinterlace aperture for
+/// luminance (`true` = Frame-Picture two-field aperture, `false` = field
+/// picture one-field aperture); `is_luma` is `false` for the chrominance
+/// planes (which always use the one-field aperture). Both are ignored
+/// for [`UpsampleCase::ProgressiveFrame`] (no deinterlace).
+///
+/// Returns the `spat_pred_pic` plane (`out_width × out_height`, samples
+/// in `[0, 255]`) ready for the §7.7.4 spatial/temporal combiner
+/// ([`crate::spatial_temporal_combine`]).
+///
+/// # Errors
+/// * Propagates the geometry errors of the composed stages
+///   ([`Error::InvalidBitstream`]).
+pub fn upsample_spatial_prediction(
+    case: UpsampleCase,
+    dlower: &Plane,
+    params: &ResampleParams,
+    out_width: u32,
+    out_height: u32,
+    frame_picture: bool,
+    is_luma: bool,
+) -> Result<Plane> {
+    match case {
+        // Rows 3/4 (§7.7.3.1): progressive lower layer. dlower is
+        // renamed prog_pic; resample; reinterlace = copy.
+        UpsampleCase::ProgressiveFrame => {
+            let hor_pic = resample_progressive(dlower, params, out_width, out_height)?;
+            reinterlace(&hor_pic, None, 0)
+        }
+        // Rows 1/2 (§7.7.3.1): deinterlace to a progressive prog_pic,
+        // resample, and (enhancement layer being progressive) copy
+        // hor_pic to spat_pred_pic. Only the selected field's
+        // reconstruction is required; the §7.7.3.4 deinterlace fills the
+        // whole progressive frame from that field's aperture.
+        UpsampleCase::DeinterlaceToProgressive(_field) => {
+            let prog_pic = deinterlace(dlower, frame_picture, is_luma)?;
+            let hor_pic = resample_progressive(&prog_pic, params, out_width, out_height)?;
+            reinterlace(&hor_pic, None, 0)
+        }
+        // Row 5 (§7.7.3.1): deinterlace both fields, resample, then the
+        // §7.7.3.7 subsample-to-interlaced step. The §7.7.3.4
+        // deinterlace produces a full progressive prog_pic from both
+        // fields jointly, so reinterlacing each field's own parity lines
+        // back into spat_pred_pic is the identity copy of the resampled
+        // frame (both parities originate from the same resample).
+        UpsampleCase::DeinterlaceBothFields => {
+            let prog_pic = deinterlace(dlower, frame_picture, is_luma)?;
+            let hor_pic = resample_progressive(&prog_pic, params, out_width, out_height)?;
+            reinterlace(&hor_pic, None, 0)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1142,5 +1324,149 @@ mod tests {
         let hor = plane(2, 4, &[1, 2, 3, 4, 5, 6, 7, 8]);
         let out = reinterlace(&hor, Some(Field::Bottom), 0).expect("reint");
         assert_eq!(out.samples(), &[0, 0, 3, 4, 0, 0, 7, 8]);
+    }
+
+    // ---- §7.7.3.1 / Table 7-15 case selection ----
+
+    #[test]
+    fn table_7_15_row1_interlaced_lower_progressive_enh_top_field() {
+        // field_select 0, ll_progressive 0, progressive 1 -> deinterlace
+        // yes, entity = top field.
+        let case = UpsampleCase::select(false, false, true).expect("row1");
+        assert_eq!(case, UpsampleCase::DeinterlaceToProgressive(Field::Top));
+        assert!(case.applies_deinterlace());
+    }
+
+    #[test]
+    fn table_7_15_row2_interlaced_lower_progressive_enh_bottom_field() {
+        // field_select 1, ll_progressive 0, progressive 1 -> deinterlace
+        // yes, entity = bottom field.
+        let case = UpsampleCase::select(true, false, true).expect("row2");
+        assert_eq!(case, UpsampleCase::DeinterlaceToProgressive(Field::Bottom));
+        assert!(case.applies_deinterlace());
+    }
+
+    #[test]
+    fn table_7_15_row3_progressive_lower_progressive_enh_frame() {
+        // field_select 1, ll_progressive 1, progressive 1 -> no
+        // deinterlace, entity = frame.
+        let case = UpsampleCase::select(true, true, true).expect("row3");
+        assert_eq!(case, UpsampleCase::ProgressiveFrame);
+        assert!(!case.applies_deinterlace());
+    }
+
+    #[test]
+    fn table_7_15_row4_progressive_lower_interlaced_enh_frame() {
+        // field_select 1, ll_progressive 1, progressive 0 -> no
+        // deinterlace, entity = frame.
+        let case = UpsampleCase::select(true, true, false).expect("row4");
+        assert_eq!(case, UpsampleCase::ProgressiveFrame);
+        assert!(!case.applies_deinterlace());
+    }
+
+    #[test]
+    fn table_7_15_row5_interlaced_lower_interlaced_enh_both_fields() {
+        // field_select 1, ll_progressive 0, progressive 0 -> deinterlace
+        // yes, entity = both fields.
+        let case = UpsampleCase::select(true, false, false).expect("row5");
+        assert_eq!(case, UpsampleCase::DeinterlaceBothFields);
+        assert!(case.applies_deinterlace());
+    }
+
+    #[test]
+    fn table_7_15_rejects_field_select_zero_for_progressive_lower() {
+        // §7.7.3.1: field_select shall be '1' when ll_progressive is '1'.
+        assert!(matches!(
+            UpsampleCase::select(false, true, true),
+            Err(Error::InvalidBitstream(_))
+        ));
+        assert!(matches!(
+            UpsampleCase::select(false, true, false),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    #[test]
+    fn table_7_15_rejects_field_select_zero_for_interlaced_to_interlaced() {
+        // §7.7.3.1: field_select shall be '1' for the interlaced ->
+        // interlaced case.
+        assert!(matches!(
+            UpsampleCase::select(false, false, false),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    // ---- §7.7.3.1 / Table 7-15 driver composition ----
+
+    #[test]
+    fn upsample_progressive_frame_matches_resample_then_copy() {
+        // Row 3/4: dlower renamed prog_pic, resample, reinterlace = copy.
+        let dlower = plane(3, 2, &[10, 20, 30, 40, 50, 60]);
+        let params = ResampleParams::luminance(3, 2, 0, 0, 1, 1, 1, 1).expect("params");
+        let out = upsample_spatial_prediction(
+            UpsampleCase::ProgressiveFrame,
+            &dlower,
+            &params,
+            3,
+            2,
+            true,
+            true,
+        )
+        .expect("driver");
+        // Identity resample (subs 1:1) -> spat_pred_pic == dlower.
+        let expected = resample_progressive(&dlower, &params, 3, 2).expect("resample");
+        assert_eq!(out.samples(), expected.samples());
+        assert_eq!(out.samples(), &[10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn upsample_deinterlace_to_progressive_composes_stages() {
+        // Row 1/2: deinterlace (§7.7.3.4) -> resample -> copy.
+        // Use a constant-per-field source so the deinterlace FIR is a
+        // well-defined fixture, identity resample (subs 1:1).
+        let dlower = plane(2, 4, &[40, 40, 80, 80, 40, 40, 80, 80]);
+        let params = ResampleParams::luminance(2, 4, 0, 0, 1, 1, 1, 1).expect("params");
+        let out = upsample_spatial_prediction(
+            UpsampleCase::DeinterlaceToProgressive(Field::Top),
+            &dlower,
+            &params,
+            2,
+            4,
+            false, // field picture -> one-field aperture
+            true,
+        )
+        .expect("driver");
+        // Driver must equal: deinterlace -> resample_progressive -> copy.
+        let prog = deinterlace(&dlower, false, true).expect("deint");
+        let hor = resample_progressive(&prog, &params, 2, 4).expect("resample");
+        let expected = reinterlace(&hor, None, 0).expect("reint");
+        assert_eq!(out.samples(), expected.samples());
+        // The §7.7.3.7 progressive copy leaves no fill rows: every row
+        // populated (interlaced enhancement-layer fill would zero a
+        // parity; here the progressive copy keeps all rows).
+        assert_eq!(out.width(), 2);
+        assert_eq!(out.height(), 4);
+    }
+
+    #[test]
+    fn upsample_both_fields_equals_deinterlace_resample_chain() {
+        // Row 5: deinterlace both fields -> resample -> subsample to
+        // interlaced. The deinterlace produces a full prog_pic, so the
+        // reinterlace of both parities is the identity copy of hor_pic.
+        let dlower = plane(2, 4, &[10, 12, 20, 22, 30, 32, 40, 42]);
+        let params = ResampleParams::luminance(2, 4, 0, 0, 1, 1, 1, 1).expect("params");
+        let out = upsample_spatial_prediction(
+            UpsampleCase::DeinterlaceBothFields,
+            &dlower,
+            &params,
+            2,
+            4,
+            true, // frame picture -> two-field aperture for luma
+            true,
+        )
+        .expect("driver");
+        let prog = deinterlace(&dlower, true, true).expect("deint");
+        let hor = resample_progressive(&prog, &params, 2, 4).expect("resample");
+        assert_eq!(out.samples(), hor.samples());
     }
 }
