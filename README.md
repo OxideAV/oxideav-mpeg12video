@@ -58,13 +58,18 @@ The decode pipeline is implemented end-to-end at the module level:
 - **Motion compensation**: the §7.6 pipeline — §7.6.4 forming
   predictions (pel reader), §7.6.7 combine predictions, §7.6.8 add
   coefficients with the `[0, 255]` clamp.
-- **Spatial-scalable lower-layer resampling**: the §7.7.3.5 vertical and
-  §7.7.3.6 horizontal linear-interpolation upsampling that resamples a
-  progressive lower-layer frame onto the enhancement-layer sample grid
-  to form `pel_pred_spat` (`vertical_resample` carries the ×16 scale,
-  `horizontal_resample` folds both stages' scaling with one `// 256`,
-  `resample_progressive` composes them for the Table 7-15
-  progressive-to-progressive case where `hor_pic` *is* `spat_pred_pic`),
+- **Spatial-scalable lower-layer resampling**: the full §7.7.3 spatial-
+  prediction pipeline — §7.7.3.4 deinterlace (`deinterlace`: the
+  Table 7-19 vertical/temporal FIR, two-field aperture for Frame-Picture
+  luma and one-field aperture for chroma / field-picture luma, with
+  `sum // 16` saturation and the same-field nearest-neighbour border
+  extension), §7.7.3.5 vertical and §7.7.3.6 horizontal linear-
+  interpolation upsampling that resamples the progressive frame onto the
+  enhancement-layer sample grid (`vertical_resample` carries the ×16
+  scale, `horizontal_resample` folds both stages' scaling with one
+  `// 256`, `resample_progressive` composes them), and §7.7.3.7
+  reinterlace (`reinterlace`: progressive copy, or the top/bottom
+  field-select line demultiplex) to form `pel_pred_spat` / `spat_pred_pic`,
   with the §4.1 `/` / `//` index-and-phase arithmetic, pad-to-edge border
   extension, and the Table 7-16/7-17/7-18 luma/chroma local-variable
   derivation.
@@ -93,11 +98,13 @@ verifying the parsers against known-good encoded streams.
   that resets `past_intra_address` across slices and feeds the
   reconstructed vectors into the §7.6.4 pel reader is not yet composed.
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
-  (parsed structurally; the §7.7.3.5/.6 lower-layer resampling, the
-  §7.7.4 spatial/temporal prediction combination, and the §7.7.5.1 PMV
-  reset are implemented, but the §7.7.3.4 deinterlace / §7.7.3.7
-  reinterlace filters for the interlaced cases and the full
-  enhancement-layer decode loop are not yet composed).
+  (parsed structurally; the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
+  resampling, §7.7.3.7 reinterlace, §7.7.4 spatial/temporal prediction
+  combination, and §7.7.5.1 PMV reset are all implemented, but the full
+  enhancement-layer decode loop that drives them per macroblock — picking
+  the Table 7-15 deinterlace/field-select case from the picture/sequence
+  flags and threading the result into the §7.7.4 combiner — is not yet
+  composed).
 
 ## Clean-room provenance
 

@@ -8,6 +8,26 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 331: §7.7.3.4 deinterlace + §7.7.3.7 reinterlace filters in
+  `spatial_resampling`, completing the interlaced front/back of the
+  §7.7.3 spatial-prediction pipeline that brackets the existing
+  §7.7.3.5/.6 resampling. `deinterlace` builds the progressive `prog_pic`
+  from an interlaced lower-layer reconstructed frame (top field = even
+  rows, bottom field = odd rows) by zero-padding each field onto a
+  field-rate progressive grid and applying the Table 7-19 vertical /
+  temporal FIR: the two-field aperture (separate first-/second-field tap
+  sets, temporal span `{-1, 0, +1}` reading the opposite field for the
+  `±1` taps) for luminance in a Frame-Picture, and the one-field aperture
+  (temporal `0` only) for chrominance and field-picture luminance. The
+  `sum` is `sum // 16`-scaled — using a new signed `//` helper since the
+  Table 7-19 `-1` / `-2` taps make `sum` possibly negative — and
+  saturated to `[0, 255]`, with the §7.7.3.4 same-field
+  nearest-neighbour border extension for taps outside `[0, ll_v_size)`.
+  `reinterlace` forms `spat_pred_pic` from `hor_pic`: a straight copy for
+  a progressive lower layer, or the field-select demultiplex (even lines
+  for a top field, odd lines for a bottom field) for an interlaced one.
+  New public surface: `deinterlace`, `reinterlace`, `Field`
+  (re-exported as `ResampleField`).
 - round 325: §7.7.3.5 / §7.7.3.6 spatial-scalable lower-layer resampling
   in a new `spatial_resampling` module — the linear-interpolation
   upsampling that takes a progressive lower-layer frame (`prog_pic`) and

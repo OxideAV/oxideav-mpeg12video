@@ -20,7 +20,11 @@
 //! ```
 //!
 //! This module implements the **two resampling stages** — §7.7.3.5 and
-//! §7.7.3.6 — which are the linear-interpolation core of the pipeline.
+//! §7.7.3.6 — which are the linear-interpolation core of the pipeline,
+//! plus the **§7.7.3.4 deinterlace** and **§7.7.3.7 reinterlace** filters
+//! that bracket them for the interlaced lower-layer cases (Table 7-15
+//! rows 1, 2 and 5).
+//!
 //! For the dominant progressive-to-progressive case
 //! (`lower_layer_progressive_frame == 1`, `progressive_frame == 1`) no
 //! deinterlace (§7.7.3.4) or reinterlace (§7.7.3.7) step is applied
@@ -28,8 +32,22 @@
 //! is the lower-layer reconstructed frame directly and `hor_pic` is
 //! renamed to `spat_pred_pic` unchanged (§7.7.3.7, *"If hor_pic was
 //! derived from a lower layer progressive frame, hor_pic is copied to
-//! spat_pred_pic"*). The deinterlace / reinterlace filters that bracket
-//! these two stages for the interlaced cases are out of scope here.
+//! spat_pred_pic"*).
+//!
+//! ## §7.7.3.4 deinterlace (page 112)
+//!
+//! When the lower-layer frame is interlaced (Table 7-15 rows 1/2/5) the
+//! reconstructed frame `dlower` is first deinterlaced into the
+//! progressive `prog_pic` the resampling stages then consume. Each field
+//! is padded with zeros onto a progressive grid at the field rate and a
+//! Table 7-19 vertical/temporal FIR is applied: the **two field
+//! aperture** (separate first-/second-field tap sets, temporal span
+//! `{-1, 0, +1}`) for luminance when `picture_structure ==
+//! "Frame-Picture"`, and the **one field aperture** (single tap set,
+//! temporal `0` only) for chrominance and for field-picture luminance.
+//! The filtered `sum` is `sum // 16`-scaled and saturated to `[0, 255]`,
+//! with the §7.7.3.4 same-field nearest-neighbour border extension for
+//! taps that reach outside `[0, ll_v_size)`.
 //!
 //! ## The two stages (pages 113–114)
 //!
@@ -392,6 +410,22 @@ fn div_round_half_up(numerator: i64, divisor: i64) -> i64 {
     (numerator + divisor / 2) / divisor
 }
 
+/// §4.1 `//`: integer division rounding to the nearest integer, half
+/// **away from zero**, for a possibly-negative numerator over a positive
+/// divisor. The §7.7.3.4 deinterlace `sum // 16` site can produce a
+/// negative `sum` (Table 7-19 carries `-1` / `-2` taps), so unlike the
+/// resampling `//` sites this one must handle the negative case: for
+/// `-3 // 2` the spec rounds to `-2`.
+#[inline]
+fn div_round_half_away(numerator: i64, divisor: i64) -> i64 {
+    debug_assert!(divisor > 0);
+    if numerator >= 0 {
+        (numerator + divisor / 2) / divisor
+    } else {
+        -((-numerator + divisor / 2) / divisor)
+    }
+}
+
 /// §7.7.3.5 Vertical resampling: resample `prog_pic` onto the
 /// enhancement-layer vertical sampling grid, producing the ×16-scaled
 /// `vert_pic` field.
@@ -531,6 +565,235 @@ pub fn resample_progressive(
 ) -> Result<Plane> {
     let vert = vertical_resample(prog_pic, params, out_height)?;
     horizontal_resample(&vert, params, out_width)
+}
+
+/// Which field of the interlaced lower-layer frame a row belongs to.
+/// Top-field lines are the even rows (`y = 0, 2, 4, …`) and bottom-field
+/// lines the odd rows, matching the §7.7.4 combiner's row convention
+/// ([`crate::spatial_temporal_combine`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// The top field — even rows.
+    Top,
+    /// The bottom field — odd rows.
+    Bottom,
+}
+
+impl Field {
+    /// Parity of the field's rows in the interlaced grid: `0` for the
+    /// top field (even rows), `1` for the bottom field (odd rows).
+    #[inline]
+    fn parity(self) -> i64 {
+        match self {
+            Field::Top => 0,
+            Field::Bottom => 1,
+        }
+    }
+
+    /// The opposite field, used to read the temporal `±1` taps of the
+    /// Table 7-19 two-field aperture (the temporally-adjacent field at
+    /// field rate is the other field of the same reconstructed frame).
+    #[inline]
+    fn other(self) -> Field {
+        match self {
+            Field::Top => Field::Bottom,
+            Field::Bottom => Field::Top,
+        }
+    }
+}
+
+/// §7.7.3.4 same-field border extension: a tap reaching row `y` outside
+/// `[0, ll_v_size)` is replaced by the closest existing sample of the
+/// **same field** (parity), below or above. Reproduces the four spec
+/// `if` clauses (page 112):
+///
+/// ```text
+///   if (y < 0  && (y & 1 == 1))                       y = 1
+///   if (y < 0  && (y & 1 == 0))                       y = 0
+///   if (y >= ll_v_size && ((y - ll_v_size) & 1 == 1)) y = ll_v_size - 1
+///   if (y >= ll_v_size && ((y - ll_v_size) & 1 == 0)) y = ll_v_size - 2
+/// ```
+///
+/// The clauses are stated for an even `ll_v_size` (the top field then
+/// occupies `0, 2, …, ll_v_size - 2` and the bottom field `1, 3, …,
+/// ll_v_size - 1`); they generalise to clamping to the nearest in-range
+/// row of matching parity, which is what this routine computes so the
+/// two field-parity cases stay correct for any frame height.
+#[inline]
+fn clamp_row_same_field(y: i64, ll_v_size: i64) -> i64 {
+    debug_assert!(ll_v_size >= 2);
+    if y < 0 {
+        // Closest existing row above: the smallest non-negative row of
+        // the same parity as `y` (0 for even, 1 for odd).
+        y & 1
+    } else if y >= ll_v_size {
+        // Closest existing row below: the largest in-range row whose
+        // parity matches `y`.
+        let last = ll_v_size - 1;
+        if (last & 1) == (y & 1) {
+            last
+        } else {
+            last - 1
+        }
+    } else {
+        y
+    }
+}
+
+/// §7.7.3.4 Table 7-19 filter taps as `(temporal, vertical, coefficient)`
+/// triples. `temporal` selects the same field (`0`) or the opposite
+/// field (`±1`); `vertical` is the row offset within the zero-padded
+/// progressive grid; the intermediate `sum` adds `coeff * sample` over
+/// all taps before the `sum // 16` scale.
+struct FilterTaps(&'static [(i64, i64, i64)]);
+
+/// Table 7-19, *two field aperture*, *Filter for first field* — used
+/// when producing the **top** field's deinterlaced rows for luminance in
+/// a Frame-Picture. Temporal `0` taps read the field being produced;
+/// temporal `±1` taps read the opposite field.
+const TWO_FIELD_FIRST: FilterTaps = FilterTaps(&[
+    (0, -1, 8),
+    (0, 0, 16),
+    (0, 1, 8),
+    (1, -2, -1),
+    (1, 0, 2),
+    (1, 2, -1),
+]);
+
+/// Table 7-19, *two field aperture*, *Filter for second field* — used
+/// when producing the **bottom** field's deinterlaced rows for luminance
+/// in a Frame-Picture.
+const TWO_FIELD_SECOND: FilterTaps = FilterTaps(&[
+    (-1, -2, -1),
+    (-1, 0, 2),
+    (-1, 2, -1),
+    (0, -1, 8),
+    (0, 0, 16),
+    (0, 1, 8),
+]);
+
+/// Table 7-19, *one field aperture*, *Filter (both fields)* — used for
+/// chrominance and for field-picture luminance. Only the temporal-`0`
+/// (same field) column is non-zero.
+const ONE_FIELD: FilterTaps = FilterTaps(&[(0, -1, 8), (0, 0, 16), (0, 1, 8)]);
+
+/// Read the sample at progressive-grid row `y`, column `x` of the field
+/// `field` of the interlaced frame `dlower`. The field is the set of
+/// rows whose parity matches `field`; zero-padding means a request for a
+/// row of the *other* parity returns `0` (the pad value), while a row of
+/// matching parity outside `[0, ll_v_size)` is border-extended to the
+/// closest same-field row (§7.7.3.4). `x` is border-extended to the
+/// frame edge (the deinterlace filter has no horizontal taps, but a
+/// negative `x` cannot arise; the clamp keeps the helper total).
+#[inline]
+fn deinterlace_tap(dlower: &Plane, field: Field, y: i64, x: i64, ll_v_size: i64) -> i64 {
+    // Zero-pad: a grid row whose parity differs from the field's rows is
+    // not a coded line of this field, so its value is 0.
+    if (y & 1) != field.parity() {
+        return 0;
+    }
+    let yc = clamp_row_same_field(y, ll_v_size);
+    i64::from(dlower.sample_clamped(x, yc))
+}
+
+/// §7.7.3.4 Deinterlacing: build the progressive `prog_pic` from the
+/// interlaced lower-layer reconstructed frame `dlower` (top field = even
+/// rows, bottom field = odd rows) by applying the Table 7-19 vertical /
+/// temporal FIR field by field.
+///
+/// `frame_picture` selects the aperture for the **luminance** component:
+/// `true` (`picture_structure == "Frame-Picture"`) uses the two-field
+/// aperture (separate first-/second-field tap sets reading both fields),
+/// `false` (field pictures) uses the one-field aperture within each
+/// field. `is_luma == false` always uses the one-field aperture
+/// (*"The chrominance component is filtered using the one field
+/// aperture"*).
+///
+/// The output is a progressive frame the same size as `dlower`, each
+/// sample `sum // 16` (rounded half away from zero) saturated to
+/// `[0, 255]`.
+///
+/// # Errors
+/// * [`Error::InvalidBitstream`] if `dlower` has fewer than two rows
+///   (the field grid needs both parities present).
+pub fn deinterlace(dlower: &Plane, frame_picture: bool, is_luma: bool) -> Result<Plane> {
+    let ll_v_size = i64::from(dlower.height());
+    if ll_v_size < 2 {
+        return Err(Error::InvalidBitstream(
+            "deinterlace: lower-layer frame must have at least two rows (§7.7.3.4)",
+        ));
+    }
+    let width = dlower.width();
+    let two_field = frame_picture && is_luma;
+
+    let mut out = vec![0_i32; (width as usize) * (ll_v_size as usize)];
+    for y in 0..ll_v_size {
+        // Which field this output row belongs to, and the matching taps.
+        let field = if (y & 1) == 0 {
+            Field::Top
+        } else {
+            Field::Bottom
+        };
+        let taps = if two_field {
+            match field {
+                Field::Top => TWO_FIELD_FIRST,
+                Field::Bottom => TWO_FIELD_SECOND,
+            }
+        } else {
+            ONE_FIELD
+        };
+        let row_base = (y as usize) * (width as usize);
+        for x in 0..i64::from(width) {
+            let mut sum = 0_i64;
+            for &(temporal, vertical, coeff) in taps.0 {
+                // temporal 0 = same field; ±1 = opposite field.
+                let tap_field = if temporal == 0 { field } else { field.other() };
+                let s = deinterlace_tap(dlower, tap_field, y + vertical, x, ll_v_size);
+                sum += coeff * s;
+            }
+            // sum // 16, then saturate to [0, 255].
+            let v = div_round_half_away(sum, 16).clamp(0, 255);
+            out[row_base + (x as usize)] = v as i32;
+        }
+    }
+    Plane::new(width, dlower.height(), out)
+}
+
+/// §7.7.3.7 Reinterlacing: form `spat_pred_pic` from the resampled
+/// `hor_pic`. For a lower-layer **progressive** frame (`field = None`)
+/// `hor_pic` is copied unchanged. For an interlaced lower-layer frame
+/// the rows of the originating field are copied into `spat_pred_pic`:
+/// the even (top) lines if `hor_pic` came from the top field, the odd
+/// (bottom) lines if it came from the bottom field; the rows of the
+/// other parity are left at their `fill` value (the caller supplies the
+/// other field's already-formed prediction, or `0` when forming one
+/// field in isolation).
+///
+/// This is the field-select demultiplex described by *"the even lines of
+/// hor_pic are copied to the even lines of spat_pred_pic"* /
+/// *"the odd lines … are copied to the odd lines"*.
+///
+/// # Errors
+/// * [`Error::InvalidBitstream`] propagated from constructing the output
+///   plane.
+pub fn reinterlace(hor_pic: &Plane, field: Option<Field>, fill: i32) -> Result<Plane> {
+    let width = hor_pic.width();
+    let height = hor_pic.height();
+    let Some(field) = field else {
+        // Progressive lower layer: copy hor_pic to spat_pred_pic.
+        return Plane::new(width, height, hor_pic.samples().to_vec());
+    };
+    let parity = field.parity();
+    let src = hor_pic.samples();
+    let mut out = vec![fill; (width as usize) * (height as usize)];
+    for y in 0..(height as i64) {
+        if (y & 1) != parity {
+            continue;
+        }
+        let base = (y as usize) * (width as usize);
+        out[base..base + (width as usize)].copy_from_slice(&src[base..base + (width as usize)]);
+    }
+    Plane::new(width, height, out)
 }
 
 #[cfg(test)]
@@ -750,5 +1013,134 @@ mod tests {
         assert_eq!(out.samples()[0], 0);
         // (yh=2,xh=2) maps to source (1,1) exactly = 0.
         assert_eq!(out.samples()[2 * 4 + 2], 0);
+    }
+
+    // ---- §4.1 signed `//` ----
+
+    #[test]
+    fn div_round_half_away_handles_negative_numerators() {
+        // Spec examples: 3//2 = 2, -3//2 = -2.
+        assert_eq!(div_round_half_away(3, 2), 2);
+        assert_eq!(div_round_half_away(-3, 2), -2);
+        // Around the 16 divisor used by the deinterlace scale.
+        assert_eq!(div_round_half_away(8, 16), 1); // 0.5 -> 1
+        assert_eq!(div_round_half_away(-8, 16), -1); // -0.5 -> -1
+        assert_eq!(div_round_half_away(7, 16), 0);
+        assert_eq!(div_round_half_away(-7, 16), 0);
+        assert_eq!(div_round_half_away(0, 16), 0);
+        assert_eq!(div_round_half_away(16, 16), 1);
+        assert_eq!(div_round_half_away(-24, 16), -2); // -1.5 -> -2
+    }
+
+    // ---- §7.7.3.4 border extension ----
+
+    #[test]
+    fn clamp_row_same_field_matches_spec_clauses() {
+        // ll_v_size = 6: top field rows {0,2,4}, bottom field {1,3,5}.
+        // y < 0, even -> 0 ; y < 0, odd -> 1.
+        assert_eq!(clamp_row_same_field(-2, 6), 0);
+        assert_eq!(clamp_row_same_field(-1, 6), 1);
+        assert_eq!(clamp_row_same_field(-3, 6), 1);
+        // y >= ll_v_size keeps parity: even -> ll_v_size-2, odd -> -1.
+        assert_eq!(clamp_row_same_field(6, 6), 4); // even -> 4
+        assert_eq!(clamp_row_same_field(7, 6), 5); // odd  -> 5
+        assert_eq!(clamp_row_same_field(8, 6), 4); // even -> 4
+                                                   // In range is identity.
+        assert_eq!(clamp_row_same_field(3, 6), 3);
+    }
+
+    // ---- §7.7.3.4 deinterlace ----
+
+    #[test]
+    fn deinterlace_one_field_preserves_a_constant_field_pair() {
+        // A constant frame (all 100) stays constant: the one-field
+        // aperture taps 8+16+8 = 32, *100 = 3200, //16 = 200... wait the
+        // taps only see the SAME field via zero-pad of the other field,
+        // so for an output row the vertical taps -1/+1 land on the other
+        // parity = padded 0. sum = 16*100 = 1600, //16 = 100. The 8 taps
+        // hit the opposite parity (padded 0) and contribute nothing.
+        let src = plane(2, 4, &[100, 100, 100, 100, 100, 100, 100, 100]);
+        let out = deinterlace(&src, false, false).expect("deint");
+        assert_eq!(out.width(), 2);
+        assert_eq!(out.height(), 4);
+        // Every sample reconstructs its own value (only the center tap
+        // sees a same-field sample).
+        assert!(out.samples().iter().all(|&s| s == 100));
+    }
+
+    #[test]
+    fn deinterlace_two_field_luma_fills_from_opposite_field() {
+        // Frame-Picture luma, two-field aperture. Top field (even rows)
+        // all 200, bottom field (odd rows) all 40. ll_v_size = 4.
+        // Output row 0 (top, first-field filter):
+        //   temporal 0 taps (-1,0,+1) read TOP field grid:
+        //     y=-1 -> other parity in top grid? no: tap_field=top,
+        //       grid row -1 has parity 1 != top(0) -> padded 0
+        //     y=0 -> 16*200
+        //     y=+1 -> parity 1 != 0 -> 0
+        //   temporal +1 taps (-2,0,+2) read BOTTOM field grid:
+        //     y=-2 parity0 != bottom(1) -> 0
+        //     y=0  parity0 != 1 -> 0
+        //     y=+2 parity0 != 1 -> 0
+        //   sum = 16*200 = 3200, //16 = 200.
+        let src = plane(1, 4, &[200, 40, 200, 40]);
+        let out = deinterlace(&src, true, true).expect("deint");
+        // Top rows recover 200, bottom rows recover 40 (centre tap
+        // dominates; cross-field taps land on padded zeros here).
+        assert_eq!(out.samples(), &[200, 40, 200, 40]);
+    }
+
+    #[test]
+    fn deinterlace_two_field_blends_when_fields_differ_smoothly() {
+        // A column with a vertical ramp so the cross-field -1/+2 taps of
+        // the two-field aperture actually fire on real samples. Use a
+        // single column, ll_v_size = 6.
+        // top field rows {0,2,4} = [60, 80, 100]
+        // bottom field rows {1,3,5} = [70, 90, 110]
+        let src = plane(1, 6, &[60, 70, 80, 90, 100, 110]);
+        let out = deinterlace(&src, true, true).expect("deint");
+        // Row 2 is a top-field line (first-field filter):
+        //   temporal 0 (top grid): y=1->0(pad), y=2->16*80, y=3->0(pad)
+        //   temporal +1 (bottom grid): y=0->0(pad), y=2->0(pad)... the
+        //   first-field temporal +1 taps are at vertical -2,0,+2 which
+        //   are all even => on the bottom grid (odd parity) they are
+        //   padded 0. So row 2 = 16*80//16 = 80 exactly.
+        assert_eq!(out.samples()[2], 80);
+        // Sanity: all outputs land in [0, 255].
+        assert!(out.samples().iter().all(|&s| (0..=255).contains(&s)));
+    }
+
+    #[test]
+    fn deinterlace_rejects_single_row() {
+        let src = plane(4, 1, &[1, 2, 3, 4]);
+        assert!(matches!(
+            deinterlace(&src, true, true),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    // ---- §7.7.3.7 reinterlace ----
+
+    #[test]
+    fn reinterlace_progressive_copies_whole_frame() {
+        let hor = plane(2, 2, &[10, 20, 30, 40]);
+        let out = reinterlace(&hor, None, 0).expect("reint");
+        assert_eq!(out.samples(), &[10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn reinterlace_top_field_copies_even_rows_only() {
+        // 2x4 hor_pic; top field -> even rows copied, odd rows = fill.
+        let hor = plane(2, 4, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let out = reinterlace(&hor, Some(Field::Top), -1).expect("reint");
+        // even rows (0, 2) copied; odd rows (1, 3) left at fill -1.
+        assert_eq!(out.samples(), &[1, 2, -1, -1, 5, 6, -1, -1]);
+    }
+
+    #[test]
+    fn reinterlace_bottom_field_copies_odd_rows_only() {
+        let hor = plane(2, 4, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let out = reinterlace(&hor, Some(Field::Bottom), 0).expect("reint");
+        assert_eq!(out.samples(), &[0, 0, 3, 4, 0, 0, 7, 8]);
     }
 }
