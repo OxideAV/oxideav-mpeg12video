@@ -206,6 +206,148 @@ fn b_picture_bidirectional_averages_two_references() {
 }
 
 #[test]
+fn p_picture_field_based_zero_mv_copies_reference() {
+    // §7.6.5 Table 7-14 Field-based: a P frame-picture macroblock with
+    // `frame_pred_frame_dct == 0` and `frame_motion_type == 01`
+    // (Field-based, 2 vectors). Both field vectors are zero with their
+    // own motion_vertical_field_select: the first reads the top field,
+    // the second the bottom field. With both MVs zero the macroblock is
+    // a verbatim copy of the reference frame (each parity copies its own
+    // lines), exercising the field-based per-field reference assembly
+    // end-to-end.
+    let geom = IntraPictureParams {
+        frame_pred_frame_dct: false,
+        ..geometry_16x16()
+    };
+    let params = PicturePredictionParams {
+        geometry: geom,
+        ..p_params()
+    };
+
+    let mut bw = BitWriter::new();
+    write_slice_header(&mut bw, 8);
+    bw.write_u32(0b1, 1); // macroblock_address_increment = 1
+    bw.write_u32(0b001, 3); // "MC, Not Coded"
+    bw.write_u32(0b01, 2); // frame_motion_type = Field-based (2 vectors)
+                           // Vector 0 (top field): vfs=0 + horiz=0 (`1`) + vert=0 (`1`).
+    bw.write_u32(0b0, 1); // motion_vertical_field_select[0] = 0 (top)
+    bw.write_u32(0b1, 1); // motion_code horiz = 0
+    bw.write_u32(0b1, 1); // motion_code vert = 0
+                          // Vector 1 (bottom field): vfs=1 + horiz=0 + vert=0.
+    bw.write_u32(0b1, 1); // motion_vertical_field_select[1] = 1 (bottom)
+    bw.write_u32(0b1, 1); // motion_code horiz = 0
+    bw.write_u32(0b1, 1); // motion_code vert = 0
+    let picture = append_stop(bw);
+
+    // Reference is a vertical ramp so a field copy (which preserves the
+    // interleave) is distinguishable from a frame-vs-field mix-up.
+    let mut reference = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+    for y in 0..16 {
+        for x in 0..16 {
+            reference.y.put_sample(x, y, (y * 8) as u8);
+        }
+    }
+    for y in 0..8 {
+        for x in 0..8 {
+            reference.cb.put_sample(x, y, (y * 8) as u8);
+            reference.cr.put_sample(x, y, 0);
+        }
+    }
+    let refs = ReferenceFrames::forward_only(&reference);
+    let (frame, placed) = decode_inter_picture(&picture, params, refs).unwrap();
+    assert_eq!(placed, 1, "one field-based macroblock reconstructed");
+    // Zero field MVs: each frame row equals the reference's same row.
+    for y in 0..16 {
+        for x in 0..16 {
+            assert_eq!(frame.y.get(x, y), Some((y * 8) as u8), "luma ({x},{y})");
+        }
+    }
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(frame.cb.get(x, y), Some((y * 8) as u8), "cb ({x},{y})");
+        }
+    }
+}
+
+#[test]
+fn p_picture_field_based_top_field_vector_shifts_only_even_lines() {
+    // Field-based with the top-field vector = +1 half-sample vertical
+    // (vertical motion_code +1, f_code 1 → vector' = +1 half-pel in
+    // FIELD-line units) and the bottom-field vector = 0. The top-field
+    // (even) frame lines become the half-pel average of adjacent FIELD
+    // lines (frame rows two apart) — proving the field grid, not the
+    // frame grid, is sampled; the odd lines copy verbatim. The two field
+    // vectors address their own parity independently.
+    let geom = IntraPictureParams {
+        frame_pred_frame_dct: false,
+        ..geometry_16x16()
+    };
+    let params = PicturePredictionParams {
+        geometry: geom,
+        ..p_params()
+    };
+
+    let mut bw = BitWriter::new();
+    write_slice_header(&mut bw, 8);
+    bw.write_u32(0b1, 1); // increment = 1
+    bw.write_u32(0b001, 3); // "MC, Not Coded"
+    bw.write_u32(0b01, 2); // frame_motion_type = Field-based
+                           // Vector 0 (top field): vfs=0, horiz=0 (`1`), vert=+1 (`010`).
+    bw.write_u32(0b0, 1); // vfs[0] = top
+    bw.write_u32(0b1, 1); // horiz motion_code = 0
+    bw.write_u32(0b010, 3); // vert motion_code = +1
+                            // Vector 1 (bottom field): vfs=1, horiz=0, vert=0.
+    bw.write_u32(0b1, 1); // vfs[1] = bottom
+    bw.write_u32(0b1, 1); // horiz = 0
+    bw.write_u32(0b1, 1); // vert = 0
+    let picture = append_stop(bw);
+
+    // Vertical ramp by frame row so a field-line shift is visible.
+    let mut reference = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+    for y in 0..16 {
+        for x in 0..16 {
+            reference.y.put_sample(x, y, (y * 8) as u8);
+        }
+    }
+    for y in 0..8 {
+        for x in 0..8 {
+            reference.cb.put_sample(x, y, 0);
+            reference.cr.put_sample(x, y, 0);
+        }
+    }
+    let refs = ReferenceFrames::forward_only(&reference);
+    let (frame, _) = decode_inter_picture(&picture, params, refs).unwrap();
+
+    // Odd (bottom-field) frame rows: zero MV → verbatim copy.
+    for k in 0..8 {
+        let row = 2 * k + 1;
+        assert_eq!(
+            frame.y.get(0, row),
+            Some((row * 8) as u8),
+            "bottom row {row} unchanged"
+        );
+    }
+    // Even (top-field) frame rows: half-pel vertical in field space.
+    // Top-field line k = frame row 2k; the +1 half-sample reads the
+    // average of field line k and k+1 = frame rows 2k and 2(k+1),
+    // clamped at the last top line (k=7). Values are y*8, so the average
+    // of rows 2k and 2k+2 is (16k + 16k+16)//2 = 16k+8 for k<7, and
+    // row 14's own value (112) at the clamped last line.
+    for k in 0..8usize {
+        let dest_row = 2 * k;
+        let lo = (2 * k * 8) as u32; // frame row 2k value
+        let hi_line = (k + 1).min(7);
+        let hi = (2 * hi_line * 8) as u32; // frame row 2*(k+1) value (clamped)
+        let expected = lo.midpoint(hi) as u8; // // 2 round-up average
+        assert_eq!(
+            frame.y.get(0, dest_row),
+            Some(expected),
+            "top row {dest_row} half-pel field average"
+        );
+    }
+}
+
+#[test]
 fn p_picture_skipped_macroblock_copies_reference() {
     // mb_width = 2 so a slice can have a skipped macroblock. First MB
     // coded ("MC, Not Coded", zero MV), then increment = 2 reaching
