@@ -414,7 +414,8 @@ pub use forming_predictions::{
     BoundaryMode, ComponentSplit, HalfPattern, ReferencePlane, SplitVector,
 };
 pub use frame_assembly::{
-    block_placement, chroma_shift, place_intra_block, BlockPlacement, FrameBuffer, Plane,
+    block_placement, chroma_shift, decode_intra_picture, place_intra_block, place_intra_macroblock,
+    BlockPlacement, FrameBuffer, IntraPictureParams, Plane,
 };
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use idct::{
@@ -529,7 +530,7 @@ pub use slice_header::{
     SliceContext, SliceHeader, SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN,
 };
 pub use slice_macroblock_walk::{
-    reconstruct_record_motion_vectors, reconstruct_slice_motion_vectors, walk_slice,
+    reconstruct_record_motion_vectors, reconstruct_slice_motion_vectors, walk_slice, walk_slice_at,
     MacroblockRecord, ReconstructedMotionVectors, ReconstructedVector, SliceMotionRecord,
     SliceMotionWalk, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };

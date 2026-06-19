@@ -882,7 +882,40 @@ fn effective_motion_type(
 /// * [`Error::ShortHeader`] if any required field runs past the end
 ///   of `buf`.
 pub fn walk_slice(buf: &[u8], ctx: SliceWalkContext) -> Result<SliceWalk> {
+    walk_slice_at(buf, 0, ctx)
+}
+
+/// Walk the §6.2.4 macroblock body starting `body_bit_position` bits
+/// into `buf`, rather than from the very start.
+///
+/// This is the picture-level entry point: a real elementary stream's
+/// slice body begins at the (generally **not** byte-aligned)
+/// [`crate::SliceHeader::body_bit_position`] inside the slice's
+/// byte-aligned start-code-relative buffer. The plain [`walk_slice`]
+/// requires a body-only buffer (it reads from bit 0); this variant
+/// seeks past the slice header in-place so callers can pass the whole
+/// slice buffer the [`crate::SliceHeader`] was parsed from together
+/// with the `body_bit_position` the header reported.
+///
+/// `buf` must start at the slice's `0x000001` start-code byte (the
+/// same buffer [`crate::SliceHeader::parse`] consumed);
+/// `body_bit_position` is the value [`crate::SliceHeader::body_bit_position`]
+/// returned. Behaviour is otherwise identical to [`walk_slice`].
+///
+/// # Errors
+///
+/// Same as [`walk_slice`], plus [`Error::ShortHeader`] if the seek to
+/// `body_bit_position` runs past the end of `buf`.
+pub fn walk_slice_at(
+    buf: &[u8],
+    body_bit_position: u64,
+    ctx: SliceWalkContext,
+) -> Result<SliceWalk> {
     let mut br = BitReader::new(buf);
+    if body_bit_position > 0 {
+        let to_skip = u32::try_from(body_bit_position).map_err(|_| Error::ShortHeader)?;
+        br.skip(to_skip).map_err(|_| Error::ShortHeader)?;
+    }
     let mut records: Vec<MacroblockRecord> = Vec::new();
 
     let mb_width_i64 = i64::from(ctx.mb_width);

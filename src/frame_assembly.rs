@@ -349,6 +349,207 @@ pub fn place_intra_block(
     }
 }
 
+/// Place every coded block of one **intra** [`MacroblockRecord`] into
+/// `frame`, mapping each `decoded_blocks` entry back to its §6.1.1.8
+/// block index `i` via the record's `pattern_code[12]` array and
+/// resolving its spatial placement with [`block_placement`].
+///
+/// The macroblock's raster address determines its `(mb_col, mb_row)`:
+/// `mb_col = macroblock_address % mb_width`, `mb_row = macroblock_address
+/// / mb_width`. The record's `dct_type` selects the §6.1.3 frame-vs-field
+/// organisation (`Some(true)` = field DCT; `None` / `Some(false)` =
+/// frame DCT — the Table 6-19 default when the field is absent is frame
+/// DCT).
+///
+/// This is the **intra-only** write path: it asserts the record is an
+/// intra macroblock and writes `saturate(f_pel)` per §7.6.8. Callers
+/// reconstruct an I-picture by invoking this for every record of every
+/// slice (P/B intra macroblocks also route here; their inter
+/// neighbours need the not-yet-composed §7.6.4 pel reader).
+///
+/// Returns the number of blocks written. A record whose
+/// `decoded_blocks` is `None` (the walker ran in wire-only mode) writes
+/// nothing and returns `0`.
+pub fn place_intra_macroblock(
+    frame: &mut FrameBuffer,
+    record: &crate::slice_macroblock_walk::MacroblockRecord,
+    mb_width: usize,
+    chroma_format: ChromaFormat,
+) -> usize {
+    let Some(blocks) = record.decoded_blocks.as_ref() else {
+        return 0;
+    };
+    if !record.macroblock_type.macroblock_intra {
+        return 0;
+    }
+    let mb_col = (record.macroblock_address as usize) % mb_width;
+    let mb_row = (record.macroblock_address as usize) / mb_width;
+    // §6.1.3 / Table 6-19: field DCT only when dct_type == Some(true);
+    // an absent dct_type defaults to frame DCT.
+    let field_dct = record.dct_type == Some(true);
+
+    let mut written = 0usize;
+    // Each decoded block carries its own §6.1.1.8 block_index, so the
+    // placement is resolved directly from that — no re-derivation from
+    // pattern_code is needed.
+    for decoded in blocks {
+        let i = decoded.block_index as usize;
+        if let Some(placement) = block_placement(i, chroma_format, mb_col, mb_row, field_dct) {
+            place_intra_block(frame, placement, &decoded.decoded.f_pel);
+            written += 1;
+        }
+    }
+    written
+}
+
+/// The fixed per-picture parameters the intra picture driver needs:
+/// the coded picture geometry, the chroma format, and the §6.2.3.1
+/// `picture_coding_extension()` fields that gate the per-block
+/// reconstruction pipeline.
+///
+/// These come straight from the already-landed
+/// [`crate::sequence_extension::Mpeg2Sequence`] (width / height /
+/// chroma) and [`crate::picture_header::PictureCodingExtension`]
+/// (the four DCT-context flags), so the driver does not re-parse the
+/// sequence layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntraPictureParams {
+    /// Coded picture width (`horizontal_size`).
+    pub width: usize,
+    /// Coded picture height (`vertical_size`).
+    pub height: usize,
+    /// Chroma sampling (§6.2.2.3).
+    pub chroma_format: ChromaFormat,
+    /// `frame_pred_frame_dct` (§6.2.3.1). When `true` the
+    /// §6.2.5.1 `dct_type` field is absent (Table 6-19 supplies the
+    /// frame-DCT default); when `false` each coded / intra macroblock
+    /// in a frame picture carries an explicit `dct_type` bit.
+    pub frame_pred_frame_dct: bool,
+    /// `intra_dc_precision` (§6.2.3.1, Table 6-13, `0..=3`).
+    pub intra_dc_precision: u8,
+    /// `intra_vlc_format` (§6.2.3.1).
+    pub intra_vlc_format: bool,
+    /// `alternate_scan` (§6.2.3.1).
+    pub alternate_scan: bool,
+    /// `q_scale_type` (§6.2.3.1).
+    pub q_scale_type: bool,
+}
+
+impl IntraPictureParams {
+    /// Number of macroblocks across the picture (`Ceil(width / 16)`).
+    pub fn mb_width(&self) -> usize {
+        self.width.div_ceil(16)
+    }
+
+    /// Number of macroblock rows in the picture (`Ceil(height / 16)`).
+    pub fn mb_height(&self) -> usize {
+        self.height.div_ceil(16)
+    }
+}
+
+/// Decode a whole **intra** (I) picture into a [`FrameBuffer`].
+///
+/// `picture` is the slice of the elementary stream from the first
+/// `slice_start_code` of the picture (i.e. `0x00000101`..) up to but
+/// not including the next picture / GOP / sequence start code. The
+/// driver:
+///
+/// 1. Scans for each `slice_start_code` (`0x00000101`..`0x000001AF`,
+///    §6.2.4 / Table 6-1).
+/// 2. Parses its [`crate::SliceHeader`] for the `mb_row` (=
+///    `slice_vertical_position - 1` for `vertical_size <= 2800`,
+///    §6.3.16) and the per-slice `quantiser_scale_code`.
+/// 3. Walks the slice with the §6.2.6 `block(i)` pipeline enabled
+///    ([`crate::walk_slice_at`] from the header's `body_bit_position`).
+/// 4. Places every intra macroblock's reconstructed blocks into the
+///    frame via [`place_intra_macroblock`].
+///
+/// Returns the assembled [`FrameBuffer`] and the number of
+/// macroblocks placed. This is the **intra-only** picture path: it is
+/// a complete decode for an I-picture (where every macroblock is
+/// intra) and a partial one for P/B pictures (only their intra
+/// macroblocks are written; inter macroblocks need the not-yet-
+/// composed §7.6.4 motion-compensated prediction).
+///
+/// # Errors
+///
+/// Propagates any [`crate::Error`] from slice-header parsing or the
+/// macroblock walk. A picture with no slice start codes yields an
+/// all-zero frame and a count of `0`.
+pub fn decode_intra_picture(
+    picture: &[u8],
+    params: IntraPictureParams,
+) -> crate::Result<(FrameBuffer, usize)> {
+    use crate::picture_header::PictureStructure;
+    use crate::slice_header::{SliceContext, SliceHeader};
+    use crate::slice_macroblock_walk::SliceWalkContext;
+
+    let mut frame = FrameBuffer::new(params.width, params.height, params.chroma_format);
+    let mb_width = params.mb_width() as u32;
+    let slice_ctx = SliceContext::non_scalable(params.height as u32);
+
+    let mut placed = 0usize;
+    let mut offset = 0usize;
+    while let Some(rel) = find_slice_start_code(&picture[offset..]) {
+        let start = offset + rel;
+        // The slice runs until the next start code (any 0x000001??).
+        let body = &picture[start..];
+        let end = find_next_start_code(&body[4..])
+            .map(|p| p + 4)
+            .unwrap_or(body.len());
+        let slice_buf = &body[..end];
+
+        let header = SliceHeader::parse(slice_buf, slice_ctx)?;
+        // §6.3.16: for vertical_size <= 2800 the macroblock row is
+        // slice_vertical_position - 1 (no slice_vertical_position_extension).
+        let mb_row = u32::from(header.slice_vertical_position) - 1;
+
+        let ctx = SliceWalkContext::first_slice_with_block_decoding(
+            mb_width,
+            mb_row,
+            crate::picture_header::PictureCodingType::Intra,
+            header.quantiser_scale_code,
+            PictureStructure::Frame,
+            params.frame_pred_frame_dct,
+            15,
+            15,
+            15,
+            15,
+            false,
+            params.chroma_format,
+            params.intra_vlc_format,
+            params.alternate_scan,
+            params.intra_dc_precision,
+            params.q_scale_type,
+        );
+
+        let walk = crate::walk_slice_at(slice_buf, header.body_bit_position, ctx)?;
+        for record in &walk.macroblocks {
+            placed +=
+                place_intra_macroblock(&mut frame, record, mb_width as usize, params.chroma_format);
+        }
+
+        offset = start + end;
+    }
+
+    Ok((frame, placed))
+}
+
+/// Find the byte offset of the next `slice_start_code`
+/// (`0x000001` prefix + a `0x01..=0xAF` value byte, Table 6-1) in
+/// `buf`, or `None`.
+fn find_slice_start_code(buf: &[u8]) -> Option<usize> {
+    buf.windows(4)
+        .position(|w| w[0] == 0x00 && w[1] == 0x00 && w[2] == 0x01 && (0x01..=0xAF).contains(&w[3]))
+}
+
+/// Find the byte offset of the next start code of any kind
+/// (`0x000001` prefix), or `None`.
+fn find_next_start_code(buf: &[u8]) -> Option<usize> {
+    buf.windows(3)
+        .position(|w| w[0] == 0x00 && w[1] == 0x00 && w[2] == 0x01)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
