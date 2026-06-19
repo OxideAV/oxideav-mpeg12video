@@ -352,6 +352,7 @@ pub mod forming_predictions;
 pub mod frame_assembly;
 pub mod gop_header;
 pub mod idct;
+pub mod inter_reconstruction;
 pub mod macroblock_modes;
 pub mod macroblock_pipeline;
 pub mod macroblock_type;
@@ -422,6 +423,10 @@ pub use idct::{
     idct_8x8, idct_8x8_from_i32, idct_candidate_f64, idct_reference_f64,
     saturate_input as saturate_idct_input, saturate_output as saturate_idct_output, F_INPUT_MAX,
     F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
+};
+pub use inter_reconstruction::{
+    predict_frame_macroblock_planes, reconstruct_inter_macroblock, FrameMotion, InterError,
+    MotionVectorPel, ReferenceFrames, ResidualBlock,
 };
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,

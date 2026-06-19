@@ -102,6 +102,18 @@ impl Plane {
             self.samples[y * self.width + x] = value;
         }
     }
+
+    /// Public bounds-checked sample write at `(x, y)`. Identical to the
+    /// internal [`Plane::put`] used by the §6.1 intra placement, exposed
+    /// so the §7.6 motion-compensated reconstruction driver
+    /// ([`crate::inter_reconstruction`]) and tests can write decoded
+    /// samples into a frame plane. Out-of-bounds writes are silently
+    /// dropped (the macroblock grid is padded to a multiple of 16, so
+    /// edge macroblocks legitimately reconstruct samples outside the
+    /// coded picture dimensions).
+    pub fn put_sample(&mut self, x: usize, y: usize, value: u8) {
+        self.put(x, y, value);
+    }
 }
 
 /// A reconstructed picture: the three colour-component planes.
