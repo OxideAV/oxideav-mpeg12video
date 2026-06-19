@@ -1614,9 +1614,23 @@ pub fn reconstruct_slice_motion_vectors(
             None
         } else {
             let mt = &record.macroblock_type;
+            // §6.3.17.1 / Table 6-19: a non-intra macroblock whose
+            // `frame_motion_type` / `field_motion_type` field was absent
+            // from the bitstream (the `frame_pred_frame_dct == 1` frame
+            // picture, or any field-picture default) still has an
+            // *effective* prediction type — Frame-based in a frame
+            // picture, Field-based in a field picture. The §7.6.3.3
+            // update table is keyed on that effective type, so resolve
+            // it the same way the §7.6.3.1 reconstruction path does
+            // rather than passing the raw (possibly `None`) wire value.
+            let prediction_type = if mt.macroblock_intra {
+                record.motion_type.map(|m| m.prediction_type)
+            } else {
+                Some(effective_motion_type(mt, &derive_tail(record), ctx)?.prediction_type)
+            };
             let update_ctx = PmvUpdateContext {
                 picture_structure: ctx.picture_structure,
-                prediction_type: record.motion_type.map(|m| m.prediction_type),
+                prediction_type,
                 macroblock_motion_forward: mt.macroblock_motion_forward,
                 macroblock_motion_backward: mt.macroblock_motion_backward,
                 macroblock_intra: mt.macroblock_intra,

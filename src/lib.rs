@@ -369,6 +369,7 @@ pub mod mpeg2_inverse_scan;
 pub mod mpeg2_macroblock_blocks;
 pub mod picture_display_extension;
 pub mod picture_header;
+pub mod picture_reconstruction;
 pub mod picture_spatial_scalable_extension;
 pub mod picture_temporal_scalable_extension;
 pub mod pmv;
@@ -497,6 +498,7 @@ pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
 };
+pub use picture_reconstruction::{decode_inter_picture, PicturePredictionParams};
 pub use picture_spatial_scalable_extension::{
     PictureSpatialScalableExtension, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
 };
@@ -587,6 +589,34 @@ impl core::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<inter_reconstruction::InterError> for Error {
+    /// Fold an [`inter_reconstruction::InterError`] into the crate-level
+    /// [`Error`] so the picture-level driver can propagate it through a
+    /// single [`Result`]. The "unsupported prediction mode" case maps to
+    /// [`Error::NotImplemented`] (the field-based / 16×8-MC / dual-prime
+    /// field-picture per-field reference assembly is a later milestone);
+    /// every other case is a structural reconstruction failure
+    /// ([`Error::InvalidBitstream`]).
+    fn from(err: inter_reconstruction::InterError) -> Self {
+        use inter_reconstruction::InterError;
+        match err {
+            InterError::UnsupportedPredictionMode => Error::NotImplemented,
+            InterError::MissingForwardReference => {
+                Error::InvalidBitstream("§7.6.4: forward prediction without a forward reference")
+            }
+            InterError::MissingBackwardReference => {
+                Error::InvalidBitstream("§7.6.4: backward prediction without a backward reference")
+            }
+            InterError::ReferenceGeometryMismatch => {
+                Error::InvalidBitstream("§7.6.4: reference frame geometry mismatch")
+            }
+            InterError::InvalidBlockIndex => {
+                Error::InvalidBitstream("§6.1.1.8: residual block_index out of range")
+            }
+        }
+    }
+}
 
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
