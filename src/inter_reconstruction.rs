@@ -82,6 +82,21 @@ impl MotionVectorPel {
             vertical,
         }
     }
+
+    /// Bridge from an MPEG-1 (ISO/IEC 11172-2) reconstructed motion
+    /// vector. The §2.4.4.2 `recon_right` / `recon_down` are already in
+    /// the same half-sample luminance units the §7.6.4 pel reader
+    /// consumes (after the optional `full_pel` left-shift), so the
+    /// luminance vector maps straight through; the §7.6.3.7-equivalent
+    /// chroma halving ([`scale_chroma`]) reproduces the MPEG-1
+    /// `recon_* / 2` chrominance scaling (both are integer division
+    /// toward zero) for the 4:2:0 sampling MPEG-1 always uses.
+    pub fn from_mpeg1(recon: &crate::mpeg1_reconstruct::Mpeg1ReconstructedMv) -> Self {
+        Self {
+            horizontal: recon.recon_right,
+            vertical: recon.recon_down,
+        }
+    }
 }
 
 /// The reference frame(s) a P/B macroblock predicts from.
@@ -209,6 +224,21 @@ impl FrameMotion {
         Self {
             forward: Some(forward),
             backward: Some(backward),
+        }
+    }
+
+    /// Bridge from MPEG-1 (ISO/IEC 11172-2) reconstructed motion
+    /// vectors. `forward` is the §2.4.4.2 forward
+    /// [`crate::mpeg1_reconstruct::Mpeg1ReconstructedMv`]; `backward`
+    /// is the §2.4.4.3 backward variant (present only in B-pictures).
+    /// Each is translated through [`MotionVectorPel::from_mpeg1`].
+    pub fn from_mpeg1(
+        forward: Option<&crate::mpeg1_reconstruct::Mpeg1ReconstructedMv>,
+        backward: Option<&crate::mpeg1_reconstruct::Mpeg1ReconstructedMv>,
+    ) -> Self {
+        Self {
+            forward: forward.map(MotionVectorPel::from_mpeg1),
+            backward: backward.map(MotionVectorPel::from_mpeg1),
         }
     }
 
@@ -821,5 +851,94 @@ mod tests {
         )
         .unwrap();
         assert_eq!(dest.y.get(0, 0), Some(255));
+    }
+
+    // ---- MPEG-1 (ISO/IEC 11172-2) bridge ----
+
+    #[test]
+    fn mpeg1_zero_mv_reconstructs_macroblock_against_reference() {
+        use crate::mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
+        use crate::mpeg1_reconstruct::{reconstruct, Mpeg1FrameMvContext, Mpeg1Predictor};
+
+        // A zero forward MV (code 0, no residual): the §2.4.4.2
+        // reconstruction yields recon = (0, 0), so the P macroblock is a
+        // verbatim copy of the reference frame.
+        let mv = Mpeg1MotionVector {
+            direction: Mpeg1MotionDirection::Forward,
+            horizontal_code: 0,
+            horizontal_r: None,
+            vertical_code: 0,
+            vertical_r: None,
+            bit_position_after: 0,
+        };
+        let mut predictor = Mpeg1Predictor::new();
+        let ctx = Mpeg1FrameMvContext {
+            f_code: 1,
+            full_pel: false,
+        };
+        let recon = reconstruct(&mv, ctx, &mut predictor, Mpeg1MotionDirection::Forward).unwrap();
+        assert_eq!((recon.recon_right, recon.recon_down), (0, 0));
+
+        let cf = ChromaFormat::Yuv420;
+        let reference = solid_frame(140, 16, 16, cf);
+        let mut dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FrameMotion::from_mpeg1(Some(&recon), None);
+        reconstruct_inter_macroblock(&mut dest, refs, 0, 0, false, motion, &[]).unwrap();
+        for y in 0..16 {
+            for x in 0..16 {
+                assert_eq!(dest.y.get(x, y), Some(140));
+            }
+        }
+    }
+
+    #[test]
+    fn mpeg1_integer_mv_shifts_reference() {
+        use crate::mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
+        use crate::mpeg1_reconstruct::{reconstruct, Mpeg1FrameMvContext, Mpeg1Predictor};
+
+        // Forward MV code +1 with f_code 1, full_pel: recon = +2 (one
+        // full sample) horizontal. The §2.4.4.2 luma split makes
+        // recon_right = 2 -> right_for_luma = 1, no half-pel. The MC
+        // reads the reference shifted left by one sample.
+        let mv = Mpeg1MotionVector {
+            direction: Mpeg1MotionDirection::Forward,
+            horizontal_code: 1,
+            horizontal_r: None,
+            vertical_code: 0,
+            vertical_r: None,
+            bit_position_after: 0,
+        };
+        let mut predictor = Mpeg1Predictor::new();
+        let ctx = Mpeg1FrameMvContext {
+            f_code: 1,
+            full_pel: true,
+        };
+        let recon = reconstruct(&mv, ctx, &mut predictor, Mpeg1MotionDirection::Forward).unwrap();
+        // full_pel doubles the half-sample +1 into +2 half-samples = +1
+        // integer sample.
+        assert_eq!(recon.recon_right, 2);
+        assert_eq!(recon.right_half_for_luma, 0);
+
+        let cf = ChromaFormat::Yuv420;
+        let mut reference = FrameBuffer::new(16, 16, cf);
+        for y in 0..16 {
+            for x in 0..16 {
+                reference.y.put_sample(x, y, (x * 8) as u8);
+                reference.cb.put_sample(x.min(7), y.min(7), 0);
+                reference.cr.put_sample(x.min(7), y.min(7), 0);
+            }
+        }
+        let mut dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FrameMotion::from_mpeg1(Some(&recon), None);
+        reconstruct_inter_macroblock(&mut dest, refs, 0, 0, false, motion, &[]).unwrap();
+        // dest(x,y) = reference(x+1, y) clamped: (x+1)*8 for x<15, 120 at edge.
+        for y in 0..16 {
+            for x in 0..16 {
+                let expected = ((x + 1).min(15) * 8) as u8;
+                assert_eq!(dest.y.get(x, y), Some(expected), "x={x} y={y}");
+            }
+        }
     }
 }

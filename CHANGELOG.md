@@ -8,6 +8,29 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 343: picture-level **P/B reconstruction driver** — the §7.6
+  motion-compensated reconstruction wired end-to-end so a P- or
+  B-picture reconstructs to real pixels. New `inter_reconstruction`
+  module: `reconstruct_inter_macroblock` forms a frame-based
+  macroblock's per-component prediction plane (§7.6.4 pel reader over
+  the reference `FrameBuffer`, §7.6.3.7 chroma scaling, §7.6.7.1 `// 2`
+  bidirectional average), adds the §A IDCT residual for each coded
+  block (§6.3.17.4 `pattern_code[]`), and writes the §7.6.8
+  `d = saturate(f + p)` result into the frame with the §6.1.3
+  frame/field DCT line organisation. New `picture_reconstruction`
+  module: `decode_inter_picture` scans each slice, walks it with block
+  decoding enabled, reconstructs its motion vectors
+  (`reconstruct_slice_motion_vectors`), and dispatches each macroblock
+  to the intra placement or the inter MC driver, handling §7.6.6
+  skipped macroblocks (P `(0,0)` forward, B inherited direction). The
+  MPEG-1 (ISO/IEC 11172-2) reconstructed `recon_right`/`recon_down`
+  vectors bridge into the same MC core (`MotionVectorPel::from_mpeg1`,
+  `FrameMotion::from_mpeg1`). `slice_macroblock_walk` now resolves the
+  §6.3.17.1 / Table 6-19 effective prediction type before the §7.6.3.3
+  `update_predictors` call so an absent `frame_motion_type` tail
+  (`frame_pred_frame_dct == 1`) no longer trips the update guard.
+  `frame_assembly::Plane::put_sample` is now public. 20 new unit tests
+  + 4 end-to-end synthetic P/B picture-decode integration tests.
 - round 336: §7.7.3.1 / Table 7-15 upsampling-case dispatch in
   `spatial_resampling` — `UpsampleCase::select(field_select,
   lower_layer_progressive, progressive_frame)` resolves the five Table

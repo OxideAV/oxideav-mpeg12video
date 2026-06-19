@@ -58,6 +58,27 @@ The decode pipeline is implemented end-to-end at the module level:
 - **Motion compensation**: the §7.6 pipeline — §7.6.4 forming
   predictions (pel reader), §7.6.7 combine predictions, §7.6.8 add
   coefficients with the `[0, 255]` clamp.
+- **Picture-level P/B reconstruction**: `decode_inter_picture` is the
+  top-level driver that reconstructs a whole P- or B-picture to real
+  pixels. For each slice it walks the macroblock body with the §6.2.6
+  block pipeline enabled, reconstructs the slice's motion vectors
+  (§7.6.3), then per macroblock dispatches intra blocks to the §7.6.8
+  `d = saturate(f)` intra placement and inter blocks to
+  `reconstruct_inter_macroblock` — the §7.6 macroblock driver that
+  forms the per-component prediction plane (16×16 luma + §7.6.3.7
+  chroma-scaled prediction), combines forward/backward via the
+  §7.6.7.1 `// 2` average, adds the §A IDCT residual per coded block
+  (§6.3.17.4 `pattern_code[]`), and writes the result into the
+  `FrameBuffer` honouring the §6.1.3 frame/field DCT line organisation.
+  Skipped macroblocks (§7.6.6) reconstruct as a P-picture `(0,0)`
+  forward copy or a B-picture inherited-direction prediction. The
+  MPEG-1 (ISO/IEC 11172-2) `recon_right`/`recon_down` half-sample
+  vectors bridge into the same MC core via `MotionVectorPel::from_mpeg1`
+  / `FrameMotion::from_mpeg1`. Frame-picture, frame-based prediction is
+  driven end-to-end (the modes that cover MPEG-1 entirely and the bulk
+  of MPEG-2 frame-coded P/B); field-picture field-based / 16×8-MC /
+  dual-prime per-field reference assembly is the remaining motion-
+  compensation milestone.
 - **Spatial-scalable lower-layer resampling**: the full §7.7.3 spatial-
   prediction pipeline — §7.7.3.4 deinterlace (`deinterlace`: the
   Table 7-19 vertical/temporal FIR, two-field aperture for Frame-Picture
@@ -97,12 +118,15 @@ verifying the parsers against known-good encoded streams.
 ## Not yet supported
 
 - Runtime registration (`register` is a no-op).
-- A single top-level frame-decode / encode entry point; the pipeline is
-  driven through the per-stage module APIs. The §7.6.3 motion-vector
-  reconstruction is now wired across a whole slice
-  (`reconstruct_slice_motion_vectors`), but the picture-level driver
-  that resets `past_intra_address` across slices and feeds the
-  reconstructed vectors into the §7.6.4 pel reader is not yet composed.
+- A single top-level frame-decode / encode entry point and the
+  GOP-level picture-reordering / reference-management loop; the
+  pipeline is driven through the per-picture module APIs
+  (`decode_intra_picture` for I-pictures, `decode_inter_picture` for
+  P/B-pictures), with the caller supplying the decoded reference
+  frame(s). Field-picture motion compensation (field-based / 16×8-MC /
+  dual-prime per-field reference assembly) is the remaining
+  motion-compensation gap; the frame-picture, frame-based P/B
+  reconstruction is driven end-to-end.
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
   (parsed structurally; the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
   resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15 upsampling-
