@@ -412,8 +412,9 @@ pub use dual_prime::{
     dual_prime_picture, e_offset, m_factor, DerivedDualPrimeVector, DualPrimePicture, FieldParity,
 };
 pub use forming_predictions::{
-    predict_block, predict_sample, split_component, split_reconstructed, split_vector, BlockSize,
-    BoundaryMode, ComponentSplit, HalfPattern, ReferencePlane, SplitVector,
+    predict_block, predict_field_block, predict_field_sample, predict_sample, split_component,
+    split_reconstructed, split_vector, BlockSize, BoundaryMode, ComponentSplit, FieldReference,
+    HalfPattern, ReferencePlane, SplitVector,
 };
 pub use frame_assembly::{
     block_placement, chroma_shift, decode_intra_picture, place_intra_block, place_intra_macroblock,

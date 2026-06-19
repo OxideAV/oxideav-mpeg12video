@@ -416,6 +416,156 @@ pub fn predict_block(
     out
 }
 
+/// A §7.6.4 reference **field** view over a frame-organised sample
+/// plane.
+///
+/// In field-based / 16×8-MC / dual-prime prediction the §7.6.4
+/// `pel_ref[y][x]` array is "samples in the reference **field**", not
+/// the whole frame. A reconstructed reference frame stores its two
+/// fields interleaved line-by-line in a single [`ReferencePlane`]
+/// (frame row `2*k` is top-field line `k`, frame row `2*k + 1` is
+/// bottom-field line `k`); a field view exposes one parity's lines as a
+/// half-height plane so the unmodified §7.6.4 pel reader sees a
+/// contiguous field.
+///
+/// Concretely, field row `y` maps to frame row `2*y + parity`, where
+/// `parity` is `0` for the top field and `1` for the bottom field. The
+/// vertical motion-vector component a caller passes to
+/// [`predict_field_block`] / [`predict_field_sample`] is therefore in
+/// **field-sample** units — exactly the units §7.6.3 reconstructs a
+/// field motion vector in (the field grid is the frame grid decimated
+/// by two vertically). The horizontal axis is unchanged: a field has
+/// the same width as the frame.
+///
+/// Boundary handling mirrors [`ReferencePlane`]: an out-of-bounds field
+/// row clamps to the nearest in-field line (`[0, field_height-1]`) and
+/// then maps to a frame row, so a vector reaching past the field edge
+/// pads to the field's own top/bottom line — never crossing into the
+/// other parity.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldReference<'a> {
+    /// The underlying frame-organised plane (both fields interleaved).
+    plane: ReferencePlane<'a>,
+    /// `0` for the top field, `1` for the bottom field — the frame-row
+    /// offset of this field's line `0`.
+    parity: usize,
+    /// Number of lines in this field: `ceil((frame_height - parity) /
+    /// 2)`. A top field of an `H`-row frame has `ceil(H/2)` lines; a
+    /// bottom field has `floor(H/2)`.
+    field_height: usize,
+}
+
+impl<'a> FieldReference<'a> {
+    /// Build a field view of `plane` for the field whose first line is
+    /// frame row `parity` (`0` = top, `1` = bottom). Any `parity >= 2`
+    /// is rejected with `None`; a `parity` past the plane's height
+    /// produces a zero-height field (every read pads to the plane edge).
+    pub fn new(plane: ReferencePlane<'a>, parity: usize) -> Option<Self> {
+        if parity > 1 {
+            return None;
+        }
+        // ceil((height - parity) / 2) lines belong to this field; if the
+        // plane has fewer rows than `parity` the field is empty.
+        let field_height = plane.height.saturating_sub(parity).div_ceil(2);
+        Some(Self {
+            plane,
+            parity,
+            field_height,
+        })
+    }
+
+    /// The field's width (= the frame width) in samples.
+    pub fn width(self) -> usize {
+        self.plane.width
+    }
+
+    /// The field's height in lines.
+    pub fn height(self) -> usize {
+        self.field_height
+    }
+
+    /// Read one field sample at field coordinate `(x, y)`, resolving the
+    /// pad-to-edge boundary in field space (the vertical clamp stays
+    /// inside this field's lines) before mapping `y` to the frame row
+    /// `2*y + parity` and delegating to [`ReferencePlane::sample`].
+    pub fn sample(self, x: i32, y: i32) -> u8 {
+        if self.field_height == 0 {
+            // Empty field: clamp the frame row to the plane edge so a
+            // degenerate parity still returns a real sample.
+            return self.plane.sample(x, self.parity as i32);
+        }
+        let max_y = (self.field_height - 1) as i32;
+        let cy = y.clamp(0, max_y);
+        let frame_y = 2 * cy + self.parity as i32;
+        // The horizontal axis is shared with the frame; leave the
+        // horizontal pad-to-edge to `ReferencePlane::sample`.
+        self.plane.sample(x, frame_y)
+    }
+}
+
+/// Form one §7.6.4 prediction sample at field coordinate `(x, y)` from a
+/// reference **field**, given the already-split motion vector. Mirrors
+/// [`predict_sample`] but samples through a [`FieldReference`] so the
+/// vertical neighbours used for half-pel interpolation are the adjacent
+/// **field** lines (frame rows two apart), never the interleaved
+/// opposite-parity line.
+pub fn predict_field_sample(
+    reference: FieldReference<'_>,
+    x: i32,
+    y: i32,
+    split: SplitVector,
+) -> u8 {
+    let ix = split.horizontal.int_vec;
+    let iy = split.vertical.int_vec;
+    let rx = x + ix;
+    let ry = y + iy;
+    match split.pattern() {
+        HalfPattern::Integer => reference.sample(rx, ry),
+        HalfPattern::HalfHorizontal => avg2(reference.sample(rx, ry), reference.sample(rx + 1, ry)),
+        HalfPattern::HalfVertical => avg2(reference.sample(rx, ry), reference.sample(rx, ry + 1)),
+        HalfPattern::HalfBoth => avg4(
+            reference.sample(rx, ry),
+            reference.sample(rx + 1, ry),
+            reference.sample(rx, ry + 1),
+            reference.sample(rx + 1, ry + 1),
+        ),
+    }
+}
+
+/// Form a `width × height` prediction block at field coordinate
+/// `(top_left_x, top_left_y)` from a reference **field** per §7.6.4.
+/// Returns a row-major `Vec<u8>` of length `width * height`.
+///
+/// This is the field-prediction analogue of [`predict_block`]: the
+/// `(horizontal, vertical)` motion vector is the fully-reconstructed
+/// field vector (its vertical component already in field-sample units),
+/// and the block samples are read out of the [`FieldReference`]'s
+/// half-height field. The block's row `r` is field line `top_left_y +
+/// r`; the caller stitches the resulting field block back into a frame
+/// by writing its rows to the matching parity's frame rows (stride 2).
+pub fn predict_field_block(
+    reference: FieldReference<'_>,
+    top_left_x: i32,
+    top_left_y: i32,
+    size: BlockSize,
+    horizontal: i32,
+    vertical: i32,
+) -> Vec<u8> {
+    let split = split_vector(horizontal, vertical);
+    let mut out = Vec::with_capacity(size.width * size.height);
+    for row in 0..size.height as i32 {
+        for col in 0..size.width as i32 {
+            out.push(predict_field_sample(
+                reference,
+                top_left_x + col,
+                top_left_y + row,
+                split,
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +940,97 @@ mod tests {
     }
 
     // ---- split_reconstructed wires ReconstructedComponent through ----
+
+    // ---- FieldReference field view ----
+
+    /// Build a 4-wide, 6-tall frame whose value encodes (row*10 + col)
+    /// so a field view's parity is visible in the read-back.
+    fn interleaved_frame() -> Vec<u8> {
+        let mut v = Vec::new();
+        for r in 0..6 {
+            for c in 0..4 {
+                v.push((r * 10 + c) as u8);
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn field_reference_top_field_reads_even_rows() {
+        let data = interleaved_frame();
+        let p = plane(&data, 4, 6);
+        let top = FieldReference::new(p, 0).unwrap();
+        assert_eq!(top.width(), 4);
+        assert_eq!(top.height(), 3); // rows 0,2,4
+                                     // Field line k -> frame row 2k.
+        assert_eq!(top.sample(0, 0), 0); // frame (0,0)
+        assert_eq!(top.sample(1, 1), 21); // frame row 2, col 1 -> 21
+        assert_eq!(top.sample(3, 2), 43); // frame row 4, col 3 -> 43
+    }
+
+    #[test]
+    fn field_reference_bottom_field_reads_odd_rows() {
+        let data = interleaved_frame();
+        let p = plane(&data, 4, 6);
+        let bot = FieldReference::new(p, 1).unwrap();
+        assert_eq!(bot.height(), 3); // rows 1,3,5
+        assert_eq!(bot.sample(0, 0), 10); // frame row 1
+        assert_eq!(bot.sample(2, 1), 32); // frame row 3, col 2
+        assert_eq!(bot.sample(3, 2), 53); // frame row 5, col 3
+    }
+
+    #[test]
+    fn field_reference_vertical_clamp_stays_in_field() {
+        let data = interleaved_frame();
+        let p = plane(&data, 4, 6);
+        let top = FieldReference::new(p, 0).unwrap();
+        // y past the field bottom clamps to field line 2 = frame row 4,
+        // NOT to frame row 5 (the other parity).
+        assert_eq!(top.sample(0, 99), top.sample(0, 2));
+        assert_eq!(top.sample(0, 99), 40);
+        // y above the top clamps to field line 0 = frame row 0.
+        assert_eq!(top.sample(0, -5), 0);
+    }
+
+    #[test]
+    fn field_reference_rejects_parity_out_of_range() {
+        let data = interleaved_frame();
+        let p = plane(&data, 4, 6);
+        assert!(FieldReference::new(p, 2).is_none());
+    }
+
+    #[test]
+    fn field_reference_odd_height_field_line_counts() {
+        // 5-row frame: top field has rows 0,2,4 (3 lines); bottom has
+        // rows 1,3 (2 lines).
+        let data: Vec<u8> = (0..5).collect(); // 1 column, 5 rows
+        let p = plane(&data, 1, 5);
+        assert_eq!(FieldReference::new(p, 0).unwrap().height(), 3);
+        assert_eq!(FieldReference::new(p, 1).unwrap().height(), 2);
+    }
+
+    #[test]
+    fn predict_field_block_zero_vector_copies_field() {
+        let data = interleaved_frame();
+        let p = plane(&data, 4, 6);
+        let top = FieldReference::new(p, 0).unwrap();
+        // 2×2 block from field (0,0), zero MV: reads field lines 0,1 =
+        // frame rows 0,2.
+        let block = predict_field_block(top, 0, 0, BlockSize::new(2, 2).unwrap(), 0, 0);
+        // frame row 0: [0,1]; frame row 2: [20,21]
+        assert_eq!(block, vec![0, 1, 20, 21]);
+    }
+
+    #[test]
+    fn predict_field_block_half_vertical_interpolates_field_lines() {
+        let data = interleaved_frame();
+        let p = plane(&data, 4, 6);
+        let top = FieldReference::new(p, 0).unwrap();
+        // Vertical half-pel (vector (0,1)) averages field lines 0 and 1
+        // = frame rows 0 and 2 -> (0 + 20)//2 = 10 at col 0.
+        let block = predict_field_block(top, 0, 0, BlockSize::new(1, 1).unwrap(), 0, 1);
+        assert_eq!(block, vec![10]);
+    }
 
     #[test]
     fn split_reconstructed_matches_split_vector() {
