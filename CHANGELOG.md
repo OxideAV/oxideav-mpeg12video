@@ -8,6 +8,28 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 346: **frame-picture field-based prediction** (Table 7-14
+  `Field-based` rows) — the next interlaced-decode milestone after the
+  frame-based P/B driver. New `forming_predictions::FieldReference`: a
+  half-height field view over a frame-organised `ReferencePlane` (field
+  line `k` → frame row `2k + parity`) with `predict_field_sample` /
+  `predict_field_block` running the unmodified §7.6.4 half-pel
+  interpolation against a single reference field — vertical pad-to-edge
+  stays inside the field's own lines. New
+  `inter_reconstruction::reconstruct_field_based_macroblock` (+
+  `predict_field_based_macroblock_planes`, `FieldBasedMotion`): the
+  top-field luminance vector predicts the macroblock's even (top-field)
+  frame lines from the top reference field, the bottom-field vector its
+  odd lines from the bottom field, the two directions combine per
+  §7.6.7.2, chroma uses the per-field §7.6.3.7-scaled vectors, and the
+  per-field prediction plane is returned in frame-row order so the
+  residual-add / §6.1.3 block placement reuse the frame-based write-out
+  path (4:2:0 chroma field-splits its 8 lines into 4+4). `decode_inter_picture`
+  now drives field-based macroblocks (the §7.6.3 top/bottom field vector
+  pair via `field_based_motion_from_reconstructed`) instead of rejecting
+  them; 16×8-MC and dual-prime stay `UnsupportedPredictionMode`. 13 new
+  unit tests + 2 end-to-end synthetic field-based P-picture integration
+  tests.
 - round 343: picture-level **P/B reconstruction driver** — the §7.6
   motion-compensated reconstruction wired end-to-end so a P- or
   B-picture reconstructs to real pixels. New `inter_reconstruction`

@@ -74,11 +74,20 @@ The decode pipeline is implemented end-to-end at the module level:
   forward copy or a B-picture inherited-direction prediction. The
   MPEG-1 (ISO/IEC 11172-2) `recon_right`/`recon_down` half-sample
   vectors bridge into the same MC core via `MotionVectorPel::from_mpeg1`
-  / `FrameMotion::from_mpeg1`. Frame-picture, frame-based prediction is
-  driven end-to-end (the modes that cover MPEG-1 entirely and the bulk
-  of MPEG-2 frame-coded P/B); field-picture field-based / 16×8-MC /
-  dual-prime per-field reference assembly is the remaining motion-
-  compensation milestone.
+  / `FrameMotion::from_mpeg1`. Frame-picture **frame-based** and
+  **field-based** prediction are both driven end-to-end: the field-based
+  path (Table 7-14 `Field-based` rows) predicts the macroblock's even
+  (top-field) frame lines from the top reference field with the
+  top-field vector and its odd lines from the bottom field with the
+  bottom-field vector, via the §7.6.4 `FieldReference` half-height field
+  view (`predict_field_block`; field line `k` → frame row `2k + parity`,
+  vertical pad-to-edge confined to the field), combining the directions
+  per §7.6.7.2 and reusing the frame-based residual-add / §6.1.3
+  write-out path (`reconstruct_field_based_macroblock`). These cover
+  MPEG-1 entirely and the bulk of MPEG-2 frame-coded P/B (progressive
+  and interlaced-in-frame). Field-*picture* prediction and the
+  frame-picture 16×8-MC / dual-prime per-field reference assembly are
+  the remaining motion-compensation milestone.
 - **Spatial-scalable lower-layer resampling**: the full §7.7.3 spatial-
   prediction pipeline — §7.7.3.4 deinterlace (`deinterlace`: the
   Table 7-19 vertical/temporal FIR, two-field aperture for Frame-Picture
@@ -123,10 +132,10 @@ verifying the parsers against known-good encoded streams.
   pipeline is driven through the per-picture module APIs
   (`decode_intra_picture` for I-pictures, `decode_inter_picture` for
   P/B-pictures), with the caller supplying the decoded reference
-  frame(s). Field-picture motion compensation (field-based / 16×8-MC /
-  dual-prime per-field reference assembly) is the remaining
-  motion-compensation gap; the frame-picture, frame-based P/B
-  reconstruction is driven end-to-end.
+  frame(s). Field-*picture* motion compensation and the frame-picture
+  16×8-MC / dual-prime per-field reference assembly are the remaining
+  motion-compensation gap; the frame-picture frame-based **and
+  field-based** P/B reconstruction is driven end-to-end.
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
   (parsed structurally; the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
   resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15 upsampling-
