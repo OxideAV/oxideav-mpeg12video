@@ -349,6 +349,7 @@ pub mod dequantize;
 pub mod dual_prime;
 pub mod extension_and_user_data;
 pub mod forming_predictions;
+pub mod frame_assembly;
 pub mod gop_header;
 pub mod idct;
 pub mod macroblock_modes;
@@ -411,6 +412,9 @@ pub use dual_prime::{
 pub use forming_predictions::{
     predict_block, predict_sample, split_component, split_reconstructed, split_vector, BlockSize,
     BoundaryMode, ComponentSplit, HalfPattern, ReferencePlane, SplitVector,
+};
+pub use frame_assembly::{
+    block_placement, chroma_shift, place_intra_block, BlockPlacement, FrameBuffer, Plane,
 };
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use idct::{
