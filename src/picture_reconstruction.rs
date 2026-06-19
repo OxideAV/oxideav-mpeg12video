@@ -42,22 +42,26 @@
 //!
 //! ## Scope
 //!
-//! This driver handles the **frame-picture, frame-based** prediction
-//! modes (Table 7-14 `Frame-based` rows) plus the §7.6.6 skipped
-//! cases — the modes that cover MPEG-1 entirely and the bulk of
-//! MPEG-2 frame-coded P/B pictures. Field pictures and the
-//! field-based / 16×8-MC / dual-prime modes select their predictions
-//! through [`crate::select_predictions`] but their per-field reference
-//! assembly is a later milestone; a macroblock that requires one is
-//! reported through [`crate::InterError::UnsupportedPredictionMode`].
+//! This driver handles the **frame-picture frame-based** and
+//! **frame-picture field-based** prediction modes (Table 7-14
+//! `Frame-based` + `Field-based` rows) plus the §7.6.6 skipped cases —
+//! the modes that cover MPEG-1 entirely and the bulk of MPEG-2
+//! frame-coded P/B pictures (progressive and interlaced-in-frame).
+//! Field-based macroblocks route to
+//! [`crate::reconstruct_field_based_macroblock`] with the §7.6.3 top /
+//! bottom field vector pair. Field pictures and the frame-picture
+//! 16×8-MC / dual-prime modes select their predictions through
+//! [`crate::select_predictions`] but their per-field reference assembly
+//! is a later milestone; a macroblock that requires one is reported
+//! through [`crate::InterError::UnsupportedPredictionMode`].
 //!
 //! Spec citations refer to **ISO/IEC 13818-2 (H.262)** §6.2.4 / §7.6
 //! and **ISO/IEC 11172-2** §2.4.
 
 use crate::frame_assembly::{place_intra_macroblock, FrameBuffer, IntraPictureParams};
 use crate::inter_reconstruction::{
-    reconstruct_inter_macroblock, FrameMotion, InterError, MotionVectorPel, ReferenceFrames,
-    ResidualBlock,
+    reconstruct_field_based_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
+    FrameMotion, InterError, MotionVectorPel, ReferenceFrames, ResidualBlock,
 };
 use crate::macroblock_modes::PredictionType;
 use crate::picture_header::{PictureCodingType, PictureStructure};
@@ -236,16 +240,18 @@ fn reconstruct_one_macroblock(
         return Ok(1); // exactly one macroblock placed
     }
 
-    // §7.6.5 / Table 7-14: reject the field-based / 16×8-MC / dual-prime
-    // frame-picture modes this driver does not yet assemble per-field
-    // references for.
-    if let Some(mt) = record.motion_type {
-        if !matches!(mt.prediction_type, PredictionType::FrameBased) {
-            return Err(crate::Error::from(InterError::UnsupportedPredictionMode));
-        }
+    // §7.6.5 / Table 7-14: the frame-picture prediction mode. Frame-based
+    // and Field-based are both driven; 16×8-MC and dual-prime
+    // (frame-picture) per-field reference assembly is a later milestone.
+    let prediction_type = record
+        .motion_type
+        .map(|mt| mt.prediction_type)
+        .unwrap_or(PredictionType::FrameBased);
+    match prediction_type {
+        PredictionType::FrameBased | PredictionType::FieldBased => {}
+        _ => return Err(crate::Error::from(InterError::UnsupportedPredictionMode)),
     }
 
-    let motion = frame_motion_from_reconstructed(reconstructed);
     let mb_col = (record.macroblock_address as usize) % mb_width;
     let mb_row = (record.macroblock_address as usize) / mb_width;
     let field_dct = record.dct_type == Some(true);
@@ -268,11 +274,29 @@ fn reconstruct_one_macroblock(
         })
         .collect();
 
-    reconstruct_inter_macroblock(
-        frame, references, mb_col, mb_row, field_dct, motion, &residuals,
-    )
-    .map_err(crate::Error::from)?;
+    let motion = frame_motion_from_reconstructed(reconstructed);
+    if prediction_type == PredictionType::FieldBased {
+        let field_motion = field_based_motion_from_reconstructed(reconstructed);
+        reconstruct_field_based_macroblock(
+            frame,
+            references,
+            mb_col,
+            mb_row,
+            field_dct,
+            field_motion,
+            &residuals,
+        )
+        .map_err(crate::Error::from)?;
+    } else {
+        reconstruct_inter_macroblock(
+            frame, references, mb_col, mb_row, field_dct, motion, &residuals,
+        )
+        .map_err(crate::Error::from)?;
+    }
 
+    // §7.6.6.4 inheritance carries the whole-block (first-vector)
+    // direction; a following B-skip reconstructs frame-based regardless
+    // of this macroblock's own field/frame mode.
     *previous_inter_direction = Some(InterDirection {
         forward: motion.forward,
         backward: motion.backward,
@@ -344,6 +368,31 @@ fn frame_motion_from_reconstructed(reconstructed: &ReconstructedMotionVectors) -
     FrameMotion { forward, backward }
 }
 
+/// Translate the §7.6.3 reconstructed motion vectors of a
+/// **frame-picture field-based** macroblock (Table 7-14 `Field-based`)
+/// into a [`FieldBasedMotion`]. For a field-based macroblock the §7.6.3
+/// walk reconstructs two vectors per present direction — the first
+/// pairs with the top reference field, the second with the bottom field
+/// (the §7.6.5 NOTE ordering). When only one vector is present (a
+/// degenerate descriptor) it is reused for both fields so the driver
+/// stays total.
+fn field_based_motion_from_reconstructed(
+    reconstructed: &ReconstructedMotionVectors,
+) -> FieldBasedMotion {
+    let pair = |vecs: &[crate::slice_macroblock_walk::ReconstructedVector]| {
+        let to_pel = |rv: &crate::slice_macroblock_walk::ReconstructedVector| {
+            MotionVectorPel::new(rv.horizontal.vector_prime, rv.vertical.vector_prime)
+        };
+        let top = vecs.first().map(to_pel)?;
+        let bottom = vecs.get(1).map(to_pel).unwrap_or(top);
+        Some((top, bottom))
+    };
+    FieldBasedMotion {
+        forward: reconstructed.forward.as_deref().and_then(pair),
+        backward: reconstructed.backward.as_deref().and_then(pair),
+    }
+}
+
 /// Find the byte offset of the next `slice_start_code`
 /// (`0x000001` prefix + `0x01..=0xAF`, Table 6-1) in `buf`, or `None`.
 fn find_slice_start_code(buf: &[u8]) -> Option<usize> {
@@ -402,6 +451,43 @@ mod tests {
         let m = frame_motion_from_reconstructed(&recon);
         assert_eq!(m.forward, Some(MotionVectorPel::new(2, 2)));
         assert_eq!(m.backward, Some(MotionVectorPel::new(-2, -2)));
+    }
+
+    #[test]
+    fn field_based_motion_pairs_top_and_bottom_vectors() {
+        let recon = ReconstructedMotionVectors {
+            forward: Some(vec![
+                ReconstructedVector {
+                    horizontal: rc(4),
+                    vertical: rc(2),
+                },
+                ReconstructedVector {
+                    horizontal: rc(-4),
+                    vertical: rc(-2),
+                },
+            ]),
+            backward: None,
+        };
+        let m = field_based_motion_from_reconstructed(&recon);
+        assert_eq!(
+            m.forward,
+            Some((MotionVectorPel::new(4, 2), MotionVectorPel::new(-4, -2)))
+        );
+        assert_eq!(m.backward, None);
+    }
+
+    #[test]
+    fn field_based_motion_single_vector_reuses_for_both_fields() {
+        let recon = ReconstructedMotionVectors {
+            forward: Some(vec![ReconstructedVector {
+                horizontal: rc(8),
+                vertical: rc(0),
+            }]),
+            backward: None,
+        };
+        let m = field_based_motion_from_reconstructed(&recon);
+        let v = MotionVectorPel::new(8, 0);
+        assert_eq!(m.forward, Some((v, v)));
     }
 
     #[test]
