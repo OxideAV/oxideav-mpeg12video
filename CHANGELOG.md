@@ -8,6 +8,31 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 351: **field-picture simple field prediction** (§7.6.1 *"within
+  a field picture all predictions are field predictions"*, Table 7-13
+  `Field-based` rows) — driven end-to-end. New
+  `inter_reconstruction::reconstruct_field_picture_macroblock` (+
+  `predict_field_picture_macroblock_planes`, `FieldPictureMotion`):
+  a field-picture macroblock is a single 16×16 field block read from
+  **one** reference field selected by the §6.3.17.2
+  `motion_vertical_field_select` flag (Top when `0`, Bottom when `1`,
+  §7.6.4) via the §7.6.4 `FieldReference` view; per-direction
+  `(luma vector, FieldParity)`, §7.6.3.7 chroma scaling, §7.6.7.2 `// 2`
+  bidirectional average, and §6.1.3 contiguous field-plane write-out
+  (no frame/field DCT distinction inside a field picture). New top-level
+  `picture_reconstruction::decode_field_picture` driver walks a field
+  picture's slices with `PictureStructure::TopField` / `BottomField`
+  (selecting `field_motion_type` + the field-select bit through the
+  §6.2.5 parse), reconstructs the §7.6.3 vectors, pairs each with its
+  field-select flag (`field_picture_motion_from_reconstructed`), and
+  reconstructs Field-based macroblocks + §7.6.6.2 P-field skips (a
+  `(0,0)` same-parity-field copy); 16×8-MC / dual-prime / B-field skip
+  inheritance stay `UnsupportedPredictionMode`. 6 new unit tests +
+  5 new `tests/field_picture_decode.rs` fixtures decoding synthetic
+  field-picture slices end-to-end (parity selection, bottom-field
+  select reading odd reference rows, bottom field picture, half-pel
+  field-line average, 3-MB picture with skip). Spec: ISO/IEC 13818-2
+  §7.6.1 / §7.6.3 / §7.6.4 / §7.6.5 (Table 7-13) / §7.6.6.2 / §6.1.3.
 - round 346: **frame-picture field-based prediction** (Table 7-14
   `Field-based` rows) — the next interlaced-decode milestone after the
   frame-based P/B driver. New `forming_predictions::FieldReference`: a
