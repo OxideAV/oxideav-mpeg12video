@@ -501,7 +501,9 @@ pub use picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
 };
-pub use picture_reconstruction::{decode_inter_picture, PicturePredictionParams};
+pub use picture_reconstruction::{
+    decode_field_picture, decode_inter_picture, PicturePredictionParams,
+};
 pub use picture_spatial_scalable_extension::{
     PictureSpatialScalableExtension, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
 };

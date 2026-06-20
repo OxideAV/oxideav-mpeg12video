@@ -58,10 +58,12 @@
 //! Spec citations refer to **ISO/IEC 13818-2 (H.262)** §6.2.4 / §7.6
 //! and **ISO/IEC 11172-2** §2.4.
 
+use crate::dual_prime::FieldParity;
 use crate::frame_assembly::{place_intra_macroblock, FrameBuffer, IntraPictureParams};
 use crate::inter_reconstruction::{
-    reconstruct_field_based_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
-    FrameMotion, InterError, MotionVectorPel, ReferenceFrames, ResidualBlock,
+    reconstruct_field_based_macroblock, reconstruct_field_picture_macroblock,
+    reconstruct_inter_macroblock, FieldBasedMotion, FieldPictureMotion, FrameMotion, InterError,
+    MotionVectorPel, ReferenceFrames, ResidualBlock,
 };
 use crate::macroblock_modes::PredictionType;
 use crate::picture_header::{PictureCodingType, PictureStructure};
@@ -391,6 +393,255 @@ fn field_based_motion_from_reconstructed(
         forward: reconstructed.forward.as_deref().and_then(pair),
         backward: reconstructed.backward.as_deref().and_then(pair),
     }
+}
+
+/// Translate the §7.6.3 reconstructed motion vectors of a
+/// **field-picture** simple-field-prediction macroblock (Table 7-13
+/// `Field-based` rows) into a [`FieldPictureMotion`]. A field-picture
+/// macroblock carries exactly one vector per present direction together
+/// with its §6.3.17.2 `motion_vertical_field_select` flag, which selects
+/// the reference field the §7.6.4 reader samples (`0` → top, `1` →
+/// bottom). The flag is read off the wire record's
+/// [`crate::slice_macroblock_walk::MacroblockRecord::motion_vectors_forward`]
+/// / `..._backward` entry; an absent flag defaults to the top field so
+/// the driver stays total.
+fn field_picture_motion_from_reconstructed(
+    record: &MacroblockRecord,
+    reconstructed: &ReconstructedMotionVectors,
+) -> FieldPictureMotion {
+    let to_pel = |rv: &crate::slice_macroblock_walk::ReconstructedVector| {
+        MotionVectorPel::new(rv.horizontal.vector_prime, rv.vertical.vector_prime)
+    };
+    let parity = |flag: Option<bool>| {
+        if flag == Some(true) {
+            FieldParity::Bottom
+        } else {
+            FieldParity::Top
+        }
+    };
+    let fwd_flag = record
+        .motion_vectors_forward
+        .as_ref()
+        .and_then(|mvs| mvs.entries.first())
+        .and_then(|e| e.vertical_field_select);
+    let bwd_flag = record
+        .motion_vectors_backward
+        .as_ref()
+        .and_then(|mvs| mvs.entries.first())
+        .and_then(|e| e.vertical_field_select);
+    let forward = reconstructed
+        .forward
+        .as_ref()
+        .and_then(|v| v.first())
+        .map(|rv| (to_pel(rv), parity(fwd_flag)));
+    let backward = reconstructed
+        .backward
+        .as_ref()
+        .and_then(|v| v.first())
+        .map(|rv| (to_pel(rv), parity(bwd_flag)));
+    FieldPictureMotion { forward, backward }
+}
+
+/// Reconstruct a whole **field picture** (one coded field of a frame)
+/// into a field-height [`FrameBuffer`], per the §7.6.1 rule that *within
+/// a field picture all predictions are field predictions*.
+///
+/// `picture` is the elementary-stream slice run of the field picture
+/// (the same shape [`decode_inter_picture`] consumes). `params.geometry`
+/// carries the **field** geometry — its `height` is the field height
+/// (half the frame) and `frame_pred_frame_dct` must be `false` (a field
+/// picture forbids it, §6.3.10). `structure` is the field being decoded
+/// ([`PictureStructure::TopField`] / [`PictureStructure::BottomField`]),
+/// which threads through the §6.2.5.1 macroblock-modes parse (selecting
+/// `field_motion_type`) and the §7.6.3 reconstruction.
+///
+/// `references` carries the reference **frame(s)** — the most-recently
+/// decoded reference frame for a P-field picture (forward only), or both
+/// reference frames for a B-field picture. Each macroblock's
+/// §6.3.17.2 `motion_vertical_field_select` flag picks which of the
+/// reference frame's two fields is sampled.
+///
+/// Returns the field [`FrameBuffer`] and the number of macroblocks
+/// reconstructed (coded + skipped).
+///
+/// # Scope
+///
+/// Simple field prediction only (Table 7-13 `Field-based` rows).
+/// 16×8-MC and field-picture dual-prime are parsed by the slice walker
+/// but their reconstruction is a later milestone; a macroblock that
+/// needs one is reported via
+/// [`crate::InterError::UnsupportedPredictionMode`].
+///
+/// # Errors
+///
+/// As [`decode_inter_picture`]: slice / walk / motion-vector errors, a
+/// missing reference, or an unsupported prediction mode.
+pub fn decode_field_picture(
+    picture: &[u8],
+    params: PicturePredictionParams,
+    structure: PictureStructure,
+    references: ReferenceFrames<'_>,
+) -> Result<(FrameBuffer, usize)> {
+    use crate::slice_header::{SliceContext, SliceHeader};
+
+    let geom = params.geometry;
+    // The destination is one field: a field-height frame buffer.
+    let mut field = FrameBuffer::new(geom.width, geom.height, geom.chroma_format);
+    let mb_width = geom.mb_width() as u32;
+    // The §6.2.3 slice_vertical_position spans the *field* height.
+    let slice_ctx = SliceContext::non_scalable(geom.height as u32);
+
+    let mut placed = 0usize;
+    let mut offset = 0usize;
+    while let Some(rel) = find_slice_start_code(&picture[offset..]) {
+        let start = offset + rel;
+        let body = &picture[start..];
+        let end = find_next_start_code(&body[4..])
+            .map(|p| p + 4)
+            .unwrap_or(body.len());
+        let next_slice_offset = start + end;
+        let slice_buf = &picture[start..(start + end + 4).min(picture.len())];
+
+        let header = SliceHeader::parse(slice_buf, slice_ctx)?;
+        let mb_row = u32::from(header.slice_vertical_position) - 1;
+
+        let ctx = SliceWalkContext::first_slice_with_block_decoding(
+            mb_width,
+            mb_row,
+            params.picture_coding_type,
+            header.quantiser_scale_code,
+            structure,
+            // frame_pred_frame_dct is always false in a field picture.
+            false,
+            params.f_code_fwd_horiz,
+            params.f_code_fwd_vert,
+            params.f_code_bwd_horiz,
+            params.f_code_bwd_vert,
+            params.concealment_motion_vectors,
+            geom.chroma_format,
+            geom.intra_vlc_format,
+            geom.alternate_scan,
+            geom.intra_dc_precision,
+            geom.q_scale_type,
+        );
+
+        let walk = walk_slice_at(slice_buf, header.body_bit_position, ctx)?;
+        let motion = reconstruct_slice_motion_vectors(&walk, &ctx)?;
+
+        let selected_parity = match structure {
+            PictureStructure::BottomField => FieldParity::Bottom,
+            _ => FieldParity::Top,
+        };
+
+        for (record, motion_record) in walk.macroblocks.iter().zip(motion.records.iter()) {
+            // §7.6.6: skipped macroblocks immediately preceding this one.
+            let skipped = motion_record.skipped_before;
+            for k in 0..skipped {
+                let skipped_address = record.macroblock_address - skipped + k;
+                placed += reconstruct_skipped_field_macroblock(
+                    &mut field,
+                    references,
+                    skipped_address as usize,
+                    mb_width as usize,
+                    params.picture_coding_type,
+                    selected_parity,
+                )?;
+            }
+
+            placed += reconstruct_one_field_macroblock(
+                &mut field,
+                references,
+                record,
+                &motion_record.reconstructed,
+                mb_width as usize,
+                geom.chroma_format,
+            )?;
+        }
+
+        offset = next_slice_offset;
+    }
+
+    Ok((field, placed))
+}
+
+/// Reconstruct one coded macroblock of a field picture — intra via
+/// [`place_intra_macroblock`], inter via
+/// [`reconstruct_field_picture_macroblock`].
+fn reconstruct_one_field_macroblock(
+    field: &mut FrameBuffer,
+    references: ReferenceFrames<'_>,
+    record: &MacroblockRecord,
+    reconstructed: &ReconstructedMotionVectors,
+    mb_width: usize,
+    chroma_format: crate::sequence_extension::ChromaFormat,
+) -> Result<usize> {
+    if record.macroblock_type.macroblock_intra {
+        place_intra_macroblock(field, record, mb_width, chroma_format);
+        return Ok(1);
+    }
+
+    // §7.6.5 / Table 7-13: only simple field prediction (Field-based) is
+    // driven; 16×8-MC and dual-prime reconstruction is a later milestone.
+    let prediction_type = record
+        .motion_type
+        .map(|mt| mt.prediction_type)
+        .unwrap_or(PredictionType::FieldBased);
+    if prediction_type != PredictionType::FieldBased {
+        return Err(crate::Error::from(InterError::UnsupportedPredictionMode));
+    }
+
+    let mb_col = (record.macroblock_address as usize) % mb_width;
+    let mb_row = (record.macroblock_address as usize) / mb_width;
+
+    let f_pels: Vec<([[i16; 8]; 8], u8)> = match record.decoded_blocks.as_ref() {
+        Some(blocks) => blocks
+            .iter()
+            .map(|b| (b.decoded.f_pel, b.block_index))
+            .collect(),
+        None => Vec::new(),
+    };
+    let residuals: Vec<ResidualBlock<'_>> = f_pels
+        .iter()
+        .map(|(f, idx)| ResidualBlock {
+            block_index: *idx,
+            f_pel: f,
+        })
+        .collect();
+
+    let motion = field_picture_motion_from_reconstructed(record, reconstructed);
+    reconstruct_field_picture_macroblock(field, references, mb_col, mb_row, motion, &residuals)
+        .map_err(crate::Error::from)?;
+    Ok(1)
+}
+
+/// Reconstruct one §7.6.6 skipped macroblock of a field picture: a
+/// P-field-picture skip is a `(0, 0)` forward prediction reading the
+/// `selected_parity` field of the reference frame (§7.6.6.2 / §7.6.7.2).
+/// (B-field-picture skips are not yet driven and are unreachable for the
+/// P-field fixtures exercised here.)
+fn reconstruct_skipped_field_macroblock(
+    field: &mut FrameBuffer,
+    references: ReferenceFrames<'_>,
+    address: usize,
+    mb_width: usize,
+    picture_coding_type: PictureCodingType,
+    selected_parity: FieldParity,
+) -> Result<usize> {
+    let mb_col = address % mb_width;
+    let mb_row = address / mb_width;
+    // §7.6.6.2: a P-picture skip predicts from the co-located reference
+    // with a zero motion vector. In a field picture the reference field
+    // used is the same-parity field as the picture being decoded.
+    let motion = match picture_coding_type {
+        PictureCodingType::Bidirectional => {
+            // B-field-picture skip inheritance is a later milestone.
+            return Err(crate::Error::from(InterError::UnsupportedPredictionMode));
+        }
+        _ => FieldPictureMotion::forward(MotionVectorPel::new(0, 0), selected_parity),
+    };
+    reconstruct_field_picture_macroblock(field, references, mb_col, mb_row, motion, &[])
+        .map_err(crate::Error::from)?;
+    Ok(1)
 }
 
 /// Find the byte offset of the next `slice_start_code`
