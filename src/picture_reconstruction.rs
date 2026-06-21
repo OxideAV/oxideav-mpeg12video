@@ -61,9 +61,10 @@
 use crate::dual_prime::FieldParity;
 use crate::frame_assembly::{place_intra_macroblock, FrameBuffer, IntraPictureParams};
 use crate::inter_reconstruction::{
-    reconstruct_field_based_macroblock, reconstruct_field_picture_macroblock,
-    reconstruct_inter_macroblock, FieldBasedMotion, FieldPictureMotion, FrameMotion, InterError,
-    MotionVectorPel, ReferenceFrames, ResidualBlock,
+    reconstruct_field_based_macroblock, reconstruct_field_picture_16x8_macroblock,
+    reconstruct_field_picture_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
+    FieldPicture16x8Motion, FieldPictureMotion, FrameMotion, InterError, MotionVectorPel,
+    ReferenceFrames, ResidualBlock,
 };
 use crate::macroblock_modes::PredictionType;
 use crate::picture_header::{PictureCodingType, PictureStructure};
@@ -442,6 +443,59 @@ fn field_picture_motion_from_reconstructed(
     FieldPictureMotion { forward, backward }
 }
 
+/// Translate the §7.6.3 reconstructed motion vectors of a
+/// **field-picture 16×8-MC** macroblock (Table 7-13 `16x8 MC` rows) into
+/// a [`FieldPicture16x8Motion`].
+///
+/// 16×8 MC carries **two** vectors per present direction (§7.6.7.3): the
+/// first (`vector'[0]`) predicts the upper 16×8 region, the second
+/// (`vector'[1]`) the lower, each paired with its own §6.3.17.2
+/// `motion_vertical_field_select` flag taken from the matching wire
+/// record entry (`0` → top, `1` → bottom; §7.6.4). When a direction has
+/// fewer than two reconstructed vectors (a degenerate descriptor) the
+/// first is reused for both regions so the driver stays total.
+fn field_picture_16x8_motion_from_reconstructed(
+    record: &MacroblockRecord,
+    reconstructed: &ReconstructedMotionVectors,
+) -> FieldPicture16x8Motion {
+    let to_pel = |rv: &crate::slice_macroblock_walk::ReconstructedVector| {
+        MotionVectorPel::new(rv.horizontal.vector_prime, rv.vertical.vector_prime)
+    };
+    let parity = |flag: Option<bool>| {
+        if flag == Some(true) {
+            FieldParity::Bottom
+        } else {
+            FieldParity::Top
+        }
+    };
+    // Build the `[upper, lower]` region pair for one direction from the
+    // reconstructed vectors and the per-entry field-select flags.
+    let regions = |vecs: Option<&Vec<crate::slice_macroblock_walk::ReconstructedVector>>,
+                   wire: Option<&crate::motion_vector::MotionVectors>|
+     -> Option<[(MotionVectorPel, FieldParity); 2]> {
+        let vecs = vecs?;
+        let upper_mv = vecs.first().map(to_pel)?;
+        let lower_mv = vecs.get(1).map(to_pel).unwrap_or(upper_mv);
+        let field_select = |idx: usize| {
+            wire.and_then(|mvs| mvs.entries.get(idx))
+                .and_then(|e| e.vertical_field_select)
+        };
+        let upper_field = parity(field_select(0));
+        // Reuse the upper region's flag when only one entry is present.
+        let lower_field = parity(field_select(1).or_else(|| field_select(0)));
+        Some([(upper_mv, upper_field), (lower_mv, lower_field)])
+    };
+    let forward = regions(
+        reconstructed.forward.as_ref(),
+        record.motion_vectors_forward.as_ref(),
+    );
+    let backward = regions(
+        reconstructed.backward.as_ref(),
+        record.motion_vectors_backward.as_ref(),
+    );
+    FieldPicture16x8Motion { forward, backward }
+}
+
 /// Reconstruct a whole **field picture** (one coded field of a frame)
 /// into a field-height [`FrameBuffer`], per the §7.6.1 rule that *within
 /// a field picture all predictions are field predictions*.
@@ -580,15 +634,13 @@ fn reconstruct_one_field_macroblock(
         return Ok(1);
     }
 
-    // §7.6.5 / Table 7-13: only simple field prediction (Field-based) is
-    // driven; 16×8-MC and dual-prime reconstruction is a later milestone.
+    // §7.6.5 / Table 7-13: simple field prediction (Field-based) and
+    // 16×8-MC are driven; dual-prime field-picture reconstruction is a
+    // later milestone.
     let prediction_type = record
         .motion_type
         .map(|mt| mt.prediction_type)
         .unwrap_or(PredictionType::FieldBased);
-    if prediction_type != PredictionType::FieldBased {
-        return Err(crate::Error::from(InterError::UnsupportedPredictionMode));
-    }
 
     let mb_col = (record.macroblock_address as usize) % mb_width;
     let mb_row = (record.macroblock_address as usize) / mb_width;
@@ -608,9 +660,24 @@ fn reconstruct_one_field_macroblock(
         })
         .collect();
 
-    let motion = field_picture_motion_from_reconstructed(record, reconstructed);
-    reconstruct_field_picture_macroblock(field, references, mb_col, mb_row, motion, &residuals)
-        .map_err(crate::Error::from)?;
+    match prediction_type {
+        PredictionType::FieldBased => {
+            let motion = field_picture_motion_from_reconstructed(record, reconstructed);
+            reconstruct_field_picture_macroblock(
+                field, references, mb_col, mb_row, motion, &residuals,
+            )
+            .map_err(crate::Error::from)?;
+        }
+        PredictionType::SixteenByEight => {
+            let motion = field_picture_16x8_motion_from_reconstructed(record, reconstructed);
+            reconstruct_field_picture_16x8_macroblock(
+                field, references, mb_col, mb_row, motion, &residuals,
+            )
+            .map_err(crate::Error::from)?;
+        }
+        // Field-picture dual-prime reconstruction is a later milestone.
+        _ => return Err(crate::Error::from(InterError::UnsupportedPredictionMode)),
+    }
     Ok(1)
 }
 

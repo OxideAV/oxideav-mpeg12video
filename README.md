@@ -100,10 +100,20 @@ The decode pipeline is implemented end-to-end at the module level:
   §7.6.3.7 chroma scaling, §7.6.7.2 `// 2` bidirectional average, §6.1.3
   contiguous field-plane write-out since a field picture has no
   frame/field DCT distinction). The §7.6.6.2 P-field skip reconstructs as
-  a `(0,0)` same-parity-field copy. The frame-picture 16×8-MC /
-  dual-prime per-field reference assembly and the field-picture 16×8-MC /
-  dual-prime / B-field skip inheritance are the remaining
-  motion-compensation milestone.
+  a `(0,0)` same-parity-field copy. **Field-picture 16×8 motion
+  compensation** (§7.6.7.3, Table 7-13 `16x8 MC` rows) is now driven
+  end-to-end too: `decode_field_picture` dispatches a `16x8 MC`
+  macroblock to `reconstruct_field_picture_16x8_macroblock`
+  (`FieldPicture16x8Motion`), which forms two separate predictions —
+  `vector'[0]` for the upper 16×8 luminance region, `vector'[1]` for the
+  lower — each carrying its own §6.3.17.2 `motion_vertical_field_select`
+  flag so each region reads from its own chosen reference field (Top when
+  `0`, Bottom when `1`, §7.6.4). The chroma regions follow §7.6.7.3 (full
+  component width × half height per region: 4:2:0 → 8×4, 4:2:2 → 8×8,
+  4:4:4 → 16×8) and reuse the §7.6.7.2 bidirectional average + §6.1.3
+  field-plane write-out. The frame-picture 16×8-MC / dual-prime per-field
+  reference assembly and the field-picture dual-prime / B-field skip
+  inheritance are the remaining motion-compensation milestone.
 - **Spatial-scalable lower-layer resampling**: the full §7.7.3 spatial-
   prediction pipeline — §7.7.3.4 deinterlace (`deinterlace`: the
   Table 7-19 vertical/temporal FIR, two-field aperture for Frame-Picture
@@ -149,12 +159,13 @@ verifying the parsers against known-good encoded streams.
   (`decode_intra_picture` for I-pictures, `decode_inter_picture` for
   frame-picture P/B, `decode_field_picture` for field-picture P/B),
   with the caller supplying the decoded reference frame(s). The
-  remaining motion-compensation gap is the **16×8-MC** and **dual-prime**
-  per-field reference assembly (both frame- and field-picture) plus the
-  field-picture **B-field skipped-macroblock** direction inheritance;
-  the frame-picture frame-based **and** field-based P/B reconstruction
-  and the field-picture **simple field prediction** are all driven
-  end-to-end.
+  remaining motion-compensation gap is the **frame-picture 16×8-MC** and
+  the **dual-prime** per-field reference assembly (both frame- and
+  field-picture) plus the field-picture **B-field skipped-macroblock**
+  direction inheritance; the frame-picture frame-based **and**
+  field-based P/B reconstruction, the field-picture **simple field
+  prediction**, and the field-picture **16×8 motion compensation** are
+  all driven end-to-end.
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
   (parsed structurally; the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
   resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15 upsampling-

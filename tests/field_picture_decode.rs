@@ -263,3 +263,82 @@ fn field_picture_two_macroblocks_with_skip() {
         }
     }
 }
+
+#[test]
+fn field_picture_16x8_regions_select_independent_fields_end_to_end() {
+    // One field-picture P macroblock with field_motion_type = 16x8 MC
+    // (`10`, two vectors). The upper 16×8 region selects the TOP reference
+    // field (field-select 0), the lower region the BOTTOM (field-select
+    // 1); both zero MV. The decoded field's upper eight lines must equal
+    // top-reference-field rows (even frame rows) and the lower eight equal
+    // bottom-reference-field rows shifted by the lower region's field-line
+    // origin (field line 8 of the bottom field → frame row 2*8+1 = 17).
+    let mut bw = BitWriter::new();
+    write_slice_header(&mut bw, 8);
+    bw.write_u32(0b1, 1); // macroblock_address_increment = 1
+    bw.write_u32(0b001, 3); // macroblock_type "MC, Not Coded"
+    bw.write_u32(0b10, 2); // field_motion_type = 16x8 MC (2 vectors)
+                           // motion_vectors(0): upper region (vfs, h, v) then lower (vfs, h, v).
+    bw.write_u32(0b0, 1); // upper field-select = 0 (top)
+    bw.write_u32(0b1, 1); // upper horiz motion_code = 0
+    bw.write_u32(0b1, 1); // upper vert  motion_code = 0
+    bw.write_u32(0b1, 1); // lower field-select = 1 (bottom)
+    bw.write_u32(0b1, 1); // lower horiz motion_code = 0
+    bw.write_u32(0b1, 1); // lower vert  motion_code = 0
+    let picture = append_stop(bw);
+
+    let reference = vertical_ramp_frame();
+    let refs = ReferenceFrames::forward_only(&reference);
+    let (field, placed) =
+        decode_field_picture(&picture, p_params(), PictureStructure::TopField, refs).unwrap();
+
+    assert_eq!(placed, 1, "one 16x8 field-picture macroblock reconstructed");
+    // Upper region (lines 0..8): top reference field line k → frame row 2k.
+    for k in 0..8usize {
+        let expected = (2 * k * 4) as u8;
+        for x in 0..16 {
+            assert_eq!(field.y.get(x, k), Some(expected), "upper line {k} col {x}");
+        }
+    }
+    // Lower region (lines 8..16): bottom reference field line k → frame
+    // row 2k+1.
+    for k in 8..16usize {
+        let expected = ((2 * k + 1) * 4) as u8;
+        for x in 0..16 {
+            assert_eq!(field.y.get(x, k), Some(expected), "lower line {k} col {x}");
+        }
+    }
+}
+
+#[test]
+fn field_picture_16x8_lower_region_uses_distinct_vector_end_to_end() {
+    // 16x8 MC with both regions on the TOP field but the lower region a
+    // +1 half-sample vertical vector (motion_code +1 = Table B-10 `010`),
+    // i.e. a half-pel between adjacent field lines. The lower region's
+    // first line (field line 8) reads the // 2 average of top-field line 8
+    // (frame row 16, value 64) and line 9 (frame row 18, value 72) = 68 —
+    // proving each region uses its own (here half-pel) vector while the
+    // upper region stays a full-pel copy.
+    let mut bw = BitWriter::new();
+    write_slice_header(&mut bw, 8);
+    bw.write_u32(0b1, 1); // increment = 1
+    bw.write_u32(0b001, 3); // "MC, Not Coded"
+    bw.write_u32(0b10, 2); // field_motion_type = 16x8 MC
+    bw.write_u32(0b0, 1); // upper field-select = top
+    bw.write_u32(0b1, 1); // upper horiz = 0
+    bw.write_u32(0b1, 1); // upper vert  = 0
+    bw.write_u32(0b0, 1); // lower field-select = top
+    bw.write_u32(0b1, 1); // lower horiz = 0
+    bw.write_u32(0b010, 3); // lower vert motion_code = +1 (one field line)
+    let picture = append_stop(bw);
+
+    let reference = vertical_ramp_frame();
+    let refs = ReferenceFrames::forward_only(&reference);
+    let (field, _) =
+        decode_field_picture(&picture, p_params(), PictureStructure::TopField, refs).unwrap();
+
+    // Upper line 0 unchanged: top field line 0 → frame row 0.
+    assert_eq!(field.y.get(0, 0), Some(0));
+    // Lower line 8: // 2 average of top field lines 8 (64) and 9 (72) = 68.
+    assert_eq!(field.y.get(0, 8), Some(68));
+}

@@ -24,7 +24,17 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   (no frame/field DCT distinction inside a field picture). 9 new unit
   tests (region/field independence, distinct per-region vectors, chroma
   region split, bidirectional average, geometry/reference errors,
-  residual add).
+  residual add). **Driven end-to-end**: `picture_reconstruction::`
+  `decode_field_picture` now dispatches a `SixteenByEight`
+  field-picture macroblock to the new endpoint, building the
+  `[upper, lower]` region pair from the two reconstructed §7.6.3 vectors
+  and their per-entry `motion_vertical_field_select` flags
+  (`field_picture_16x8_motion_from_reconstructed`); only field-picture
+  dual-prime stays `UnsupportedPredictionMode`. 2 new integration tests
+  in `tests/field_picture_decode.rs` (independent-field regions; a
+  distinct half-pel lower-region vector) decode a hand-built `16x8 MC`
+  field-picture slice through the full §6.2.5 parse + §7.6.3 + §7.6.4
+  pipeline.
 
 - round 351: **field-picture simple field prediction** (§7.6.1 *"within
   a field picture all predictions are field predictions"*, Table 7-13
