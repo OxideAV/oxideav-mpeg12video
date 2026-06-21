@@ -89,7 +89,7 @@ pub struct MotionVectorPel {
 
 impl MotionVectorPel {
     /// Construct a `(horizontal, vertical)` half-sample motion vector.
-    pub fn new(horizontal: i32, vertical: i32) -> Self {
+    pub const fn new(horizontal: i32, vertical: i32) -> Self {
         Self {
             horizontal,
             vertical,
@@ -1028,6 +1028,304 @@ pub fn reconstruct_field_picture_macroblock(
     Ok(written)
 }
 
+/// The per-region, per-direction luminance motion vectors **and** their
+/// selected reference fields for one **field-picture 16×8-MC** macroblock
+/// (Table 7-13 `16x8 MC` rows).
+///
+/// 16×8 motion compensation forms two separate predictions for a
+/// macroblock (§7.6.7.3): `vector'[0]` predicts the **upper** 16×8
+/// luminance region (the macroblock's top eight lines), `vector'[1]` the
+/// **lower** 16×8 region. Each region carries its own §6.3.17.2
+/// `motion_vertical_field_select` flag (the §7.6.4 NOTE: *"in the case of
+/// field-based prediction and 16x8 MC an additional bit,
+/// `motion_vertical_field_select`, is encoded to indicate which field to
+/// use"*), so each region's vector reads from its own chosen reference
+/// field — `Top` when the flag is `0`, `Bottom` when `1`.
+///
+/// As in a field picture the destination is one field of a frame, so the
+/// reconstructed regions place contiguously with no frame/field
+/// interleave (§6.1.3 Table 6-19): the upper region occupies the
+/// macroblock's first half of lines, the lower region the second half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FieldPicture16x8Motion {
+    /// Forward `[(upper_vector, upper_field), (lower_vector,
+    /// lower_field)]` — present when the macroblock forms a forward
+    /// prediction (`vector'[0][0]` / `vector'[1][0]`).
+    pub forward: Option<[(MotionVectorPel, FieldParity); 2]>,
+    /// Backward `[(upper_vector, upper_field), (lower_vector,
+    /// lower_field)]` — present only in a B-field-picture forming a
+    /// backward prediction (`vector'[0][1]` / `vector'[1][1]`).
+    pub backward: Option<[(MotionVectorPel, FieldParity); 2]>,
+}
+
+impl FieldPicture16x8Motion {
+    /// A forward-only 16×8 motion: `upper` predicts the top 16×8 region,
+    /// `lower` the bottom 16×8 region.
+    pub fn forward(
+        upper: (MotionVectorPel, FieldParity),
+        lower: (MotionVectorPel, FieldParity),
+    ) -> Self {
+        Self {
+            forward: Some([upper, lower]),
+            backward: None,
+        }
+    }
+
+    /// A backward-only 16×8 motion (B-field-picture).
+    pub fn backward(
+        upper: (MotionVectorPel, FieldParity),
+        lower: (MotionVectorPel, FieldParity),
+    ) -> Self {
+        Self {
+            forward: None,
+            backward: Some([upper, lower]),
+        }
+    }
+
+    /// The §7.6.7 [`PredictionDirection`] this motion set implies
+    /// (both-absent maps to [`PredictionDirection::Skipped`]).
+    pub fn direction(self) -> PredictionDirection {
+        match (self.forward.is_some(), self.backward.is_some()) {
+            (true, true) => PredictionDirection::Bidirectional,
+            (true, false) => PredictionDirection::Forward,
+            (false, true) => PredictionDirection::Backward,
+            (false, false) => PredictionDirection::Skipped,
+        }
+    }
+}
+
+/// Form one component's full macroblock prediction block for a
+/// **field-picture 16×8-MC** prediction in a single direction.
+///
+/// The component plane is split horizontally into an upper and a lower
+/// 16×8 region (luma; the chroma region is the full component width ×
+/// half its height per §7.6.7.3 — 4:2:0 → 8×4, 4:2:2 → 8×8, 4:4:4 →
+/// 16×8). Each region is predicted independently: the upper region reads
+/// the `upper_field` of `reference` with `upper_mv`, the lower region the
+/// `lower_field` with `lower_mv`. The two regions are stacked into the
+/// macroblock's `width × height` footprint with no interleave (the
+/// destination is one field plane).
+///
+/// `(base_x, base_y)` is the macroblock's top-left coordinate in
+/// field-sample units of this component's field plane; the lower region's
+/// field-line origin is `base_y + height/2`.
+#[allow(clippy::too_many_arguments)]
+fn predict_field_picture_16x8_component(
+    reference: &FrameBuffer,
+    component: ColourComponent,
+    base_x: i32,
+    base_y: i32,
+    width: usize,
+    height: usize,
+    upper: (MotionVectorPel, FieldParity),
+    lower: (MotionVectorPel, FieldParity),
+) -> Vec<u8> {
+    let (data, pw, ph) = component_plane(reference, component);
+    let Some(plane) = ReferencePlane::new(data, pw, ph) else {
+        return vec![0u8; width * height];
+    };
+    let half = height / 2;
+    let Some(size) = BlockSize::new(width, half) else {
+        return vec![0u8; width * height];
+    };
+    let mut out = vec![0u8; width * height];
+    // Each region is a `width × half` block read from its chosen field.
+    for (region, (mv, parity)) in [upper, lower].into_iter().enumerate() {
+        let Some(field) = FieldReference::new(plane, parity.index()) else {
+            continue;
+        };
+        // Upper region occupies field lines [base_y, base_y+half); the
+        // lower region [base_y+half, base_y+height).
+        let region_top = base_y + (region * half) as i32;
+        let block =
+            predict_field_block(field, base_x, region_top, size, mv.horizontal, mv.vertical);
+        let row_off = region * half;
+        for r in 0..half {
+            let dst_row = row_off + r;
+            let src = &block[r * width..r * width + width];
+            let dst = &mut out[dst_row * width..dst_row * width + width];
+            dst.copy_from_slice(src);
+        }
+    }
+    out
+}
+
+/// Form the full per-component prediction planes (luma, cb, cr) for one
+/// **field-picture 16×8-MC** macroblock and combine the forward /
+/// backward directions per §7.6.7.2 (the `// 2` average).
+///
+/// `dest` is the destination **field** buffer (one field of a frame).
+/// `references` carries the reference **frame(s)**; each region's
+/// [`FieldParity`] selects which of a reference frame's two fields is
+/// sampled. Returns `(luma, cb, cr)` in field-order row-major layout
+/// ready for the residual-add / block-write path. Chroma vectors are
+/// derived per region via §7.6.3.7 [`scale_chroma`].
+///
+/// # Errors
+///
+/// Mirrors [`predict_field_picture_macroblock_planes`]: a missing
+/// reference for a requested direction or a reference geometry mismatch
+/// (the reference frame's height must be twice the field height).
+pub fn predict_field_picture_16x8_macroblock_planes(
+    dest: &FrameBuffer,
+    references: ReferenceFrames<'_>,
+    mb_col: usize,
+    mb_row: usize,
+    motion: FieldPicture16x8Motion,
+) -> InterResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let chroma_format = dest.chroma_format;
+    let (cw, ch) = chroma_mb_extent(chroma_format);
+    let luma_x = (mb_col * 16) as i32;
+    let luma_y = (mb_row * 16) as i32;
+    let chroma_x = (mb_col * cw) as i32;
+    let chroma_y = (mb_row * ch) as i32;
+
+    // §7.6.3.5 fallback for the (unreachable) skipped 16×8 case — a
+    // field-picture skip uses simple field prediction, never 16×8, so the
+    // `Skipped` arm is defensive only.
+    const ZERO_REGIONS: [(MotionVectorPel, FieldParity); 2] = [
+        (MotionVectorPel::new(0, 0), FieldParity::Top),
+        (MotionVectorPel::new(0, 0), FieldParity::Top),
+    ];
+
+    let scale = |mv: MotionVectorPel| -> MotionVectorPel {
+        let s = scale_chroma(mv.horizontal, mv.vertical, chroma_format);
+        MotionVectorPel::new(s.chroma_horiz, s.chroma_vert)
+    };
+
+    let one_direction = |reference: &FrameBuffer,
+                         regions: [(MotionVectorPel, FieldParity); 2]|
+     -> InterResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        if reference.chroma_format != dest.chroma_format
+            || reference.width != dest.width
+            || reference.height != dest.height.saturating_mul(2)
+        {
+            return Err(InterError::ReferenceGeometryMismatch);
+        }
+        let [(up_mv, up_par), (lo_mv, lo_par)] = regions;
+        let up_cmv = scale(up_mv);
+        let lo_cmv = scale(lo_mv);
+        let luma = predict_field_picture_16x8_component(
+            reference,
+            ColourComponent::Y,
+            luma_x,
+            luma_y,
+            16,
+            16,
+            (up_mv, up_par),
+            (lo_mv, lo_par),
+        );
+        let cb = predict_field_picture_16x8_component(
+            reference,
+            ColourComponent::Cb,
+            chroma_x,
+            chroma_y,
+            cw,
+            ch,
+            (up_cmv, up_par),
+            (lo_cmv, lo_par),
+        );
+        let cr = predict_field_picture_16x8_component(
+            reference,
+            ColourComponent::Cr,
+            chroma_x,
+            chroma_y,
+            cw,
+            ch,
+            (up_cmv, up_par),
+            (lo_cmv, lo_par),
+        );
+        Ok((luma, cb, cr))
+    };
+
+    match motion.direction() {
+        PredictionDirection::Forward | PredictionDirection::Skipped => {
+            let reference = references
+                .forward
+                .ok_or(InterError::MissingForwardReference)?;
+            let regions = motion.forward.unwrap_or(ZERO_REGIONS);
+            one_direction(reference, regions)
+        }
+        PredictionDirection::Backward => {
+            let reference = references
+                .backward
+                .ok_or(InterError::MissingBackwardReference)?;
+            let regions = motion.backward.unwrap_or(ZERO_REGIONS);
+            one_direction(reference, regions)
+        }
+        PredictionDirection::Bidirectional => {
+            let fwd_ref = references
+                .forward
+                .ok_or(InterError::MissingForwardReference)?;
+            let bwd_ref = references
+                .backward
+                .ok_or(InterError::MissingBackwardReference)?;
+            let (fy, fcb, fcr) = one_direction(fwd_ref, motion.forward.unwrap_or(ZERO_REGIONS))?;
+            let (by, bcb, bcr) = one_direction(bwd_ref, motion.backward.unwrap_or(ZERO_REGIONS))?;
+            let y = average_predictions(&fy, &by).unwrap_or(fy);
+            let cb = average_predictions(&fcb, &bcb).unwrap_or(fcb);
+            let cr = average_predictions(&fcr, &bcr).unwrap_or(fcr);
+            Ok((y, cb, cr))
+        }
+    }
+}
+
+/// Reconstruct one **field-picture 16×8-MC** P/B macroblock end-to-end
+/// into `dest` (one field of a frame), per the §7.6 pipeline (Table 7-13
+/// `16x8 MC` rows): form the two-region prediction planes
+/// ([`predict_field_picture_16x8_macroblock_planes`]), add the §A IDCT
+/// residual per coded block, and write out. There is no frame/field DCT
+/// distinction inside a field picture (§6.1.3 Table 6-19), so blocks
+/// place contiguously (`field_dct` fixed `false`).
+///
+/// Returns the number of blocks written (`block_count(chroma_format)`).
+///
+/// # Errors
+///
+/// Propagates [`predict_field_picture_16x8_macroblock_planes`] reference
+/// errors and rejects an out-of-range residual `block_index`.
+pub fn reconstruct_field_picture_16x8_macroblock(
+    dest: &mut FrameBuffer,
+    references: ReferenceFrames<'_>,
+    mb_col: usize,
+    mb_row: usize,
+    motion: FieldPicture16x8Motion,
+    residuals: &[ResidualBlock<'_>],
+) -> InterResult<usize> {
+    let chroma_format = dest.chroma_format;
+    let (luma_pred, cb_pred, cr_pred) =
+        predict_field_picture_16x8_macroblock_planes(dest, references, mb_col, mb_row, motion)?;
+
+    let block_count = crate::mpeg2_macroblock_blocks::block_count(chroma_format);
+    for r in residuals {
+        if (r.block_index as usize) >= block_count {
+            return Err(InterError::InvalidBlockIndex);
+        }
+    }
+
+    let mut written = 0usize;
+    for i in 0..block_count as u8 {
+        let f_pel = residuals
+            .iter()
+            .find(|r| r.block_index == i)
+            .map(|r| r.f_pel);
+        write_inter_block(
+            dest,
+            i,
+            chroma_format,
+            mb_col,
+            mb_row,
+            false,
+            &luma_pred,
+            &cb_pred,
+            &cr_pred,
+            f_pel,
+        )?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Resolve, for a §6.1.1.8 `block_index`, the colour component it
 /// belongs to and the width (in samples) of the macroblock region in
 /// that component's prediction plane (16 for luma; the chroma
@@ -1885,6 +2183,211 @@ mod tests {
                                 // Field line k → frame row 2k value, plus the +5 residual.
         for k in 0..16usize {
             let expected = ((2 * k * 4) as i32 + 5).clamp(0, 255) as u8;
+            assert_eq!(dest.y.get(0, k), Some(expected), "field line {k}");
+        }
+    }
+
+    // ---- field-picture 16×8 MC (§7.6.7.3, Table 7-13 `16x8 MC`) ----
+
+    #[test]
+    fn field_picture_16x8_both_regions_same_field_zero_mv_equals_simple_field() {
+        // Two 16×8 regions both selecting the top field with a zero MV is
+        // identical to a simple 16×16 field prediction reading even rows.
+        let cf = ChromaFormat::Yuv420;
+        let reference = vertical_ramp_frame();
+        let dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FieldPicture16x8Motion::forward(
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+        );
+        let (luma, _, _) =
+            predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
+        assert_eq!(luma.len(), 256);
+        for k in 0..16usize {
+            // field line k → frame row 2k (top parity) → value 2k*4.
+            let expected = (2 * k * 4) as u8;
+            for x in 0..16 {
+                assert_eq!(luma[k * 16 + x], expected, "line {k} col {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn field_picture_16x8_regions_select_independent_fields() {
+        // Upper region reads the TOP field, lower region the BOTTOM field,
+        // both zero MV. The upper eight lines must therefore match even
+        // frame rows and the lower eight match odd frame rows — the field
+        // origin of the lower region is field line 8, i.e. frame rows
+        // 2*8+1 = 17, 19, … (bottom parity).
+        let cf = ChromaFormat::Yuv420;
+        let reference = vertical_ramp_frame();
+        let dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FieldPicture16x8Motion::forward(
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+            (MotionVectorPel::new(0, 0), FieldParity::Bottom),
+        );
+        let (luma, _, _) =
+            predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
+        // Upper region: lines 0..8 → top field line k → frame row 2k.
+        for k in 0..8usize {
+            let expected = (2 * k * 4) as u8;
+            assert_eq!(luma[k * 16], expected, "upper line {k}");
+        }
+        // Lower region: lines 8..16 occupy field lines 8..16 of the BOTTOM
+        // field → frame row 2*line + 1.
+        for k in 8..16usize {
+            let frame_row = 2 * k + 1;
+            let expected = (frame_row * 4) as u8;
+            assert_eq!(luma[k * 16], expected, "lower line {k}");
+        }
+    }
+
+    #[test]
+    fn field_picture_16x8_lower_region_uses_lower_vector() {
+        // Distinct vectors per region: upper region zero MV, lower region a
+        // +2 half-sample vertical (one full field line) on the same top
+        // field. The lower region's line 8 should read top-field line 9
+        // (frame row 18) rather than line 8 (frame row 16).
+        let cf = ChromaFormat::Yuv420;
+        let reference = vertical_ramp_frame();
+        let dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FieldPicture16x8Motion::forward(
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+            (MotionVectorPel::new(0, 2), FieldParity::Top),
+        );
+        let (luma, _, _) =
+            predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
+        // Lower region line 8 = top field line (8 + 1) = frame row 18.
+        assert_eq!(luma[8 * 16], (18 * 4) as u8);
+        // Upper region line 0 unchanged = frame row 0.
+        assert_eq!(luma[0], 0);
+    }
+
+    #[test]
+    fn field_picture_16x8_chroma_region_split() {
+        // 4:2:0 chroma macroblock is 8×8; each 16×8 luma region maps to an
+        // 8×4 chroma region (§7.6.7.3). A reference whose top-field chroma
+        // ramps and bottom-field chroma is constant proves the upper four
+        // chroma lines come from the top field and the lower four from the
+        // bottom field when the regions select different fields.
+        let cf = ChromaFormat::Yuv420;
+        let mut reference = FrameBuffer::new(16, 32, cf);
+        for y in 0..32 {
+            for x in 0..16 {
+                reference.y.put_sample(x, y, 0);
+            }
+        }
+        for y in 0..16usize {
+            for x in 0..8 {
+                // top field (even frame rows) cb = field-line*2; bottom = 200.
+                reference.cb.put_sample(x, 2 * y, (y * 2) as u8);
+                reference.cb.put_sample(x, 2 * y + 1, 200);
+                reference.cr.put_sample(x, 2 * y, (y * 2) as u8);
+                reference.cr.put_sample(x, 2 * y + 1, 200);
+            }
+        }
+        let dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FieldPicture16x8Motion::forward(
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+            (MotionVectorPel::new(0, 0), FieldParity::Bottom),
+        );
+        let (_, cb, _) =
+            predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
+        assert_eq!(cb.len(), 64); // 8×8
+                                  // Upper four chroma lines: top field ramp = line*2.
+        for k in 0..4usize {
+            assert_eq!(cb[k * 8], (k * 2) as u8, "upper chroma line {k}");
+        }
+        // Lower four chroma lines: bottom field constant 200.
+        for k in 4..8usize {
+            assert_eq!(cb[k * 8], 200, "lower chroma line {k}");
+        }
+    }
+
+    #[test]
+    fn field_picture_16x8_bidirectional_averages() {
+        let cf = ChromaFormat::Yuv420;
+        let fwd = solid_frame(80, 16, 32, cf);
+        let bwd = solid_frame(160, 16, 32, cf);
+        let dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::bidirectional(&fwd, &bwd);
+        let motion = FieldPicture16x8Motion {
+            forward: Some([
+                (MotionVectorPel::new(0, 0), FieldParity::Top),
+                (MotionVectorPel::new(0, 0), FieldParity::Top),
+            ]),
+            backward: Some([
+                (MotionVectorPel::new(0, 0), FieldParity::Bottom),
+                (MotionVectorPel::new(0, 0), FieldParity::Bottom),
+            ]),
+        };
+        let (luma, _, _) =
+            predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
+        // (80 + 160) // 2 = 120.
+        assert!(luma.iter().all(|&p| p == 120));
+    }
+
+    #[test]
+    fn field_picture_16x8_geometry_mismatch_errors() {
+        let cf = ChromaFormat::Yuv420;
+        let reference = solid_frame(100, 16, 16, cf); // not twice the field height
+        let dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FieldPicture16x8Motion::forward(
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+        );
+        assert_eq!(
+            predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion),
+            Err(InterError::ReferenceGeometryMismatch)
+        );
+    }
+
+    #[test]
+    fn field_picture_16x8_missing_backward_reference_errors() {
+        let cf = ChromaFormat::Yuv420;
+        let dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames {
+            forward: None,
+            backward: None,
+        };
+        let motion = FieldPicture16x8Motion::backward(
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+        );
+        assert_eq!(
+            predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion),
+            Err(InterError::MissingBackwardReference)
+        );
+    }
+
+    #[test]
+    fn field_picture_16x8_reconstruct_adds_residual() {
+        let cf = ChromaFormat::Yuv420;
+        let reference = vertical_ramp_frame();
+        let mut dest = FrameBuffer::new(16, 16, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let motion = FieldPicture16x8Motion::forward(
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+            (MotionVectorPel::new(0, 0), FieldParity::Top),
+        );
+        let residual = [[3i16; 8]; 8];
+        let blocks: Vec<ResidualBlock<'_>> = (0..4)
+            .map(|i| ResidualBlock {
+                block_index: i,
+                f_pel: &residual,
+            })
+            .collect();
+        let written =
+            reconstruct_field_picture_16x8_macroblock(&mut dest, refs, 0, 0, motion, &blocks)
+                .unwrap();
+        assert_eq!(written, 6);
+        for k in 0..16usize {
+            let expected = ((2 * k * 4) as i32 + 3).clamp(0, 255) as u8;
             assert_eq!(dest.y.get(0, k), Some(expected), "field line {k}");
         }
     }

@@ -8,6 +8,24 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 358: **field-picture 16×8 motion compensation** (§7.6.7.3,
+  Table 7-13 `16x8 MC` rows) — the macroblock-level prediction /
+  reconstruction primitive. New
+  `inter_reconstruction::reconstruct_field_picture_16x8_macroblock` (+
+  `predict_field_picture_16x8_macroblock_planes`,
+  `FieldPicture16x8Motion`): 16×8 MC forms two separate predictions per
+  macroblock — `vector'[0]` predicts the upper 16×8 luminance region,
+  `vector'[1]` the lower — each carrying its own §6.3.17.2
+  `motion_vertical_field_select` flag so each region reads from its own
+  chosen reference field (§7.6.4 NOTE). Chroma regions are the full
+  component width × half its height per §7.6.7.3 (4:2:0 → 8×4, 4:2:2 →
+  8×8, 4:4:4 → 16×8); §7.6.3.7 chroma scaling, §7.6.7.2 `// 2`
+  bidirectional average, and §6.1.3 contiguous field-plane write-out
+  (no frame/field DCT distinction inside a field picture). 9 new unit
+  tests (region/field independence, distinct per-region vectors, chroma
+  region split, bidirectional average, geometry/reference errors,
+  residual add).
+
 - round 351: **field-picture simple field prediction** (§7.6.1 *"within
   a field picture all predictions are field predictions"*, Table 7-13
   `Field-based` rows) — driven end-to-end. New

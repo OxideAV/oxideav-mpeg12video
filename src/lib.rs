@@ -427,10 +427,12 @@ pub use idct::{
     F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
 };
 pub use inter_reconstruction::{
-    predict_field_based_macroblock_planes, predict_field_picture_macroblock_planes,
-    predict_frame_macroblock_planes, reconstruct_field_based_macroblock,
+    predict_field_based_macroblock_planes, predict_field_picture_16x8_macroblock_planes,
+    predict_field_picture_macroblock_planes, predict_frame_macroblock_planes,
+    reconstruct_field_based_macroblock, reconstruct_field_picture_16x8_macroblock,
     reconstruct_field_picture_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
-    FieldPictureMotion, FrameMotion, InterError, MotionVectorPel, ReferenceFrames, ResidualBlock,
+    FieldPicture16x8Motion, FieldPictureMotion, FrameMotion, InterError, MotionVectorPel,
+    ReferenceFrames, ResidualBlock,
 };
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
