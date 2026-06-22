@@ -111,9 +111,31 @@ The decode pipeline is implemented end-to-end at the module level:
   `0`, Bottom when `1`, §7.6.4). The chroma regions follow §7.6.7.3 (full
   component width × half height per region: 4:2:0 → 8×4, 4:2:2 → 8×8,
   4:4:4 → 16×8) and reuse the §7.6.7.2 bidirectional average + §6.1.3
-  field-plane write-out. The frame-picture 16×8-MC / dual-prime per-field
-  reference assembly and the field-picture dual-prime / B-field skip
-  inheritance are the remaining motion-compensation milestone.
+  field-plane write-out. **Dual-prime motion compensation** (§7.6.3.6 /
+  §7.6.7.4, Table 7-13 / 7-14 `Dual prime` rows) is now driven end-to-end
+  for **both** picture structures. The §7.6.3.6 opposite-parity vector
+  derivation (`dual_prime::derive_all`, Tables 7-12 `m` / 7-13 `e` + the
+  inline `dmvector[0..1]`) feeds two new MC drivers: the **field-picture**
+  path (`reconstruct_field_picture_dual_prime_macroblock`,
+  `FieldPictureDualPrimeMotion`) forms a same-parity prediction from the
+  decoded `vector'[0][0]` and an opposite-parity prediction from the
+  derived `vector'[2][0]`, averaging them per §7.6.7.4 `// 2`; the
+  **frame-picture** path (`reconstruct_frame_dual_prime_macroblock`,
+  `FrameDualPrimeMotion`) forms the four field predictions — top field from
+  top reference (`vector'[0]`) + bottom reference (`vector'[2]`), bottom
+  field from bottom reference (`vector'[0]`) + top reference (`vector'[3]`)
+  — averages each field, and interleaves the two into the frame at stride 2
+  (`top_field_first` selecting the Table 7-12 frame row). `decode_inter_picture`
+  / `decode_field_picture` dispatch a `Dual prime` macroblock to these
+  drivers (forward-only P-pictures, §7.6.3.6). The **field-picture B-field
+  skip** (§7.6.6.3) now inherits the previous coded macroblock's
+  forward/backward direction and motion vectors, forcing the same-parity
+  reference field, in `reconstruct_skipped_field_macroblock`. 16×8-MC stays
+  field-picture-only per the §7.6 constraint *"16x8 motion compensation
+  shall only be used with field pictures"*, so there is no frame-picture
+  16×8 path. The remaining motion-compensation surface is now driven
+  end-to-end; the open work is the GOP-level reference-management /
+  picture-reordering loop and runtime registration.
 - **Spatial-scalable lower-layer resampling**: the full §7.7.3 spatial-
   prediction pipeline — §7.7.3.4 deinterlace (`deinterlace`: the
   Table 7-19 vertical/temporal FIR, two-field aperture for Frame-Picture
@@ -158,14 +180,15 @@ verifying the parsers against known-good encoded streams.
   pipeline is driven through the per-picture module APIs
   (`decode_intra_picture` for I-pictures, `decode_inter_picture` for
   frame-picture P/B, `decode_field_picture` for field-picture P/B),
-  with the caller supplying the decoded reference frame(s). The
-  remaining motion-compensation gap is the **frame-picture 16×8-MC** and
-  the **dual-prime** per-field reference assembly (both frame- and
-  field-picture) plus the field-picture **B-field skipped-macroblock**
-  direction inheritance; the frame-picture frame-based **and**
-  field-based P/B reconstruction, the field-picture **simple field
-  prediction**, and the field-picture **16×8 motion compensation** are
-  all driven end-to-end.
+  with the caller supplying the decoded reference frame(s). All §7.6
+  motion-compensation prediction modes are now driven end-to-end: the
+  frame-picture frame-based **and** field-based P/B reconstruction, the
+  field-picture **simple field prediction**, the field-picture **16×8
+  motion compensation**, the **dual-prime** four-/two-field reconstruction
+  in both frame and field pictures (§7.6.3.6 / §7.6.7.4), and the
+  field-picture **B-field skipped-macroblock** §7.6.6.3 direction
+  inheritance. (Frame-picture 16×8-MC does not exist — §7.6 restricts 16×8
+  MC to field pictures.)
 - Scalability profiles and the spatial/temporal/SNR enhancement layers
   (parsed structurally; the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
   resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15 upsampling-

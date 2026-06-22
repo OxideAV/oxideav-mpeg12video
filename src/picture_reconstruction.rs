@@ -58,13 +58,14 @@
 //! Spec citations refer to **ISO/IEC 13818-2 (H.262)** §6.2.4 / §7.6
 //! and **ISO/IEC 11172-2** §2.4.
 
-use crate::dual_prime::FieldParity;
+use crate::dual_prime::{derive_all, DualPrimePicture, FieldParity};
 use crate::frame_assembly::{place_intra_macroblock, FrameBuffer, IntraPictureParams};
 use crate::inter_reconstruction::{
     reconstruct_field_based_macroblock, reconstruct_field_picture_16x8_macroblock,
-    reconstruct_field_picture_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
-    FieldPicture16x8Motion, FieldPictureMotion, FrameMotion, InterError, MotionVectorPel,
-    ReferenceFrames, ResidualBlock,
+    reconstruct_field_picture_dual_prime_macroblock, reconstruct_field_picture_macroblock,
+    reconstruct_frame_dual_prime_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
+    FieldPicture16x8Motion, FieldPictureDualPrimeMotion, FieldPictureMotion, FrameDualPrimeMotion,
+    FrameMotion, InterError, MotionVectorPel, ReferenceFrames, ResidualBlock,
 };
 use crate::macroblock_modes::PredictionType;
 use crate::picture_header::{PictureCodingType, PictureStructure};
@@ -97,6 +98,22 @@ pub struct PicturePredictionParams {
     pub f_code_bwd_vert: u8,
     /// `concealment_motion_vectors` (§6.3.11).
     pub concealment_motion_vectors: bool,
+    /// `top_field_first` (§6.3.11) — selects the Table 7-12 frame row for
+    /// the §7.6.3.6 dual-prime opposite-parity vector derivation. Ignored
+    /// for non-dual-prime macroblocks. Defaults to `true` via
+    /// [`PicturePredictionParams::with_top_field_first`] for callers that
+    /// don't use dual-prime.
+    pub top_field_first: bool,
+}
+
+impl PicturePredictionParams {
+    /// Return a copy of `self` with `top_field_first` overridden. A
+    /// convenience for callers that build the params positionally and only
+    /// need the dual-prime flag set.
+    pub fn with_top_field_first(mut self, top_field_first: bool) -> Self {
+        self.top_field_first = top_field_first;
+        self
+    }
 }
 
 /// Reconstruct a whole **P** or **B** picture into a [`FrameBuffer`],
@@ -202,6 +219,7 @@ pub fn decode_inter_picture(
                 &motion_record.reconstructed,
                 mb_width as usize,
                 geom.chroma_format,
+                params.top_field_first,
                 &mut previous_inter_direction,
             )?;
         }
@@ -225,6 +243,12 @@ struct InterDirection {
 /// [`reconstruct_inter_macroblock`]. Updates `previous_inter_direction`
 /// to this macroblock's reconstructed motion when it is a non-intra
 /// frame-based macroblock (so a following §7.6.6 B-skip can inherit it).
+// The §7.6 frame-picture macroblock reconstruction genuinely consumes
+// the destination, the references, both wire + reconstructed records, the
+// geometry (mb_width + chroma_format), the dual-prime `top_field_first`
+// flag and the carried B-skip direction — each is required by the spec
+// path; bundling them would just nest the same parameter list.
+#[allow(clippy::too_many_arguments)]
 fn reconstruct_one_macroblock(
     frame: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -232,6 +256,7 @@ fn reconstruct_one_macroblock(
     reconstructed: &ReconstructedMotionVectors,
     mb_width: usize,
     chroma_format: crate::sequence_extension::ChromaFormat,
+    top_field_first: bool,
     previous_inter_direction: &mut Option<InterDirection>,
 ) -> Result<usize> {
     if record.macroblock_type.macroblock_intra {
@@ -243,15 +268,16 @@ fn reconstruct_one_macroblock(
         return Ok(1); // exactly one macroblock placed
     }
 
-    // §7.6.5 / Table 7-14: the frame-picture prediction mode. Frame-based
-    // and Field-based are both driven; 16×8-MC and dual-prime
-    // (frame-picture) per-field reference assembly is a later milestone.
+    // §7.6.5 / Table 7-14: the frame-picture prediction mode. Frame-based,
+    // Field-based and (frame-picture) Dual-prime are all driven; 16×8-MC
+    // is forbidden in frame pictures (§7.6, "16x8 motion compensation
+    // shall only be used with field pictures").
     let prediction_type = record
         .motion_type
         .map(|mt| mt.prediction_type)
         .unwrap_or(PredictionType::FrameBased);
     match prediction_type {
-        PredictionType::FrameBased | PredictionType::FieldBased => {}
+        PredictionType::FrameBased | PredictionType::FieldBased | PredictionType::DualPrime => {}
         _ => return Err(crate::Error::from(InterError::UnsupportedPredictionMode)),
     }
 
@@ -278,23 +304,41 @@ fn reconstruct_one_macroblock(
         .collect();
 
     let motion = frame_motion_from_reconstructed(reconstructed);
-    if prediction_type == PredictionType::FieldBased {
-        let field_motion = field_based_motion_from_reconstructed(reconstructed);
-        reconstruct_field_based_macroblock(
-            frame,
-            references,
-            mb_col,
-            mb_row,
-            field_dct,
-            field_motion,
-            &residuals,
-        )
-        .map_err(crate::Error::from)?;
-    } else {
-        reconstruct_inter_macroblock(
-            frame, references, mb_col, mb_row, field_dct, motion, &residuals,
-        )
-        .map_err(crate::Error::from)?;
+    match prediction_type {
+        PredictionType::FieldBased => {
+            let field_motion = field_based_motion_from_reconstructed(reconstructed);
+            reconstruct_field_based_macroblock(
+                frame,
+                references,
+                mb_col,
+                mb_row,
+                field_dct,
+                field_motion,
+                &residuals,
+            )
+            .map_err(crate::Error::from)?;
+        }
+        PredictionType::DualPrime => {
+            // §7.6.2 / Table 7-14 `Dual prime`: forward-only P-picture
+            // four-field reconstruction. The forward reference is the
+            // most-recently-decoded reference frame.
+            let dp_motion =
+                frame_dual_prime_motion_from_reconstructed(record, reconstructed, top_field_first)
+                    .ok_or(InterError::UnsupportedPredictionMode)?;
+            let reference = references
+                .forward
+                .ok_or(InterError::MissingForwardReference)?;
+            reconstruct_frame_dual_prime_macroblock(
+                frame, reference, mb_col, mb_row, field_dct, dp_motion, &residuals,
+            )
+            .map_err(crate::Error::from)?;
+        }
+        _ => {
+            reconstruct_inter_macroblock(
+                frame, references, mb_col, mb_row, field_dct, motion, &residuals,
+            )
+            .map_err(crate::Error::from)?;
+        }
     }
 
     // §7.6.6.4 inheritance carries the whole-block (first-vector)
@@ -496,6 +540,87 @@ fn field_picture_16x8_motion_from_reconstructed(
     FieldPicture16x8Motion { forward, backward }
 }
 
+/// Extract the decoded same-parity forward luminance vector and the
+/// inline §6.2.5.2.1 `dmvector[0..1]` for a **dual-prime** macroblock
+/// from its reconstructed + wire records.
+///
+/// Dual-prime is always forward-only (Table 7-13 / 7-14): the single
+/// decoded vector is `reconstructed.forward[0]` (`vector'[0][0][1:0]`),
+/// and the `dmvector` pair lives on the matching wire
+/// [`crate::motion_vector::MotionVectorEntry`]. Returns `None` if either
+/// the decoded vector or the wire dmvector is absent (a malformed or
+/// non-dual-prime descriptor), letting the caller fall back to an error.
+fn dual_prime_inputs(
+    record: &MacroblockRecord,
+    reconstructed: &ReconstructedMotionVectors,
+) -> Option<(MotionVectorPel, i32, i32)> {
+    let decoded = reconstructed.forward.as_ref().and_then(|v| v.first())?;
+    let decoded_mv = MotionVectorPel::new(
+        decoded.horizontal.vector_prime,
+        decoded.vertical.vector_prime,
+    );
+    let entry = record
+        .motion_vectors_forward
+        .as_ref()
+        .and_then(|mvs| mvs.entries.first())?;
+    let dmv_h = entry.motion_vector.dmvector_horiz? as i32;
+    let dmv_v = entry.motion_vector.dmvector_vert? as i32;
+    Some((decoded_mv, dmv_h, dmv_v))
+}
+
+/// Build a [`FieldPictureDualPrimeMotion`] for a **field-picture**
+/// dual-prime macroblock (Table 7-13 `Dual prime` row).
+///
+/// The same-parity reference field is the one matching the field being
+/// decoded (`predicted_parity`); the §7.6.3.6 derivation
+/// ([`derive_all`]) produces the single opposite-parity vector
+/// `vector'[2][0][1:0]`. Returns `None` if the decoded vector / dmvector
+/// are missing or the derivation rejects the dmvector range.
+fn field_picture_dual_prime_motion_from_reconstructed(
+    record: &MacroblockRecord,
+    reconstructed: &ReconstructedMotionVectors,
+    predicted_parity: FieldParity,
+) -> Option<FieldPictureDualPrimeMotion> {
+    let (same_mv, dmv_h, dmv_v) = dual_prime_inputs(record, reconstructed)?;
+    let picture = DualPrimePicture::Field { predicted_parity };
+    let derived = derive_all(picture, same_mv.horizontal, same_mv.vertical, dmv_h, dmv_v).ok()?;
+    // Field picture yields exactly one derived vector (r = 2).
+    let opp = derived.first()?;
+    Some(FieldPictureDualPrimeMotion::new(
+        predicted_parity,
+        same_mv,
+        MotionVectorPel::new(opp.horiz, opp.vert),
+    ))
+}
+
+/// Build a [`FrameDualPrimeMotion`] for a **frame-picture** dual-prime
+/// macroblock (Table 7-14 `Dual prime` row).
+///
+/// The single decoded vector forms both fields' same-parity predictions;
+/// the §7.6.3.6 derivation ([`derive_all`]) produces `vector'[2]` (the
+/// top field's opposite-parity vector) and `vector'[3]` (the bottom
+/// field's). `top_field_first` selects the Table 7-12 frame row. Returns
+/// `None` if the decoded vector / dmvector are missing or the derivation
+/// rejects the dmvector range.
+fn frame_dual_prime_motion_from_reconstructed(
+    record: &MacroblockRecord,
+    reconstructed: &ReconstructedMotionVectors,
+    top_field_first: bool,
+) -> Option<FrameDualPrimeMotion> {
+    let (same_mv, dmv_h, dmv_v) = dual_prime_inputs(record, reconstructed)?;
+    let picture = DualPrimePicture::Frame { top_field_first };
+    let derived = derive_all(picture, same_mv.horizontal, same_mv.vertical, dmv_h, dmv_v).ok()?;
+    // Frame picture yields two derived vectors in r-index order: [r=2
+    // (top-field opposite), r=3 (bottom-field opposite)].
+    let top_opp = derived.first()?;
+    let bottom_opp = derived.get(1)?;
+    Some(FrameDualPrimeMotion::new(
+        same_mv,
+        MotionVectorPel::new(top_opp.horiz, top_opp.vert),
+        MotionVectorPel::new(bottom_opp.horiz, bottom_opp.vert),
+    ))
+}
+
 /// Reconstruct a whole **field picture** (one coded field of a frame)
 /// into a field-height [`FrameBuffer`], per the §7.6.1 rule that *within
 /// a field picture all predictions are field predictions*.
@@ -587,6 +712,12 @@ pub fn decode_field_picture(
             _ => FieldParity::Top,
         };
 
+        // §7.6.6.3 inheritance state: the previous coded macroblock's
+        // field-prediction direction + vectors, used by a following
+        // B-field skip. Reset per slice (a slice always starts with a
+        // coded macroblock, §6.3.16).
+        let mut previous_field_motion: Option<FieldPictureMotion> = None;
+
         for (record, motion_record) in walk.macroblocks.iter().zip(motion.records.iter()) {
             // §7.6.6: skipped macroblocks immediately preceding this one.
             let skipped = motion_record.skipped_before;
@@ -599,6 +730,7 @@ pub fn decode_field_picture(
                     mb_width as usize,
                     params.picture_coding_type,
                     selected_parity,
+                    previous_field_motion,
                 )?;
             }
 
@@ -609,6 +741,8 @@ pub fn decode_field_picture(
                 &motion_record.reconstructed,
                 mb_width as usize,
                 geom.chroma_format,
+                selected_parity,
+                &mut previous_field_motion,
             )?;
         }
 
@@ -621,6 +755,11 @@ pub fn decode_field_picture(
 /// Reconstruct one coded macroblock of a field picture — intra via
 /// [`place_intra_macroblock`], inter via
 /// [`reconstruct_field_picture_macroblock`].
+// Mirrors `reconstruct_one_macroblock`: every argument (dest, references,
+// wire + reconstructed records, geometry, the predicted-field parity for
+// dual-prime, and the carried B-field-skip direction) is required by the
+// §7.6 field-picture path.
+#[allow(clippy::too_many_arguments)]
 fn reconstruct_one_field_macroblock(
     field: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -628,15 +767,18 @@ fn reconstruct_one_field_macroblock(
     reconstructed: &ReconstructedMotionVectors,
     mb_width: usize,
     chroma_format: crate::sequence_extension::ChromaFormat,
+    predicted_parity: FieldParity,
+    previous_field_motion: &mut Option<FieldPictureMotion>,
 ) -> Result<usize> {
     if record.macroblock_type.macroblock_intra {
         place_intra_macroblock(field, record, mb_width, chroma_format);
+        // §7.6.6.3 rejects a B-field skip after an intra MB, so the
+        // carried direction is left unchanged (an intra MB has no motion).
         return Ok(1);
     }
 
-    // §7.6.5 / Table 7-13: simple field prediction (Field-based) and
-    // 16×8-MC are driven; dual-prime field-picture reconstruction is a
-    // later milestone.
+    // §7.6.5 / Table 7-13: simple field prediction (Field-based), 16×8-MC
+    // and Dual-prime are all driven.
     let prediction_type = record
         .motion_type
         .map(|mt| mt.prediction_type)
@@ -667,6 +809,10 @@ fn reconstruct_one_field_macroblock(
                 field, references, mb_col, mb_row, motion, &residuals,
             )
             .map_err(crate::Error::from)?;
+            // §7.6.6.3 inheritance: a following B-field skip uses this
+            // macroblock's forward/backward direction, same-parity field,
+            // and motion vectors.
+            *previous_field_motion = Some(motion);
         }
         PredictionType::SixteenByEight => {
             let motion = field_picture_16x8_motion_from_reconstructed(record, reconstructed);
@@ -674,18 +820,59 @@ fn reconstruct_one_field_macroblock(
                 field, references, mb_col, mb_row, motion, &residuals,
             )
             .map_err(crate::Error::from)?;
+            // §7.6.6.3 inheritance carries the simple-field direction +
+            // first-region vectors (a B skip is never 16×8 itself).
+            let inherit =
+                |regions: Option<[(MotionVectorPel, FieldParity); 2]>| regions.map(|r| r[0]);
+            *previous_field_motion = Some(FieldPictureMotion {
+                forward: inherit(motion.forward),
+                backward: inherit(motion.backward),
+            });
         }
-        // Field-picture dual-prime reconstruction is a later milestone.
+        PredictionType::DualPrime => {
+            // §7.6.2 / Table 7-13 `Dual prime`: forward-only P-field
+            // same-/opposite-parity reconstruction from the single
+            // reference frame.
+            let dp_motion = field_picture_dual_prime_motion_from_reconstructed(
+                record,
+                reconstructed,
+                predicted_parity,
+            )
+            .ok_or(InterError::UnsupportedPredictionMode)?;
+            let reference = references
+                .forward
+                .ok_or(InterError::MissingForwardReference)?;
+            reconstruct_field_picture_dual_prime_macroblock(
+                field, reference, mb_col, mb_row, dp_motion, &residuals,
+            )
+            .map_err(crate::Error::from)?;
+            // Dual-prime is P-only; a B skip can't follow it, so leave
+            // the inherited direction at its (None) default — but record a
+            // same-parity forward as a defensive value.
+            *previous_field_motion = Some(FieldPictureMotion::forward(
+                dp_motion.same_parity_vector,
+                predicted_parity,
+            ));
+        }
         _ => return Err(crate::Error::from(InterError::UnsupportedPredictionMode)),
     }
     Ok(1)
 }
 
-/// Reconstruct one §7.6.6 skipped macroblock of a field picture: a
-/// P-field-picture skip is a `(0, 0)` forward prediction reading the
-/// `selected_parity` field of the reference frame (§7.6.6.2 / §7.6.7.2).
-/// (B-field-picture skips are not yet driven and are unreachable for the
-/// P-field fixtures exercised here.)
+/// Reconstruct one §7.6.6 skipped macroblock of a field picture.
+///
+/// * **P-field (§7.6.6.1)** — prediction as Field-based with a `(0, 0)`
+///   motion vector, reading the field of the **same parity** as the
+///   field being predicted (`selected_parity`). The PMVs were reset to
+///   zero by the §7.6.3 motion walk's skip side-effect.
+/// * **B-field (§7.6.6.3)** — the prediction's direction
+///   (forward/backward/bidirectional) is the **same as the previous
+///   macroblock** (`previous_field_motion`), the prediction is made from
+///   the same-parity field, and the motion vectors are taken from the
+///   (unaffected) predictors carried in `previous_field_motion`. The
+///   reference field each direction reads is forced to `selected_parity`
+///   per the §7.6.6.3 same-parity rule (overriding the previous coded
+///   macroblock's own field-select bit).
 fn reconstruct_skipped_field_macroblock(
     field: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -693,17 +880,27 @@ fn reconstruct_skipped_field_macroblock(
     mb_width: usize,
     picture_coding_type: PictureCodingType,
     selected_parity: FieldParity,
+    previous_field_motion: Option<FieldPictureMotion>,
 ) -> Result<usize> {
     let mb_col = address % mb_width;
     let mb_row = address / mb_width;
-    // §7.6.6.2: a P-picture skip predicts from the co-located reference
-    // with a zero motion vector. In a field picture the reference field
-    // used is the same-parity field as the picture being decoded.
     let motion = match picture_coding_type {
         PictureCodingType::Bidirectional => {
-            // B-field-picture skip inheritance is a later milestone.
-            return Err(crate::Error::from(InterError::UnsupportedPredictionMode));
+            // §7.6.6.3: inherit the previous macroblock's direction +
+            // vectors, but force the same-parity reference field. A B-skip
+            // immediately following an intra macroblock is forbidden by
+            // §6.3.17.1 (the walk rejects it), so a present
+            // `previous_field_motion` is expected; default defensively to
+            // a zero-MV forward if it is somehow absent.
+            let prev = previous_field_motion.unwrap_or_else(|| {
+                FieldPictureMotion::forward(MotionVectorPel::new(0, 0), selected_parity)
+            });
+            FieldPictureMotion {
+                forward: prev.forward.map(|(mv, _)| (mv, selected_parity)),
+                backward: prev.backward.map(|(mv, _)| (mv, selected_parity)),
+            }
         }
+        // §7.6.6.1 P-field skip: zero MV, same-parity field.
         _ => FieldPictureMotion::forward(MotionVectorPel::new(0, 0), selected_parity),
     };
     reconstruct_field_picture_macroblock(field, references, mb_col, mb_row, motion, &[])

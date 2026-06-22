@@ -8,6 +8,48 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 359: **dual-prime motion compensation** (§7.6.3.6 / §7.6.7.4,
+  Table 7-13 / 7-14 `Dual prime` rows) — driven end-to-end for **both**
+  picture structures, plus the **field-picture B-field skipped-macroblock**
+  §7.6.6.3 direction inheritance. The §7.6.3.6 opposite-parity vector
+  derivation (`dual_prime::derive_all`, Tables 7-12 `m` / 7-13 `e` + the
+  inline `dmvector[0..1]`) feeds two new
+  `inter_reconstruction` MC drivers:
+  - `reconstruct_field_picture_dual_prime_macroblock` (+
+    `predict_field_picture_dual_prime_macroblock_planes`,
+    `FieldPictureDualPrimeMotion`) — forms a same-parity prediction from
+    the decoded `vector'[0][0]` and an opposite-parity prediction from the
+    derived `vector'[2][0]`, averaged per §7.6.7.4 `// 2`; full-extent
+    field-picture chroma.
+  - `reconstruct_frame_dual_prime_macroblock` (+
+    `predict_frame_dual_prime_macroblock_planes`, `FrameDualPrimeMotion`)
+    — forms the four field predictions (top field from top ref `vector'[0]`
+    + bottom ref `vector'[2]`; bottom field from bottom ref `vector'[0]` +
+    top ref `vector'[3]`), averages each field, and interleaves the two
+    into the frame at stride 2; `top_field_first` selects the Table 7-12
+    frame row.
+
+  `picture_reconstruction::PicturePredictionParams` gains a
+  `top_field_first` field (+ `with_top_field_first`); `decode_inter_picture`
+  / `decode_field_picture` now dispatch a `DualPrime` macroblock to the new
+  drivers (forward-only P-pictures), with
+  `frame_dual_prime_motion_from_reconstructed` /
+  `field_picture_dual_prime_motion_from_reconstructed` building the motion
+  from the reconstructed + wire records. `reconstruct_skipped_field_macroblock`
+  now reconstructs a §7.6.6.3 B-field skip by inheriting the previous coded
+  macroblock's direction + vectors and forcing the same-parity reference
+  field (state threaded per slice). 16×8-MC stays field-picture-only per the
+  §7.6 *"16x8 motion compensation shall only be used with field pictures"*
+  constraint — there is no frame-picture 16×8 path. 8 new
+  `inter_reconstruction` unit tests (field/frame same-/opposite-parity
+  averaging, distinct-opposite-vector field divergence, geometry errors,
+  residual add) + 3 new integration tests (`tests/field_picture_decode.rs`
+  field-picture dual-prime + B-field skip inheritance;
+  `tests/inter_picture_decode.rs` frame-picture dual-prime four-field
+  interleave) decode hand-built `Dual prime` slices through the full §6.2.5
+  parse + §7.6.3 + §7.6.4 pipeline. All §7.6 prediction modes are now driven
+  end-to-end.
+
 - round 358: **field-picture 16×8 motion compensation** (§7.6.7.3,
   Table 7-13 `16x8 MC` rows) — the macroblock-level prediction /
   reconstruction primitive. New

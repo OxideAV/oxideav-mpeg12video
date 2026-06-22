@@ -78,6 +78,7 @@ fn p_params() -> PicturePredictionParams {
         f_code_bwd_horiz: 1,
         f_code_bwd_vert: 1,
         concealment_motion_vectors: false,
+        top_field_first: true,
     }
 }
 
@@ -403,6 +404,68 @@ fn p_picture_skipped_macroblock_copies_reference() {
     for y in 0..16 {
         for x in 16..32 {
             assert_eq!(frame.y.get(x, y), Some(77), "skipped MB luma ({x},{y})");
+        }
+    }
+}
+
+#[test]
+fn p_picture_frame_dual_prime_averages_four_field_predictions() {
+    // §7.6.2 / Table 7-14 `Dual prime`: a P frame-picture macroblock with
+    // `frame_pred_frame_dct == 0` and `frame_motion_type == 11` (Dual
+    // prime). One motion vector is decoded; `dmv == 1` so each component
+    // is followed by a dmvector and NO motion_vertical_field_select bit.
+    //
+    // Each predicted field averages a same-parity and an opposite-parity
+    // prediction (§7.6.7.4); with a zero decoded vector and zero dmvector
+    // the §7.6.3.6 derivation gives small vertical e-offsets that round to
+    // the same field lines, so on a parity-split reference (top field = 60,
+    // bottom field = 180) the top predicted field = avg(60, 180) = 120 and
+    // the bottom predicted field = avg(180, 60) = 120 — the whole 16×16
+    // frame is 120, formed through the four-field interleave path.
+    let geom = IntraPictureParams {
+        frame_pred_frame_dct: false,
+        ..geometry_16x16()
+    };
+    let params = PicturePredictionParams {
+        geometry: geom,
+        ..p_params()
+    }
+    .with_top_field_first(true);
+
+    let mut bw = BitWriter::new();
+    write_slice_header(&mut bw, 8);
+    bw.write_u32(0b1, 1); // address_increment = 1
+    bw.write_u32(0b001, 3); // macroblock_type "MC, Not Coded" (forward)
+    bw.write_u32(0b11, 2); // frame_motion_type = Dual prime
+    bw.write_u32(0b1, 1); // motion_code horiz = 0
+    bw.write_u32(0b0, 1); // dmvector[0] = 0
+    bw.write_u32(0b1, 1); // motion_code vert = 0
+    bw.write_u32(0b0, 1); // dmvector[1] = 0
+    let picture = append_stop(bw);
+
+    // Parity-split reference: even (top-field) rows 60, odd (bottom) 180.
+    let reference = {
+        let mut f = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        for y in 0..16usize {
+            let v = if y % 2 == 0 { 60 } else { 180 };
+            for x in 0..16 {
+                f.y.put_sample(x, y, v);
+            }
+        }
+        for y in 0..8 {
+            for x in 0..8 {
+                f.cb.put_sample(x, y, 0);
+                f.cr.put_sample(x, y, 0);
+            }
+        }
+        f
+    };
+    let refs = ReferenceFrames::forward_only(&reference);
+    let (frame, placed) = decode_inter_picture(&picture, params, refs).unwrap();
+    assert_eq!(placed, 1, "one frame dual-prime macroblock");
+    for y in 0..16 {
+        for x in 0..16 {
+            assert_eq!(frame.y.get(x, y), Some(120), "dual-prime ({x},{y})");
         }
     }
 }

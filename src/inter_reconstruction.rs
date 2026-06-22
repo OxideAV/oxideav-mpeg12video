@@ -1326,6 +1326,482 @@ pub fn reconstruct_field_picture_16x8_macroblock(
     Ok(written)
 }
 
+/// The two same-/opposite-parity luminance motion vectors **and** their
+/// selected reference fields for one **field-picture dual-prime**
+/// macroblock (Table 7-13 `Dual prime` row).
+///
+/// In dual-prime prediction only one field motion vector
+/// (`vector'[0][0][1:0]`) is decoded from the bitstream; it forms the
+/// same-parity prediction, reading the reference field whose parity
+/// matches the field being predicted. The §7.6.3.6 arithmetic
+/// ([`crate::dual_prime::derive_all`]) derives a second vector
+/// (`vector'[2][0][1:0]`) that forms the opposite-parity prediction,
+/// reading the reference field of the **opposite** parity. The two
+/// predictions are averaged per §7.6.7.4.
+///
+/// Dual-prime is only ever a **forward** P-picture prediction (§7.6.3.6,
+/// Table 7-13), so there is no backward direction. The destination is
+/// one field of a frame, so each prediction is a single 16×16 field block
+/// read contiguously from its chosen [`FieldReference`] — there is no
+/// frame/field interleave (§6.1.3 Table 6-19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldPictureDualPrimeMotion {
+    /// Same-parity luminance vector `vector'[0][0][1:0]` (decoded from
+    /// the bitstream), reading the reference field of `same_parity`.
+    pub same_parity_vector: MotionVectorPel,
+    /// Opposite-parity luminance vector `vector'[2][0][1:0]` (derived by
+    /// §7.6.3.6), reading the reference field of the opposite parity.
+    pub opposite_parity_vector: MotionVectorPel,
+    /// Parity of the reference field the same-parity prediction reads —
+    /// equal to the parity of the field being predicted. The opposite-
+    /// parity prediction reads `same_parity.opposite()`.
+    pub same_parity: FieldParity,
+}
+
+impl FieldPictureDualPrimeMotion {
+    /// A dual-prime motion predicting a field of parity `same_parity`
+    /// from the same-parity reference field (with `same_parity_vector`)
+    /// and the opposite-parity reference field (with
+    /// `opposite_parity_vector`).
+    pub fn new(
+        same_parity: FieldParity,
+        same_parity_vector: MotionVectorPel,
+        opposite_parity_vector: MotionVectorPel,
+    ) -> Self {
+        Self {
+            same_parity_vector,
+            opposite_parity_vector,
+            same_parity,
+        }
+    }
+}
+
+/// Form the full per-component prediction planes (luma, cb, cr) for one
+/// **field-picture dual-prime** macroblock and combine the same-parity
+/// and opposite-parity predictions per §7.6.7.4 (the `// 2` average).
+///
+/// `dest` is the destination **field** buffer (one field of a frame; its
+/// `height` is the field height). `reference` is the most-recently
+/// decoded reference **frame**, whose two fields are read independently
+/// — the same-parity field with `motion.same_parity_vector`, the
+/// opposite-parity field with `motion.opposite_parity_vector`. Both
+/// predictions are field blocks read contiguously (no frame/field
+/// interleave inside a field picture).
+///
+/// Per §7.6.7.4 the field-picture chroma prediction for each region is
+/// the full component extent (8×8 / 8×16 / 16×16 for 4:2:0 / 4:2:2 /
+/// 4:4:4), matching [`chroma_mb_extent`].
+///
+/// # Errors
+///
+/// [`InterError::ReferenceGeometryMismatch`] when the reference frame's
+/// format / width differs from `dest` or its height is not twice the
+/// field height (§6.1.1).
+pub fn predict_field_picture_dual_prime_macroblock_planes(
+    dest: &FrameBuffer,
+    reference: &FrameBuffer,
+    mb_col: usize,
+    mb_row: usize,
+    motion: FieldPictureDualPrimeMotion,
+) -> InterResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let chroma_format = dest.chroma_format;
+    let (cw, ch) = chroma_mb_extent(chroma_format);
+    let luma_x = (mb_col * 16) as i32;
+    let luma_y = (mb_row * 16) as i32;
+    let chroma_x = (mb_col * cw) as i32;
+    let chroma_y = (mb_row * ch) as i32;
+
+    if reference.chroma_format != dest.chroma_format
+        || reference.width != dest.width
+        || reference.height != dest.height.saturating_mul(2)
+    {
+        return Err(InterError::ReferenceGeometryMismatch);
+    }
+
+    // One same-/opposite-parity prediction: a single 16×16 (luma) field
+    // block read from `parity`'s reference field with the luma vector,
+    // and the §7.6.3.7-scaled chroma blocks.
+    let one_field = |parity: FieldParity, mv: MotionVectorPel| -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let scaled = scale_chroma(mv.horizontal, mv.vertical, chroma_format);
+        let chroma_mv = MotionVectorPel::new(scaled.chroma_horiz, scaled.chroma_vert);
+        let luma = predict_field_picture_component(
+            reference,
+            ColourComponent::Y,
+            parity,
+            luma_x,
+            luma_y,
+            16,
+            16,
+            mv,
+        );
+        let cb = predict_field_picture_component(
+            reference,
+            ColourComponent::Cb,
+            parity,
+            chroma_x,
+            chroma_y,
+            cw,
+            ch,
+            chroma_mv,
+        );
+        let cr = predict_field_picture_component(
+            reference,
+            ColourComponent::Cr,
+            parity,
+            chroma_x,
+            chroma_y,
+            cw,
+            ch,
+            chroma_mv,
+        );
+        (luma, cb, cr)
+    };
+
+    let (sy, scb, scr) = one_field(motion.same_parity, motion.same_parity_vector);
+    let (oy, ocb, ocr) = one_field(motion.same_parity.opposite(), motion.opposite_parity_vector);
+    // §7.6.7.4: average the same-parity and opposite-parity predictions.
+    let y = average_predictions(&sy, &oy).unwrap_or(sy);
+    let cb = average_predictions(&scb, &ocb).unwrap_or(scb);
+    let cr = average_predictions(&scr, &ocr).unwrap_or(scr);
+    Ok((y, cb, cr))
+}
+
+/// Reconstruct one **field-picture dual-prime** P macroblock end-to-end
+/// into `dest` (one field of a frame), per the §7.6 pipeline (Table 7-13
+/// `Dual prime` row): form the same-/opposite-parity prediction planes
+/// ([`predict_field_picture_dual_prime_macroblock_planes`]), then add the
+/// §A IDCT residual per coded block and write out.
+///
+/// There is no frame/field DCT distinction inside a field picture
+/// (§6.1.3 Table 6-19), so blocks place contiguously; `field_dct` is
+/// therefore fixed `false` for the write-out.
+///
+/// Returns the number of blocks written (`block_count(chroma_format)`).
+///
+/// # Errors
+///
+/// Propagates [`predict_field_picture_dual_prime_macroblock_planes`]
+/// reference errors and rejects an out-of-range residual `block_index`.
+pub fn reconstruct_field_picture_dual_prime_macroblock(
+    dest: &mut FrameBuffer,
+    reference: &FrameBuffer,
+    mb_col: usize,
+    mb_row: usize,
+    motion: FieldPictureDualPrimeMotion,
+    residuals: &[ResidualBlock<'_>],
+) -> InterResult<usize> {
+    let chroma_format = dest.chroma_format;
+    let (luma_pred, cb_pred, cr_pred) = predict_field_picture_dual_prime_macroblock_planes(
+        dest, reference, mb_col, mb_row, motion,
+    )?;
+
+    let block_count = crate::mpeg2_macroblock_blocks::block_count(chroma_format);
+    for r in residuals {
+        if (r.block_index as usize) >= block_count {
+            return Err(InterError::InvalidBlockIndex);
+        }
+    }
+
+    let mut written = 0usize;
+    for i in 0..block_count as u8 {
+        let f_pel = residuals
+            .iter()
+            .find(|r| r.block_index == i)
+            .map(|r| r.f_pel);
+        write_inter_block(
+            dest,
+            i,
+            chroma_format,
+            mb_col,
+            mb_row,
+            false,
+            &luma_pred,
+            &cb_pred,
+            &cr_pred,
+            f_pel,
+        )?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// The same-/opposite-parity luminance motion vectors for one
+/// **frame-picture dual-prime** macroblock (Table 7-14 `Dual prime`
+/// row).
+///
+/// A frame-picture dual-prime macroblock forms **four** field predictions
+/// (§7.6.2, §7.6.7.4): the predicted frame's top field is predicted from
+/// the top reference field (same parity, `vector'[0][0]`) and the bottom
+/// reference field (opposite parity, derived `vector'[2][0]`); the
+/// predicted frame's bottom field is predicted from the bottom reference
+/// field (same parity, `vector'[0][0]`) and the top reference field
+/// (opposite parity, derived `vector'[3][0]`). The two predictions of
+/// each field are averaged per §7.6.7.4, then the two fields are
+/// interleaved into the frame.
+///
+/// `vector'[0][0]` is the single decoded vector, shared by both fields'
+/// same-parity predictions. `top_field_opposite` is `vector'[2][0]`
+/// (derived for the top field's bottom-reference prediction);
+/// `bottom_field_opposite` is `vector'[3][0]` (derived for the bottom
+/// field's top-reference prediction). All vectors carry their vertical
+/// component in field-sample units.
+///
+/// Dual-prime is forward-only (P-picture), so there is no backward
+/// direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameDualPrimeMotion {
+    /// The decoded same-parity vector `vector'[0][0][1:0]`, used for both
+    /// the top field's top-reference prediction and the bottom field's
+    /// bottom-reference prediction.
+    pub same_parity_vector: MotionVectorPel,
+    /// The §7.6.3.6-derived `vector'[2][0][1:0]` — the top field's
+    /// opposite-parity (bottom-reference) prediction.
+    pub top_field_opposite_vector: MotionVectorPel,
+    /// The §7.6.3.6-derived `vector'[3][0][1:0]` — the bottom field's
+    /// opposite-parity (top-reference) prediction.
+    pub bottom_field_opposite_vector: MotionVectorPel,
+}
+
+impl FrameDualPrimeMotion {
+    /// A frame-picture dual-prime motion from the decoded same-parity
+    /// vector and the two §7.6.3.6-derived opposite-parity vectors.
+    pub fn new(
+        same_parity_vector: MotionVectorPel,
+        top_field_opposite_vector: MotionVectorPel,
+        bottom_field_opposite_vector: MotionVectorPel,
+    ) -> Self {
+        Self {
+            same_parity_vector,
+            top_field_opposite_vector,
+            bottom_field_opposite_vector,
+        }
+    }
+}
+
+/// Form one component's full macroblock prediction plane for a
+/// **frame-picture dual-prime** prediction, in **frame** order.
+///
+/// Each of the macroblock's two fields is predicted by averaging its
+/// same-parity and opposite-parity field predictions (§7.6.7.4), then the
+/// two fields are interleaved back into the frame at stride 2 (even rows
+/// from the top field, odd rows from the bottom field) exactly as the
+/// frame-picture field-based path does.
+///
+/// `same_mv` is the shared decoded vector; `(top_opp_mv,
+/// bottom_opp_mv)` are the derived opposite-parity vectors for the top
+/// and bottom predicted fields respectively. The motion vectors are in
+/// the component's own sample units (luma for `Y`; §7.6.3.7-scaled for
+/// chroma). `(base_x, base_y)` is the macroblock's top-left **frame**
+/// coordinate in this component's plane.
+#[allow(clippy::too_many_arguments)]
+fn predict_frame_dual_prime_component(
+    reference: &FrameBuffer,
+    component: ColourComponent,
+    base_x: i32,
+    base_y: i32,
+    width: usize,
+    height: usize,
+    same_mv: MotionVectorPel,
+    top_opp_mv: MotionVectorPel,
+    bottom_opp_mv: MotionVectorPel,
+) -> Vec<u8> {
+    let (data, pw, ph) = component_plane(reference, component);
+    let Some(plane) = ReferencePlane::new(data, pw, ph) else {
+        return vec![0u8; width * height];
+    };
+    let half = height / 2;
+    let Some(size) = BlockSize::new(width, half) else {
+        return vec![0u8; width * height];
+    };
+    let field_top_line = base_y / 2;
+    let mut out = vec![0u8; width * height];
+
+    // Read one parity's field block at the macroblock's field origin.
+    let read_field = |parity: FieldParity, mv: MotionVectorPel| -> Option<Vec<u8>> {
+        let field = FieldReference::new(plane, parity.index())?;
+        Some(predict_field_block(
+            field,
+            base_x,
+            field_top_line,
+            size,
+            mv.horizontal,
+            mv.vertical,
+        ))
+    };
+
+    // Predicted top field (even frame rows): same parity = top reference
+    // with the decoded vector, opposite parity = bottom reference with
+    // vector'[2]. §7.6.7.4 averages them.
+    let top_same = read_field(FieldParity::Top, same_mv);
+    let top_opp = read_field(FieldParity::Bottom, top_opp_mv);
+    if let (Some(s), Some(o)) = (top_same.as_ref(), top_opp.as_ref()) {
+        let avg = average_predictions(s, o);
+        let top = avg.as_deref().unwrap_or(s.as_slice());
+        for r in 0..half {
+            let frame_row = 2 * r;
+            out[frame_row * width..frame_row * width + width]
+                .copy_from_slice(&top[r * width..r * width + width]);
+        }
+    }
+
+    // Predicted bottom field (odd frame rows): same parity = bottom
+    // reference with the decoded vector, opposite parity = top reference
+    // with vector'[3]. §7.6.7.4 averages them.
+    let bottom_same = read_field(FieldParity::Bottom, same_mv);
+    let bottom_opp = read_field(FieldParity::Top, bottom_opp_mv);
+    if let (Some(s), Some(o)) = (bottom_same.as_ref(), bottom_opp.as_ref()) {
+        let avg = average_predictions(s, o);
+        let bottom = avg.as_deref().unwrap_or(s.as_slice());
+        for r in 0..half {
+            let frame_row = 2 * r + 1;
+            out[frame_row * width..frame_row * width + width]
+                .copy_from_slice(&bottom[r * width..r * width + width]);
+        }
+    }
+    out
+}
+
+/// Form the full per-component prediction planes (luma, cb, cr) for one
+/// **frame-picture dual-prime** macroblock per §7.6.7.4, returned in
+/// frame-order row-major layout (16×16 luma; chroma sized by
+/// [`chroma_mb_extent`]) ready for the same residual-add / block-write
+/// path the frame-based driver uses.
+///
+/// The §7.6.7.4 frame-picture chroma prediction for each field is the
+/// full component width × half height; interleaved over the two fields
+/// it fills the [`chroma_mb_extent`] block, so the returned chroma
+/// buffers match the frame-based chroma extents and need no special
+/// handling downstream.
+///
+/// # Errors
+///
+/// [`InterError::ReferenceGeometryMismatch`] when the reference frame's
+/// geometry differs from `dest`.
+pub fn predict_frame_dual_prime_macroblock_planes(
+    dest: &FrameBuffer,
+    reference: &FrameBuffer,
+    mb_col: usize,
+    mb_row: usize,
+    motion: FrameDualPrimeMotion,
+) -> InterResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let chroma_format = dest.chroma_format;
+    let (cw, ch) = chroma_mb_extent(chroma_format);
+    let luma_x = (mb_col * 16) as i32;
+    let luma_y = (mb_row * 16) as i32;
+    let chroma_x = (mb_col * cw) as i32;
+    let chroma_y = (mb_row * ch) as i32;
+
+    if reference.width != dest.width
+        || reference.height != dest.height
+        || reference.chroma_format != dest.chroma_format
+    {
+        return Err(InterError::ReferenceGeometryMismatch);
+    }
+
+    // §7.6.3.7 chroma scaling is applied to each field vector
+    // independently (the vertical component stays in field-sample units
+    // of the chroma field).
+    let scale = |mv: MotionVectorPel| {
+        let s = scale_chroma(mv.horizontal, mv.vertical, chroma_format);
+        MotionVectorPel::new(s.chroma_horiz, s.chroma_vert)
+    };
+    let same_cmv = scale(motion.same_parity_vector);
+    let top_opp_cmv = scale(motion.top_field_opposite_vector);
+    let bottom_opp_cmv = scale(motion.bottom_field_opposite_vector);
+
+    let luma = predict_frame_dual_prime_component(
+        reference,
+        ColourComponent::Y,
+        luma_x,
+        luma_y,
+        16,
+        16,
+        motion.same_parity_vector,
+        motion.top_field_opposite_vector,
+        motion.bottom_field_opposite_vector,
+    );
+    let cb = predict_frame_dual_prime_component(
+        reference,
+        ColourComponent::Cb,
+        chroma_x,
+        chroma_y,
+        cw,
+        ch,
+        same_cmv,
+        top_opp_cmv,
+        bottom_opp_cmv,
+    );
+    let cr = predict_frame_dual_prime_component(
+        reference,
+        ColourComponent::Cr,
+        chroma_x,
+        chroma_y,
+        cw,
+        ch,
+        same_cmv,
+        top_opp_cmv,
+        bottom_opp_cmv,
+    );
+    Ok((luma, cb, cr))
+}
+
+/// Reconstruct one **frame-picture dual-prime** P macroblock end-to-end
+/// into `dest`, per the §7.6 pipeline (Table 7-14 `Dual prime` row): form
+/// the four-field-prediction planes
+/// ([`predict_frame_dual_prime_macroblock_planes`]), add the §A IDCT
+/// residual per coded block, and write out with the §6.1.3 frame/field
+/// DCT line organisation honoured (the planes are returned in frame-row
+/// order, so `field_dct` threads straight into [`write_inter_block`]).
+///
+/// Returns the number of blocks written (`block_count(chroma_format)`).
+///
+/// # Errors
+///
+/// Propagates [`predict_frame_dual_prime_macroblock_planes`] reference
+/// errors and rejects an out-of-range residual `block_index`.
+pub fn reconstruct_frame_dual_prime_macroblock(
+    dest: &mut FrameBuffer,
+    reference: &FrameBuffer,
+    mb_col: usize,
+    mb_row: usize,
+    field_dct: bool,
+    motion: FrameDualPrimeMotion,
+    residuals: &[ResidualBlock<'_>],
+) -> InterResult<usize> {
+    let chroma_format = dest.chroma_format;
+    let (luma_pred, cb_pred, cr_pred) =
+        predict_frame_dual_prime_macroblock_planes(dest, reference, mb_col, mb_row, motion)?;
+
+    let block_count = crate::mpeg2_macroblock_blocks::block_count(chroma_format);
+    for r in residuals {
+        if (r.block_index as usize) >= block_count {
+            return Err(InterError::InvalidBlockIndex);
+        }
+    }
+
+    let mut written = 0usize;
+    for i in 0..block_count as u8 {
+        let f_pel = residuals
+            .iter()
+            .find(|r| r.block_index == i)
+            .map(|r| r.f_pel);
+        write_inter_block(
+            dest,
+            i,
+            chroma_format,
+            mb_col,
+            mb_row,
+            field_dct,
+            &luma_pred,
+            &cb_pred,
+            &cr_pred,
+            f_pel,
+        )?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Resolve, for a §6.1.1.8 `block_index`, the colour component it
 /// belongs to and the width (in samples) of the macroblock region in
 /// that component's prediction plane (16 for luma; the chroma
@@ -2389,6 +2865,247 @@ mod tests {
         for k in 0..16usize {
             let expected = ((2 * k * 4) as i32 + 3).clamp(0, 255) as u8;
             assert_eq!(dest.y.get(0, k), Some(expected), "field line {k}");
+        }
+    }
+
+    // ---- dual-prime prediction (§7.6.3.6 / §7.6.7.4, Table 7-13 / 7-14
+    //      `Dual prime`) ----
+
+    /// A 16×32 4:2:0 reference frame whose top field (even frame rows) is
+    /// a solid `top` and whose bottom field (odd frame rows) is a solid
+    /// `bottom`, so a dual-prime same-/opposite-parity average is directly
+    /// observable from the two field constants.
+    fn parity_split_frame(top: u8, bottom: u8) -> FrameBuffer {
+        let cf = ChromaFormat::Yuv420;
+        let mut f = FrameBuffer::new(16, 32, cf);
+        for y in 0..32usize {
+            let v = if y % 2 == 0 { top } else { bottom };
+            for x in 0..16 {
+                f.y.put_sample(x, y, v);
+            }
+        }
+        for y in 0..16usize {
+            for x in 0..8 {
+                f.cb.put_sample(x, y, 0);
+                f.cr.put_sample(x, y, 0);
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn field_picture_dual_prime_averages_same_and_opposite_parity_fields() {
+        // Predicting the top field with a zero same-parity vector and a
+        // zero opposite-parity vector reads the top field (80) and the
+        // bottom field (160); §7.6.7.4 averages them: (80 + 160)//2 = 120.
+        let reference = parity_split_frame(80, 160);
+        let dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        let motion = FieldPictureDualPrimeMotion::new(
+            FieldParity::Top,
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+        );
+        let (luma, _, _) =
+            predict_field_picture_dual_prime_macroblock_planes(&dest, &reference, 0, 0, motion)
+                .unwrap();
+        assert_eq!(luma.len(), 256);
+        assert!(luma.iter().all(|&p| p == 120), "dual-prime average");
+    }
+
+    #[test]
+    fn field_picture_dual_prime_bottom_field_swaps_parities() {
+        // Predicting the bottom field: same parity = bottom field (160),
+        // opposite parity = top field (80). The average is identical
+        // (120) but reading from the swapped parities proves the
+        // same/opposite selection follows the predicted field's parity.
+        let reference = parity_split_frame(80, 160);
+        let dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        let motion = FieldPictureDualPrimeMotion::new(
+            FieldParity::Bottom,
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+        );
+        let (luma, _, _) =
+            predict_field_picture_dual_prime_macroblock_planes(&dest, &reference, 0, 0, motion)
+                .unwrap();
+        assert!(luma.iter().all(|&p| p == 120));
+    }
+
+    #[test]
+    fn field_picture_dual_prime_geometry_mismatch_errors() {
+        let reference = solid_frame(100, 16, 16, ChromaFormat::Yuv420);
+        let dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        let motion = FieldPictureDualPrimeMotion::new(
+            FieldParity::Top,
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+        );
+        assert_eq!(
+            predict_field_picture_dual_prime_macroblock_planes(&dest, &reference, 0, 0, motion),
+            Err(InterError::ReferenceGeometryMismatch)
+        );
+    }
+
+    #[test]
+    fn field_picture_dual_prime_reconstruct_adds_residual() {
+        let reference = parity_split_frame(80, 160);
+        let mut dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        let motion = FieldPictureDualPrimeMotion::new(
+            FieldParity::Top,
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+        );
+        let residual = [[5i16; 8]; 8];
+        let blocks: Vec<ResidualBlock<'_>> = (0..4)
+            .map(|i| ResidualBlock {
+                block_index: i,
+                f_pel: &residual,
+            })
+            .collect();
+        let written = reconstruct_field_picture_dual_prime_macroblock(
+            &mut dest, &reference, 0, 0, motion, &blocks,
+        )
+        .unwrap();
+        assert_eq!(written, 6);
+        // Each luma sample = average(120) + 5 residual = 125.
+        for k in 0..16usize {
+            assert_eq!(dest.y.get(0, k), Some(125), "field line {k}");
+        }
+    }
+
+    /// A 16×16 4:2:0 frame whose top field (even rows) is `top` and bottom
+    /// field (odd rows) is `bottom` — the frame-picture analogue of
+    /// [`parity_split_frame`] for the dual-prime four-field interleave.
+    fn parity_split_frame16(top: u8, bottom: u8) -> FrameBuffer {
+        let mut f = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        for y in 0..16usize {
+            let v = if y % 2 == 0 { top } else { bottom };
+            for x in 0..16 {
+                f.y.put_sample(x, y, v);
+            }
+        }
+        for y in 0..8 {
+            for x in 0..8 {
+                f.cb.put_sample(x, y, 0);
+                f.cr.put_sample(x, y, 0);
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn frame_dual_prime_zero_vectors_interleave_field_averages() {
+        // Frame picture: each field of the predicted frame averages its
+        // same-parity and opposite-parity references. With all-zero
+        // vectors the top field = avg(top=80, bottom=160) = 120 and the
+        // bottom field = avg(bottom=160, top=80) = 120, so the whole
+        // 16×16 frame prediction is 120 — but the values come from the
+        // four-field interleave path, not a single block read.
+        let reference = parity_split_frame16(80, 160);
+        let dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        let motion = FrameDualPrimeMotion::new(
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+        );
+        let (luma, _, _) =
+            predict_frame_dual_prime_macroblock_planes(&dest, &reference, 0, 0, motion).unwrap();
+        assert_eq!(luma.len(), 256);
+        assert!(luma.iter().all(|&p| p == 120), "frame dual-prime average");
+    }
+
+    #[test]
+    fn frame_dual_prime_distinct_opposite_vectors_shift_each_field() {
+        // The top predicted field uses vector'[2]; the bottom uses
+        // vector'[3]. Give the bottom field's opposite vector a +2
+        // half-sample (= +1 field line) vertical shift so the two fields
+        // diverge, proving each field consumes its own derived vector.
+        let mut reference = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        // Vertical ramp so a field-line shift is observable: frame row y
+        // -> value y*4.
+        for y in 0..16usize {
+            for x in 0..16 {
+                reference.y.put_sample(x, y, (y * 4) as u8);
+            }
+        }
+        for y in 0..8 {
+            for x in 0..8 {
+                reference.cb.put_sample(x, y, 0);
+                reference.cr.put_sample(x, y, 0);
+            }
+        }
+        let dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        // same vector = 0, top opposite = 0, bottom opposite = +2 (one
+        // field line down on the top reference field it reads).
+        let motion = FrameDualPrimeMotion::new(
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 2),
+        );
+        let (luma, _, _) =
+            predict_frame_dual_prime_macroblock_planes(&dest, &reference, 0, 0, motion).unwrap();
+        // Top predicted field (even frame rows 2k): same parity top field
+        // line k = frame row 2k (value 8k); opposite parity bottom field
+        // line k = frame row 2k+1 (value 8k+4). Average = 8k+2.
+        for k in 0..8usize {
+            let expected = (2 * k * 4) as u32; // top field line k value
+            let opp = ((2 * k + 1) * 4) as u32; // bottom field line k value
+            let avg = expected.midpoint(opp) as u8;
+            assert_eq!(luma[(2 * k) * 16], avg, "top field row {k}");
+        }
+        // Bottom predicted field (odd frame rows 2k+1): same parity bottom
+        // field line k = frame row 2k+1 (value 8k+4); opposite parity top
+        // field with +1 field-line shift reads top line k+1 = frame row
+        // 2(k+1) (value 8k+8), clamped at the last top line (k=7 -> 7).
+        for k in 0..8usize {
+            let same = ((2 * k + 1) * 4) as u32; // bottom field line k
+            let opp_line = (k + 1).min(7);
+            let opp = (2 * opp_line * 4) as u32; // top field line k+1
+            let avg = same.midpoint(opp) as u8;
+            assert_eq!(luma[(2 * k + 1) * 16], avg, "bottom field row {k}");
+        }
+    }
+
+    #[test]
+    fn frame_dual_prime_geometry_mismatch_errors() {
+        let reference = solid_frame(100, 32, 16, ChromaFormat::Yuv420);
+        let dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        let motion = FrameDualPrimeMotion::new(
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+        );
+        assert_eq!(
+            predict_frame_dual_prime_macroblock_planes(&dest, &reference, 0, 0, motion),
+            Err(InterError::ReferenceGeometryMismatch)
+        );
+    }
+
+    #[test]
+    fn frame_dual_prime_reconstruct_adds_residual_with_field_dct() {
+        let reference = parity_split_frame16(80, 160);
+        let mut dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv420);
+        let motion = FrameDualPrimeMotion::new(
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+            MotionVectorPel::new(0, 0),
+        );
+        let residual = [[4i16; 8]; 8];
+        let blocks: Vec<ResidualBlock<'_>> = (0..4)
+            .map(|i| ResidualBlock {
+                block_index: i,
+                f_pel: &residual,
+            })
+            .collect();
+        // field_dct = false: frame-organised write-out of the frame-order
+        // prediction. Every luma sample = 120 average + 4 = 124.
+        let written = reconstruct_frame_dual_prime_macroblock(
+            &mut dest, &reference, 0, 0, false, motion, &blocks,
+        )
+        .unwrap();
+        assert_eq!(written, 6);
+        for y in 0..16usize {
+            assert_eq!(dest.y.get(0, y), Some(124), "row {y}");
         }
     }
 }

@@ -61,6 +61,7 @@ fn p_params() -> PicturePredictionParams {
         f_code_bwd_horiz: 1,
         f_code_bwd_vert: 1,
         concealment_motion_vectors: false,
+        top_field_first: true,
     }
 }
 
@@ -341,4 +342,137 @@ fn field_picture_16x8_lower_region_uses_distinct_vector_end_to_end() {
     assert_eq!(field.y.get(0, 0), Some(0));
     // Lower line 8: // 2 average of top field lines 8 (64) and 9 (72) = 68.
     assert_eq!(field.y.get(0, 8), Some(68));
+}
+
+/// A 16×32 reference frame whose top field (even frame rows) is a solid
+/// `top` and bottom field (odd frame rows) a solid `bottom`, so a
+/// dual-prime same-/opposite-parity average is directly observable.
+fn parity_split_frame(top: u8, bottom: u8) -> FrameBuffer {
+    let mut f = FrameBuffer::new(16, 32, ChromaFormat::Yuv420);
+    for y in 0..32usize {
+        let v = if y % 2 == 0 { top } else { bottom };
+        for x in 0..16 {
+            f.y.put_sample(x, y, v);
+        }
+    }
+    for y in 0..16 {
+        for x in 0..8 {
+            f.cb.put_sample(x, y, 0);
+            f.cr.put_sample(x, y, 0);
+        }
+    }
+    f
+}
+
+#[test]
+fn p_field_picture_dual_prime_averages_same_and_opposite_fields() {
+    // §7.6.2 / Table 7-13 `Dual prime`: a P-field-picture macroblock with
+    // field_motion_type = `11` (Dual prime). Only ONE motion vector is in
+    // the bitstream (the same-parity vector); `dmv == 1` so each component
+    // is followed by a dmvector (Table B-11) and the
+    // motion_vertical_field_select bit is ABSENT. With a zero same-parity
+    // vector and zero dmvector the §7.6.3.6 opposite-parity vector is
+    // (0, -1) for a top field (e[1][0] = -1) — but reading the bottom
+    // reference field at field line 0 with a -1 half-sample (rounds to the
+    // same line) still yields the solid bottom constant. §7.6.7.4 then
+    // averages the same-parity (top = 80) and opposite-parity (bottom =
+    // 160) predictions: (80 + 160) // 2 = 120.
+    let mut bw = BitWriter::new();
+    write_slice_header(&mut bw, 8);
+    bw.write_u32(0b1, 1); // macroblock_address_increment = 1
+    bw.write_u32(0b001, 3); // macroblock_type "MC, Not Coded" (fwd)
+    bw.write_u32(0b11, 2); // field_motion_type = Dual prime
+                           // motion_vector(0,0): dmv == 1, no field-select bit.
+    bw.write_u32(0b1, 1); // motion_code horiz = 0
+    bw.write_u32(0b0, 1); // dmvector[0] = 0 (Table B-11 `0`)
+    bw.write_u32(0b1, 1); // motion_code vert = 0
+    bw.write_u32(0b0, 1); // dmvector[1] = 0
+    let picture = append_stop(bw);
+
+    let reference = parity_split_frame(80, 160);
+    let refs = ReferenceFrames::forward_only(&reference);
+    let (field, placed) =
+        decode_field_picture(&picture, p_params(), PictureStructure::TopField, refs).unwrap();
+    assert_eq!(placed, 1, "one dual-prime macroblock reconstructed");
+    for k in 0..16usize {
+        for x in 0..16 {
+            assert_eq!(field.y.get(x, k), Some(120), "dual-prime line {k} col {x}");
+        }
+    }
+}
+
+#[test]
+fn b_field_picture_skip_inherits_previous_direction_same_parity() {
+    // §7.6.6.3 B-field skip: a coded forward B macroblock at address 0,
+    // then a skipped macroblock at address 1 (address_increment = 2 on the
+    // *next* coded macroblock would skip it; here we end the slice after a
+    // coded MB whose increment leaves a gap). We use two coded MBs with an
+    // address gap of one between them so the middle macroblock is skipped
+    // and inherits the first's forward, same-parity (top) direction.
+    //
+    // Reference top field = 90, bottom field = 200. The coded forward MB
+    // reads the top field (90); the skipped MB inherits forward + top
+    // parity, so it too reads the top field (90).
+    let mut bw = BitWriter::new();
+    write_slice_header(&mut bw, 8);
+    // MB0 (address 0): coded forward "MC, Not Coded" B macroblock.
+    // Table B-4: macroblock_type with motion_forward only = `010`.
+    bw.write_u32(0b1, 1); // address_increment = 1 → address 0
+    bw.write_u32(0b010, 3); // macroblock_type forward-only (B)
+    bw.write_u32(0b01, 2); // field_motion_type = Field-based (1 vector)
+    bw.write_u32(0b0, 1); // motion_vertical_field_select = 0 (top)
+    bw.write_u32(0b1, 1); // fwd motion_code horiz = 0
+    bw.write_u32(0b1, 1); // fwd motion_code vert = 0
+                          // MB2 (address 2): address_increment = 2 skips address 1.
+    bw.write_u32(0b011, 3); // address_increment = 2 (Table B-1 `011`)
+    bw.write_u32(0b010, 3); // forward-only B macroblock
+    bw.write_u32(0b01, 2); // Field-based
+    bw.write_u32(0b0, 1); // field-select = top
+    bw.write_u32(0b1, 1); // horiz = 0
+    bw.write_u32(0b1, 1); // vert = 0
+    let picture = append_stop(bw);
+
+    // Use a 3-macroblock-wide field so addresses 0,1,2 are on one row.
+    // Reference top field = 90, bottom field = 200.
+    let big_ref = {
+        let mut f = FrameBuffer::new(48, 32, ChromaFormat::Yuv420);
+        for y in 0..32usize {
+            let v = if y % 2 == 0 { 90 } else { 200 };
+            for x in 0..48 {
+                f.y.put_sample(x, y, v);
+            }
+        }
+        for y in 0..16 {
+            for x in 0..24 {
+                f.cb.put_sample(x, y, 0);
+                f.cr.put_sample(x, y, 0);
+            }
+        }
+        f
+    };
+    let geom = IntraPictureParams {
+        width: 48,
+        ..field_geometry_16x16()
+    };
+    let params = PicturePredictionParams {
+        geometry: geom,
+        picture_coding_type: PictureCodingType::Bidirectional,
+        ..p_params()
+    };
+    // A B picture needs both references; use the same frame for both so the
+    // forward inheritance reads a known constant either way.
+    let refs = ReferenceFrames::bidirectional(&big_ref, &big_ref);
+    let (field, placed) =
+        decode_field_picture(&picture, params, PictureStructure::TopField, refs).unwrap();
+    // 3 macroblocks reconstructed (2 coded + 1 skipped).
+    assert_eq!(placed, 3, "two coded + one skipped");
+    // All three macroblocks read the top field (90): the coded ones by
+    // their field-select bit, the skipped one by §7.6.6.3 same-parity
+    // inheritance of the forward direction.
+    for mb in 0..3usize {
+        let col = mb * 16;
+        for k in 0..16usize {
+            assert_eq!(field.y.get(col, k), Some(90), "mb {mb} line {k}");
+        }
+    }
 }
