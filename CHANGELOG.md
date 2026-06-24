@@ -42,6 +42,15 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   order + reference-based prediction: the P copies the I anchor, the B
   averages I and P) plus the real 352×240 fixture's single-I-picture
   sequence. Spec: ISO/IEC 13818-2 §6.1.1.11 / §6.2.2 / §6.2.3 / §7.6.
+  The loop is **sequence-aware** (§6.1.1.6): it re-reads the geometry at
+  every repeat / new `sequence_header()` encountered before a picture
+  (`find_picture_or_sequence_start_code` dispatches a sequence header to
+  a geometry re-parse, a picture to reconstruction), so a multi-GOP /
+  multi-sequence stream tracks geometry changes mid-stream while the
+  §6.1.1.11 reorder + §7.6 anchors carry across the repeat header (the
+  next coded I/P anchor flushes the held one normally). New
+  `tests/video_sequence_decode.rs` test decoding two I-pictures separated
+  by a repeat `sequence_header()` + `sequence_extension()`.
 
 - round 359: **dual-prime motion compensation** (§7.6.3.6 / §7.6.7.4,
   Table 7-13 / 7-14 `Dual prime` rows) — driven end-to-end for **both**

@@ -303,6 +303,36 @@ fn decodes_real_fixture_single_i_picture_sequence() {
 }
 
 #[test]
+fn handles_repeat_sequence_header_before_second_gop() {
+    // Two I-pictures separated by a repeat sequence_header +
+    // sequence_extension (§6.1.1.6). The driver must re-read the geometry
+    // at the repeat header and decode both pictures. With no B-frames the
+    // display order equals the coded order.
+    let mut bw = BitWriter::new();
+    write_sequence_header(&mut bw);
+    write_sequence_extension(&mut bw);
+    write_picture(&mut bw, 0, PictureCodingType::Intra, 15, 15, |b| {
+        write_intra_macroblock(b)
+    });
+    // Repeat sequence header (§6.1.1.6) before the next picture.
+    write_sequence_header(&mut bw);
+    write_sequence_extension(&mut bw);
+    write_picture(&mut bw, 0, PictureCodingType::Intra, 15, 15, |b| {
+        write_intra_macroblock(b)
+    });
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+
+    let frames = decode_video_sequence(&stream).expect("multi-sequence decode");
+    assert_eq!(frames.len(), 2, "both I-pictures decoded across the repeat");
+    for f in &frames {
+        assert_eq!(f.picture_coding_type, PictureCodingType::Intra);
+        assert_eq!((f.frame.y.width(), f.frame.y.height()), (16, 16));
+        assert_eq!(f.frame.y.get(0, 0), Some(128));
+    }
+}
+
+#[test]
 fn rejects_p_picture_before_any_anchor() {
     // A P-picture as the first coded picture has no forward reference.
     let mut bw = BitWriter::new();

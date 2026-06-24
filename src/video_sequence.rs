@@ -128,8 +128,12 @@ pub struct DecodedFrame {
 ///   (`picture_structure != Frame`).
 /// * [`Error::ShortHeader`] on truncation.
 pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
-    let sequence = parse_leading_sequence(stream)?;
-    let geometry = sequence_geometry(&sequence);
+    // The geometry is established by the leading sequence layer and
+    // re-established at every repeat / new `sequence_header()` encountered
+    // before a picture, so a multi-sequence stream whose geometry changes
+    // mid-stream tracks the new sizes (§6.1.1.6: a repeat sequence header
+    // may legally restate the parameters).
+    let mut geometry = sequence_geometry(&parse_leading_sequence(stream)?);
 
     let mut reorder = ReorderBuffer::new();
     let mut output: Vec<DecodedFrame> = Vec::new();
@@ -142,8 +146,25 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
     let mut backward_anchor: Option<FrameBuffer> = None;
 
     let mut offset = 0usize;
-    while let Some(rel) = find_picture_start_code(&stream[offset..]) {
-        let pic_start = offset + rel;
+    while let Some(rel) = find_picture_or_sequence_start_code(&stream[offset..]) {
+        let code_start = offset + rel;
+
+        // A `sequence_header()` before the next picture re-establishes the
+        // geometry (§6.1.1.6). The reorder buffer and anchors carry across
+        // — §6.1.1.11 reordering is defined over the whole reconstructed
+        // sequence, and a repeat sequence header does not by itself force a
+        // flush (the next coded frame, which §6.1.1.11 requires not to be a
+        // B-frame, is an I/P anchor that flushes the held one in the normal
+        // way).
+        if is_start_code(&stream[code_start..], SEQUENCE_HEADER_CODE) {
+            geometry = sequence_geometry(&Mpeg2Sequence::from_buf(&stream[code_start..])?);
+            // Advance past this sequence header's start code; the next scan
+            // finds the sequence_extension / picture that follows.
+            offset = code_start + 4;
+            continue;
+        }
+
+        let pic_start = code_start;
 
         // The picture spans from its picture_start_code up to the next
         // picture / GOP / sequence / sequence-end start code. The
@@ -366,9 +387,23 @@ fn inter_params(
 }
 
 /// Find the byte offset of the next `picture_start_code` (`0x00000100`)
-/// in `buf`, or `None`.
-fn find_picture_start_code(buf: &[u8]) -> Option<usize> {
-    find_start_code(buf, |code| code == PICTURE_START_CODE)
+/// or `sequence_header_code` (`0x000001B3`) in `buf`, or `None`. These
+/// are the two start codes the top-level loop dispatches on: a picture to
+/// reconstruct, or a sequence header to re-read the geometry from.
+fn find_picture_or_sequence_start_code(buf: &[u8]) -> Option<usize> {
+    find_start_code(buf, |code| {
+        code == PICTURE_START_CODE || code == SEQUENCE_HEADER_CODE
+    })
+}
+
+/// Whether `buf` begins with the start code `code`.
+fn is_start_code(buf: &[u8], code: u32) -> bool {
+    buf.len() >= 4
+        && (u32::from(buf[0]) << 24
+            | u32::from(buf[1]) << 16
+            | u32::from(buf[2]) << 8
+            | u32::from(buf[3]))
+            == code
 }
 
 /// Find the byte offset of the next picture-region boundary in `buf` —
