@@ -385,6 +385,7 @@ pub mod slice_header;
 pub mod slice_macroblock_walk;
 pub mod spatial_resampling;
 pub mod spatial_temporal_combine;
+pub mod video_sequence;
 
 pub use add_coefficients::{
     add_intra_block, add_prediction_and_coefficients, add_prediction_and_coefficients_in_place,
@@ -556,6 +557,7 @@ pub use spatial_resampling::{
 pub use spatial_temporal_combine::{
     combine_field_interleaved, combine_spatial_temporal, combine_uniform, SpatialWeight,
 };
+pub use video_sequence::{decode_video_sequence, DecodedFrame};
 
 /// Crate-local error type. Each variant is raised at most by the
 /// specific decoder stage named in its docstring; sites may grow as

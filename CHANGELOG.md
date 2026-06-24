@@ -8,6 +8,41 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 365: **top-level `video_sequence()` decode loop with §6.1.1.11
+  display-order frame reordering** — the crate's #1 open gap, the driver
+  *above* the per-picture reconstructors. New `video_sequence` module
+  (`decode_video_sequence(stream) -> Vec<DecodedFrame>`, `DecodedFrame`,
+  both re-exported at the crate root). It parses the §6.2.2.1
+  `sequence_header()` + §6.2.2.3 `sequence_extension()` once for the
+  geometry (`Mpeg2Sequence`), then walks every `picture_start_code`
+  (`0x00000100`): for each it parses the §6.2.3 `picture_header()` +
+  §6.2.3.1 `picture_coding_extension()` (`Mpeg2PictureHeader::`
+  `parse_with_extension`), overlays the per-picture §6.2.3.1 DCT-context
+  flags onto the sequence geometry, and dispatches the picture region to
+  the matching per-picture driver — **I** → `decode_intra_picture`,
+  frame-picture **P / B** → `decode_inter_picture` — supplying the
+  reference frame(s) from the running §7.6 anchor pair (`forward_anchor`
+  = previous I/P, `backward_anchor` = latest I/P; a P reads the latest, a
+  B reads both). The reconstructed frames are reordered from coded order
+  into **display order** per §6.1.1.11: a B-frame emits immediately; an
+  I/P frame displays the previously held-back anchor (held one back) and
+  becomes the new held anchor; the final anchor is flushed at end of
+  stream — exactly the §6.1.1.11 worked-example mapping
+  (`1I 4P 2B 3B 7P 5B 6B` → `1I 2B 3B 4P 5B 6B`). The picture-region
+  scan includes the boundary start code's bytes so the per-picture slice
+  walkers find their §5.2.3 23-zero terminator. Frame pictures only:
+  a field-picture structure (`picture_structure != Frame`) surfaces
+  `Error::NotImplemented`; a P/B before its anchor exists is rejected as
+  `InvalidBitstream` (§6.1.1.11 *"the first coded frame after a sequence
+  header shall not be a B-frame"*). 5 new `video_sequence` unit tests
+  (the §6.1.1.11 reorder truth table incl. the worked example, the
+  no-B-frame pass-through, the missing-sequence-header + boundary-scan
+  guards) + 5 new `tests/video_sequence_decode.rs` integration tests that
+  decode a full hand-built I/P/B elementary stream end-to-end (display
+  order + reference-based prediction: the P copies the I anchor, the B
+  averages I and P) plus the real 352×240 fixture's single-I-picture
+  sequence. Spec: ISO/IEC 13818-2 §6.1.1.11 / §6.2.2 / §6.2.3 / §7.6.
+
 - round 359: **dual-prime motion compensation** (§7.6.3.6 / §7.6.7.4,
   Table 7-13 / 7-14 `Dual prime` rows) — driven end-to-end for **both**
   picture structures, plus the **field-picture B-field skipped-macroblock**

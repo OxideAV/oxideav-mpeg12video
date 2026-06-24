@@ -10,7 +10,10 @@ Pure Rust, no C dependencies.
 Clean-room rebuild. The crate implements the full MPEG-1 and MPEG-2
 video decode pipeline as a set of composable, per-stage public modules
 covering the bitstream-parsing surface and the pixel-reconstruction
-math. It is not yet wired into the runtime codec registry — `register`
+math, topped by a `video_sequence()` driver
+(`decode_video_sequence`) that decodes a whole elementary stream of
+**frame** pictures into reconstructed frames in §6.1.1.11 display order.
+It is not yet wired into the runtime codec registry — `register`
 is a no-op placeholder, so the codec is consumed today through its
 direct module APIs rather than `oxideav_core::make_decoder`.
 
@@ -175,9 +178,19 @@ verifying the parsers against known-good encoded streams.
 ## Not yet supported
 
 - Runtime registration (`register` is a no-op).
-- A single top-level frame-decode / encode entry point and the
-  GOP-level picture-reordering / reference-management loop; the
-  pipeline is driven through the per-picture module APIs
+- A top-level **`video_sequence()` decode loop** now exists
+  (`decode_video_sequence(stream) -> Vec<DecodedFrame>`): it parses the
+  sequence layer once for the geometry, walks every `picture_start_code`,
+  dispatches each frame picture to the matching per-picture driver with
+  the running §7.6 anchor pair, and reorders the reconstructed frames
+  into **display order** per §6.1.1.11 (B-frames pass through, I/P frames
+  held back one). It covers **frame pictures** (the MPEG-2 common case +
+  MPEG-1 entirely); a **field-picture** structure surfaces
+  `Error::NotImplemented` (the field-pair → one-frame assembly that pairs
+  `decode_field_picture`'s top/bottom outputs is the next milestone), and
+  downloadable `quant_matrix_extension()` matrices / the scalable layers
+  are skipped by the start-code scan (threaded by a later round). The
+  per-picture module APIs remain available directly
   (`decode_intra_picture` for I-pictures, `decode_inter_picture` for
   frame-picture P/B, `decode_field_picture` for field-picture P/B),
   with the caller supplying the decoded reference frame(s). All §7.6
