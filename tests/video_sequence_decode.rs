@@ -48,11 +48,18 @@ fn write_sequence_header(bw: &mut BitWriter) {
 
 /// Build the §6.2.2.3 `sequence_extension()` for a 4:2:0 stream.
 fn write_sequence_extension(bw: &mut BitWriter) {
+    write_sequence_extension_chroma(bw, 0b01);
+}
+
+/// Build the §6.2.2.3 `sequence_extension()` with an explicit
+/// `chroma_format` code (Table 6-5: `01` = 4:2:0, `10` = 4:2:2,
+/// `11` = 4:4:4).
+fn write_sequence_extension_chroma(bw: &mut BitWriter, chroma_code: u32) {
     bw.write_u32(EXTENSION_START_CODE, 32);
     bw.write_u32(0b0001, 4); // Sequence Extension ID
     bw.write_u32(0x48, 8); // profile_and_level (Main@Main, any byte legal)
     bw.write_bit(false); // progressive_sequence
-    bw.write_u32(0b01, 2); // chroma_format = 4:2:0
+    bw.write_u32(chroma_code, 2); // chroma_format
     bw.write_u32(0, 2); // horizontal_size_extension
     bw.write_u32(0, 2); // vertical_size_extension
     bw.write_u32(0, 12); // bit_rate_extension
@@ -144,6 +151,21 @@ fn write_intra_macroblock(bw: &mut BitWriter) {
     // 2 chroma blocks: dct_dc_size_chrominance = 0 → `00` (2 bits) + EOB.
     for _ in 0..2 {
         bw.write_u32(0b00, 2);
+        bw.write_u32(EOB, 2);
+    }
+}
+
+/// Write a 4:2:2 intra macroblock: 8 blocks (4 luma + 2 Cb + 2 Cr),
+/// each `dct_dc_size = 0` + EOB → a flat-128 reconstruction.
+fn write_intra_macroblock_422(bw: &mut BitWriter) {
+    bw.write_bit(true); // macroblock_address_increment = 1
+    bw.write_bit(true); // macroblock_type "Intra"
+    for _ in 0..4 {
+        bw.write_u32(0b100, 3); // dct_dc_size_luminance = 0
+        bw.write_u32(EOB, 2);
+    }
+    for _ in 0..4 {
+        bw.write_u32(0b00, 2); // dct_dc_size_chrominance = 0
         bw.write_u32(EOB, 2);
     }
 }
@@ -330,6 +352,31 @@ fn handles_repeat_sequence_header_before_second_gop() {
         assert_eq!((f.frame.y.width(), f.frame.y.height()), (16, 16));
         assert_eq!(f.frame.y.get(0, 0), Some(128));
     }
+}
+
+#[test]
+fn decodes_4_2_2_i_picture_threading_chroma_format() {
+    // The loop must thread the sequence_extension() chroma_format through
+    // to the per-picture driver: a 4:2:2 I-picture has 8 blocks per MB and
+    // full-height chroma planes (176×120 → here 16×16 luma, 8×16 chroma).
+    let mut bw = BitWriter::new();
+    write_sequence_header(&mut bw);
+    write_sequence_extension_chroma(&mut bw, 0b10); // 4:2:2
+    write_picture(&mut bw, 0, PictureCodingType::Intra, 15, 15, |b| {
+        write_intra_macroblock_422(b)
+    });
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+
+    let frames = decode_video_sequence(&stream).expect("4:2:2 decode");
+    assert_eq!(frames.len(), 1);
+    let f = &frames[0];
+    // 4:2:2: luma 16×16, chroma 8×16 (half width, full height).
+    assert_eq!((f.frame.y.width(), f.frame.y.height()), (16, 16));
+    assert_eq!((f.frame.cb.width(), f.frame.cb.height()), (8, 16));
+    assert_eq!((f.frame.cr.width(), f.frame.cr.height()), (8, 16));
+    assert_eq!(f.frame.y.get(0, 0), Some(128));
+    assert_eq!(f.frame.cb.get(0, 15), Some(128), "full-height chroma row");
 }
 
 #[test]

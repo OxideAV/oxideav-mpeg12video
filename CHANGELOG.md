@@ -50,7 +50,11 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   §6.1.1.11 reorder + §7.6 anchors carry across the repeat header (the
   next coded I/P anchor flushes the held one normally). New
   `tests/video_sequence_decode.rs` test decoding two I-pictures separated
-  by a repeat `sequence_header()` + `sequence_extension()`.
+  by a repeat `sequence_header()` + `sequence_extension()`. A further test
+  decodes a **4:2:2** I-picture (8 blocks per macroblock, full-height
+  chroma) end-to-end, confirming the loop threads the
+  `sequence_extension()` `chroma_format` through to the per-picture
+  driver and the assembled frame carries the correct 8×16 chroma planes.
 
 - round 359: **dual-prime motion compensation** (§7.6.3.6 / §7.6.7.4,
   Table 7-13 / 7-14 `Dual prime` rows) — driven end-to-end for **both**
