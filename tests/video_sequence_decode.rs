@@ -398,43 +398,144 @@ fn rejects_p_picture_before_any_anchor() {
     );
 }
 
-#[test]
-fn rejects_field_picture_structure() {
-    // Build an I-picture whose coding extension declares a field
-    // structure (TopField); the frame-only driver rejects it.
-    let mut bw = BitWriter::new();
-    write_sequence_header(&mut bw);
-    write_sequence_extension(&mut bw);
-    write_picture_header(&mut bw, 0, PictureCodingType::Intra);
-    // Custom coding extension with picture_structure = TopField (0b01).
-    bw.write_u32(EXTENSION_START_CODE, 32);
-    bw.write_u32(0b1000, 4);
-    bw.write_u32(15, 4);
-    bw.write_u32(15, 4);
-    bw.write_u32(15, 4);
-    bw.write_u32(15, 4);
-    bw.write_u32(0, 2); // intra_dc_precision
-    bw.write_u32(0b01, 2); // picture_structure = TopField
-    bw.write_bit(true);
-    bw.write_bit(false); // frame_pred_frame_dct = 0 (field structure)
-    bw.write_bit(false);
-    bw.write_bit(false);
-    bw.write_bit(false);
-    bw.write_bit(false);
-    bw.write_bit(false);
-    bw.write_bit(false);
-    bw.write_bit(false);
-    bw.write_bit(false);
+/// Build a 16×32-frame `sequence_header()` (each field is therefore
+/// 16×16, exactly one macroblock tall — the geometry the field-picture
+/// reconstruction path requires).
+fn write_sequence_header_16x32(bw: &mut BitWriter) {
+    bw.write_u32(SEQUENCE_HEADER_CODE, 32);
+    bw.write_u32(16, 12); // horizontal_size_value
+    bw.write_u32(32, 12); // vertical_size_value (frame; field = 16)
+    bw.write_u32(0b0001, 4); // aspect_ratio (square)
+    bw.write_u32(0b0011, 4); // frame_rate_code (25 fps)
+    bw.write_u32(2500, 18); // bit_rate_value
+    bw.write_bit(true); // marker_bit
+    bw.write_u32(112, 10); // vbv_buffer_size_value
+    bw.write_bit(false); // constrained_parameters_flag
+    bw.write_bit(false); // load_intra_quantiser_matrix
+    bw.write_bit(false); // load_non_intra_quantiser_matrix
     bw.align_to_byte();
-    write_slice_header(&mut bw, 8);
-    write_intra_macroblock(&mut bw);
-    bw.align_to_byte_zero();
+}
+
+/// Write a §6.2.3.1 `picture_coding_extension()` declaring a field
+/// `picture_structure` (`0b01` = TopField, `0b10` = BottomField) with
+/// `frame_pred_frame_dct = 0` (a field picture forbids it), and the given
+/// f_codes.
+fn write_field_picture_coding_extension(bw: &mut BitWriter, structure: u32, f_fwd: u8, f_bwd: u8) {
+    bw.write_u32(EXTENSION_START_CODE, 32);
+    bw.write_u32(0b1000, 4); // Picture Coding Extension ID
+    bw.write_u32(u32::from(f_fwd), 4); // f_code[0][0]
+    bw.write_u32(u32::from(f_fwd), 4); // f_code[0][1]
+    bw.write_u32(u32::from(f_bwd), 4); // f_code[1][0]
+    bw.write_u32(u32::from(f_bwd), 4); // f_code[1][1]
+    bw.write_u32(0, 2); // intra_dc_precision = 0
+    bw.write_u32(structure, 2); // picture_structure (field)
+    bw.write_bit(true); // top_field_first
+    bw.write_bit(false); // frame_pred_frame_dct = 0 (mandatory for field)
+    bw.write_bit(false); // concealment_motion_vectors
+    bw.write_bit(false); // q_scale_type
+    bw.write_bit(false); // intra_vlc_format
+    bw.write_bit(false); // alternate_scan
+    bw.write_bit(false); // repeat_first_field
+    bw.write_bit(false); // chroma_420_type
+    bw.write_bit(false); // progressive_frame
+    bw.write_bit(false); // composite_display_flag
+    bw.align_to_byte();
+}
+
+/// Write a single intra macroblock for a **field** picture. Identical to
+/// [`write_intra_macroblock`] except that, because a field picture has
+/// `frame_pred_frame_dct == 0`, the §6.3.17.1 `dct_type` flag is present
+/// for an intra macroblock and must be written (here `0` = frame DCT,
+/// which for a one-block-tall field is the natural organisation).
+fn write_intra_macroblock_field(bw: &mut BitWriter) {
+    bw.write_bit(true); // macroblock_address_increment = 1
+    bw.write_bit(true); // macroblock_type "Intra" (Table B-2 `1`)
+    bw.write_bit(false); // dct_type = 0 (frame DCT; read because field pic)
+    for _ in 0..4 {
+        bw.write_u32(0b100, 3); // dct_dc_size_luminance = 0
+        bw.write_u32(EOB, 2);
+    }
+    for _ in 0..2 {
+        bw.write_u32(0b00, 2); // dct_dc_size_chrominance = 0
+        bw.write_u32(EOB, 2);
+    }
+}
+
+/// Append a complete field picture: header + field coding extension +
+/// one-macroblock slice body, byte-aligned.
+fn write_field_picture(
+    out: &mut BitWriter,
+    temporal_reference: u32,
+    coding_type: PictureCodingType,
+    structure: u32,
+    f_fwd: u8,
+    f_bwd: u8,
+    body: impl Fn(&mut BitWriter),
+) {
+    write_picture_header(out, temporal_reference, coding_type);
+    write_field_picture_coding_extension(out, structure, f_fwd, f_bwd);
+    write_slice_header(out, 8);
+    body(out);
+    out.align_to_byte_zero();
+}
+
+#[test]
+fn assembles_field_picture_pair_into_one_frame() {
+    // §6.1.1.4.1: a top-field I-picture followed by a bottom-field
+    // I-picture (same temporal_reference) constitute one coded frame. The
+    // driver must hold the first field, then interleave the two fields
+    // (§3.131 top→even lines / §3.13 bottom→odd lines) into one 16×32
+    // reconstructed frame. Both fields are flat-128 intra fields, so the
+    // assembled frame is flat 128 throughout.
+    let mut bw = BitWriter::new();
+    write_sequence_header_16x32(&mut bw);
+    write_sequence_extension(&mut bw);
+    // Top field I-picture, tr = 0.
+    write_field_picture(&mut bw, 0, PictureCodingType::Intra, 0b01, 15, 15, |b| {
+        write_intra_macroblock_field(b)
+    });
+    // Bottom field I-picture, tr = 0 (same coded frame).
+    write_field_picture(&mut bw, 0, PictureCodingType::Intra, 0b10, 15, 15, |b| {
+        write_intra_macroblock_field(b)
+    });
     let mut stream = bw.finish();
     stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
 
-    let err = decode_video_sequence(&stream).unwrap_err();
-    assert!(
-        matches!(err, oxideav_mpeg12video::Error::NotImplemented),
-        "field-picture structure must surface NotImplemented, got {err:?}"
-    );
+    let frames = decode_video_sequence(&stream).expect("field-pair decode");
+    assert_eq!(frames.len(), 1, "the field pair assembles into one frame");
+    let f = &frames[0];
+    assert_eq!(f.picture_coding_type, PictureCodingType::Intra);
+    assert_eq!(f.temporal_reference, 0);
+    // The assembled frame is full height: 16×32 luma, 8×16 chroma (4:2:0).
+    assert_eq!((f.frame.y.width(), f.frame.y.height()), (16, 32));
+    assert_eq!((f.frame.cb.width(), f.frame.cb.height()), (8, 16));
+    for y in 0..32 {
+        for x in 0..16 {
+            assert_eq!(f.frame.y.get(x, y), Some(128), "flat-128 luma at ({x},{y})");
+        }
+    }
+    for y in 0..16 {
+        for x in 0..8 {
+            assert_eq!(f.frame.cb.get(x, y), Some(128));
+            assert_eq!(f.frame.cr.get(x, y), Some(128));
+        }
+    }
+}
+
+#[test]
+fn single_unpaired_field_picture_emits_no_frame() {
+    // A lone first field with no partner cannot assemble a frame; the
+    // driver holds it back and the sequence ends with no completed frame
+    // (§6.1.1.4.1 requires field pictures to occur in pairs).
+    let mut bw = BitWriter::new();
+    write_sequence_header_16x32(&mut bw);
+    write_sequence_extension(&mut bw);
+    write_field_picture(&mut bw, 0, PictureCodingType::Intra, 0b01, 15, 15, |b| {
+        write_intra_macroblock_field(b)
+    });
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+
+    let frames = decode_video_sequence(&stream).expect("lone field decode");
+    assert!(frames.is_empty(), "an unpaired first field emits no frame");
 }

@@ -8,6 +8,32 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 370: **field-picture pair → frame assembly in the
+  `video_sequence()` decode loop (§6.1.1.4.1)**. The top-level driver now
+  handles field-picture sequences end-to-end: a field picture
+  (`picture_structure == TopField` / `BottomField`) is reconstructed by
+  `decode_field_picture` into a field-height buffer, the first field of a
+  §6.1.1.4.1 coded-frame pair is held until its partner arrives, and the
+  two are interleaved into one full-height reconstructed frame by the new
+  public `assemble_frame_from_fields` (§3.131 top field → even frame
+  lines / §3.13 bottom field → odd frame lines, applied per colour
+  plane). The assembled frame then flows through the existing §6.1.1.11
+  reorder + §7.6 anchor rotation exactly as a frame picture. The §7.6.2.1
+  second-field-of-a-P-frame reference rule (Figures 7-7 / 7-8 — the
+  most-recent reference field is *this frame's just-decoded first field*)
+  is honoured by synthesising the reference frame so it carries the
+  current first field in its own parity slot and the previous
+  reconstructed frame's opposite-parity field in the other. Both field
+  pictures of a coded frame share their §6.3.10 `temporal_reference`, and
+  the frame's I/P/B reorder class follows the first field. Replaces the
+  previous `Error::NotImplemented` field-picture rejection in
+  `decode_video_sequence`. `assemble_frame_from_fields` is re-exported at
+  the crate root. Tests: three `frame_assembly` unit tests (even/odd
+  interleave, chroma-plane interleave, mismatched-field rejection) + two
+  `video_sequence_decode` integration tests (field-pair → one frame; lone
+  unpaired field emits no frame); the former
+  `rejects_field_picture_structure` test is rewritten to the field-pair
+  assembly path.
 - round 365: **top-level `video_sequence()` decode loop with §6.1.1.11
   display-order frame reordering** — the crate's #1 open gap, the driver
   *above* the per-picture reconstructors. New `video_sequence` module

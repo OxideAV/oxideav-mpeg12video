@@ -185,10 +185,15 @@ verifying the parsers against known-good encoded streams.
   the running §7.6 anchor pair, and reorders the reconstructed frames
   into **display order** per §6.1.1.11 (B-frames pass through, I/P frames
   held back one). It covers **frame pictures** (the MPEG-2 common case +
-  MPEG-1 entirely); a **field-picture** structure surfaces
-  `Error::NotImplemented` (the field-pair → one-frame assembly that pairs
-  `decode_field_picture`'s top/bottom outputs is the next milestone), and
-  downloadable `quant_matrix_extension()` matrices / the scalable layers
+  MPEG-1 entirely) **and field-picture pairs** (§6.1.1.4.1): each field
+  picture is reconstructed by `decode_field_picture`, the first field of
+  a pair is held until its partner arrives, and the two are interleaved
+  into one full-height frame by `assemble_frame_from_fields` (§3.131
+  top→even lines / §3.13 bottom→odd lines), with the §7.6.2.1
+  second-field-of-a-P-frame reference rule honoured via a synthetic
+  reference frame pairing the current first field with the previous
+  frame's opposite-parity field. Downloadable `quant_matrix_extension()`
+  matrices / the scalable layers
   are skipped by the start-code scan (threaded by a later round). The
   per-picture module APIs remain available directly
   (`decode_intra_picture` for I-pictures, `decode_inter_picture` for

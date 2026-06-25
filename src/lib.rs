@@ -418,8 +418,9 @@ pub use forming_predictions::{
     HalfPattern, ReferencePlane, SplitVector,
 };
 pub use frame_assembly::{
-    block_placement, chroma_shift, decode_intra_picture, place_intra_block, place_intra_macroblock,
-    BlockPlacement, FrameBuffer, IntraPictureParams, Plane,
+    assemble_frame_from_fields, block_placement, chroma_shift, decode_intra_picture,
+    place_intra_block, place_intra_macroblock, BlockPlacement, FrameBuffer, IntraPictureParams,
+    Plane,
 };
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use idct::{

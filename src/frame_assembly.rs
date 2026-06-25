@@ -562,6 +562,94 @@ fn find_next_start_code(buf: &[u8]) -> Option<usize> {
         .position(|w| w[0] == 0x00 && w[1] == 0x00 && w[2] == 0x01)
 }
 
+/// Interleave a reconstructed **top field** and **bottom field** into a
+/// single reconstructed **frame**, per §6.1.1.4.1 / §3.131 / §3.13.
+///
+/// When an interlaced sequence is coded as field pictures, each coded
+/// frame is a pair of field pictures — one top field and one bottom
+/// field — and each [`decode_field_picture`](crate::decode_field_picture)
+/// call reconstructs **one field** into a field-height [`FrameBuffer`]
+/// (its `height` is half the frame height). This function reassembles the
+/// two half-height fields into the full-height frame the decoding process
+/// outputs (§6.1.1 / §7.1 *"Reconstructed fields shall be associated
+/// together in pairs to form reconstructed frames"*).
+///
+/// The spatial rule is fixed by the field definitions: §3.131 — *"Each
+/// line of a top field is spatially located immediately above the
+/// corresponding line of the bottom field"* and §3.13 — *"Each line of a
+/// bottom field is spatially located immediately below the corresponding
+/// line of the top field"*. So the top field supplies the **even** frame
+/// lines (`0, 2, 4, …`) and the bottom field the **odd** frame lines
+/// (`1, 3, 5, …`); top-field row `r` → frame row `2·r`, bottom-field row
+/// `r` → frame row `2·r + 1`. This holds independently for every colour
+/// component plane: the chroma planes are field-height the same way the
+/// luma plane is (a field picture's chroma is sub-sampled from the
+/// field, not the frame), so the same `2·r` / `2·r + 1` interleave
+/// applies to Cb and Cr.
+///
+/// `top` and `bottom` must share the same `chroma_format` and the same
+/// plane widths, and their per-plane heights must match (each is a field
+/// of the same frame). The returned frame has the same width and a height
+/// equal to the sum of the two field heights (twice the field height for
+/// the common equal-height case).
+///
+/// # Errors
+///
+/// [`Error::InvalidBitstream`](crate::Error::InvalidBitstream) if the two
+/// fields disagree on `chroma_format`, on luma width, or on luma height —
+/// a mismatched pair cannot be a top/bottom pair of one coded frame.
+pub fn assemble_frame_from_fields(
+    top: &FrameBuffer,
+    bottom: &FrameBuffer,
+) -> crate::Result<FrameBuffer> {
+    if top.chroma_format != bottom.chroma_format {
+        return Err(crate::Error::InvalidBitstream(
+            "assemble_frame_from_fields(): top/bottom field chroma_format mismatch (§6.1.1.4.1)",
+        ));
+    }
+    if top.y.width() != bottom.y.width() {
+        return Err(crate::Error::InvalidBitstream(
+            "assemble_frame_from_fields(): top/bottom field width mismatch (§6.1.1.4.1)",
+        ));
+    }
+    if top.y.height() != bottom.y.height() {
+        return Err(crate::Error::InvalidBitstream(
+            "assemble_frame_from_fields(): top/bottom field height mismatch (§6.1.1.4.1)",
+        ));
+    }
+
+    let frame_width = top.width;
+    let frame_height = top.height + bottom.height;
+    let mut frame = FrameBuffer::new(frame_width, frame_height, top.chroma_format);
+
+    interleave_plane(&mut frame.y, &top.y, &bottom.y);
+    interleave_plane(&mut frame.cb, &top.cb, &bottom.cb);
+    interleave_plane(&mut frame.cr, &top.cr, &bottom.cr);
+
+    Ok(frame)
+}
+
+/// Write the top field's rows onto the even lines and the bottom field's
+/// rows onto the odd lines of `dst` (§3.131 / §3.13). `dst` is sized to
+/// the combined field heights by [`FrameBuffer::new`]; any line beyond
+/// the field's own height is left at its allocated `0`.
+fn interleave_plane(dst: &mut Plane, top: &Plane, bottom: &Plane) {
+    for y in 0..top.height() {
+        for x in 0..top.width() {
+            if let Some(v) = top.get(x, y) {
+                dst.put(x, 2 * y, v);
+            }
+        }
+    }
+    for y in 0..bottom.height() {
+        for x in 0..bottom.width() {
+            if let Some(v) = bottom.get(x, y) {
+                dst.put(x, 2 * y + 1, v);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,5 +834,95 @@ mod tests {
         }
         // Only block 0 lands inside an 8×8 picture.
         assert_eq!(frame.y.get(7, 7), Some((10 + 7 * 8 + 7) as u8));
+    }
+
+    /// Build a field-height frame buffer whose Y plane sample `(x, y)`
+    /// equals `fill(x, y)`, leaving chroma at `0`.
+    fn field_with(
+        width: usize,
+        height: usize,
+        cf: ChromaFormat,
+        fill: impl Fn(usize, usize) -> u8,
+    ) -> FrameBuffer {
+        let mut f = FrameBuffer::new(width, height, cf);
+        for y in 0..height {
+            for x in 0..width {
+                f.y.put(x, y, fill(x, y));
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn assemble_frame_interleaves_top_even_bottom_odd() {
+        // §3.131 / §3.13: top field -> even frame lines, bottom -> odd.
+        // Field height 3 -> frame height 6.
+        let cf = ChromaFormat::Yuv420;
+        // Top field: every sample = 100 + row.
+        let top = field_with(4, 4, cf, |_, y| 100 + y as u8);
+        // Bottom field: every sample = 200 + row.
+        let bottom = field_with(4, 4, cf, |_, y| 200 + y as u8);
+
+        let frame = assemble_frame_from_fields(&top, &bottom).unwrap();
+        assert_eq!(frame.width, 4);
+        assert_eq!(frame.height, 8);
+        assert_eq!(frame.y.height(), 8);
+
+        // Even frame rows carry the top field rows in order.
+        for fr in 0..4 {
+            assert_eq!(frame.y.get(0, 2 * fr), Some(100 + fr as u8), "top row {fr}");
+            // Odd frame rows carry the bottom field rows in order.
+            assert_eq!(
+                frame.y.get(0, 2 * fr + 1),
+                Some(200 + fr as u8),
+                "bottom row {fr}"
+            );
+        }
+    }
+
+    #[test]
+    fn assemble_frame_interleaves_chroma_planes_420() {
+        // Field 8×8 luma 4:2:0 -> 4×4 chroma per field; frame 8×16 luma
+        // -> 4×8 chroma. Each chroma field row r -> frame chroma rows
+        // 2r (top) / 2r+1 (bottom).
+        let cf = ChromaFormat::Yuv420;
+        let mut top = FrameBuffer::new(8, 8, cf);
+        let mut bottom = FrameBuffer::new(8, 8, cf);
+        for y in 0..top.cb.height() {
+            for x in 0..top.cb.width() {
+                top.cb.put(x, y, 10 + y as u8);
+                bottom.cb.put(x, y, 50 + y as u8);
+            }
+        }
+        let frame = assemble_frame_from_fields(&top, &bottom).unwrap();
+        assert_eq!((frame.cb.width(), frame.cb.height()), (4, 8));
+        for r in 0..4 {
+            assert_eq!(frame.cb.get(0, 2 * r), Some(10 + r as u8));
+            assert_eq!(frame.cb.get(0, 2 * r + 1), Some(50 + r as u8));
+        }
+    }
+
+    #[test]
+    fn assemble_frame_rejects_mismatched_fields() {
+        let cf = ChromaFormat::Yuv420;
+        let top = FrameBuffer::new(8, 8, cf);
+        // Width mismatch.
+        let wide = FrameBuffer::new(16, 8, cf);
+        assert!(matches!(
+            assemble_frame_from_fields(&top, &wide),
+            Err(crate::Error::InvalidBitstream(_))
+        ));
+        // Height mismatch.
+        let tall = FrameBuffer::new(8, 16, cf);
+        assert!(matches!(
+            assemble_frame_from_fields(&top, &tall),
+            Err(crate::Error::InvalidBitstream(_))
+        ));
+        // Chroma-format mismatch.
+        let other = FrameBuffer::new(8, 8, ChromaFormat::Yuv422);
+        assert!(matches!(
+            assemble_frame_from_fields(&top, &other),
+            Err(crate::Error::InvalidBitstream(_))
+        ));
     }
 }

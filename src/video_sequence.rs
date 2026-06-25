@@ -60,27 +60,43 @@
 //! (`forward_anchor`, the previous I/P; `backward_anchor`, the latest
 //! I/P) and feeds them to [`crate::decode_inter_picture`].
 //!
+//! ## Field pictures (§6.1.1.4.1)
+//!
+//! When an interlaced sequence is coded as **field pictures** the loop
+//! handles them too: each field picture (`picture_structure ==
+//! TopField` / `BottomField`) is reconstructed into a field-height
+//! buffer by [`crate::decode_field_picture`], the first field of a pair
+//! is held until its partner arrives, and the two are interleaved into
+//! one full-height reconstructed frame
+//! ([`crate::assemble_frame_from_fields`], §3.131 top→even lines / §3.13
+//! bottom→odd lines). The assembled frame then flows through the same
+//! §6.1.1.11 reorder + §7.6 anchor rotation as a frame picture. The
+//! §7.6.2.1 second-field-of-a-P-frame reference rule (the most-recent
+//! reference field is this frame's just-decoded first field) is honoured
+//! by building a synthetic reference frame that pairs the current first
+//! field with the previous frame's opposite-parity field.
+//!
 //! ## Scope
 //!
-//! Frame pictures only (`picture_structure == Frame`). Field-picture
-//! pairs (`TopField` + `BottomField` reconstructing into one frame) are
-//! a later milestone — a field picture is reported through
-//! [`crate::Error::NotImplemented`]. The §6.2.3 extension family beyond
-//! `sequence_extension()` / `picture_coding_extension()`
-//! (`quant_matrix_extension()`, the display / scalable extensions) is
-//! skipped over by the start-code scan; downloadable quantiser matrices
-//! and the scalable layers are threaded by a later round. MPEG-1
-//! streams (no `sequence_extension()` / `picture_coding_extension()`)
-//! are a later milestone too — this driver requires the MPEG-2
-//! extensions for the geometry and f_codes.
+//! The §6.2.3 extension family beyond `sequence_extension()` /
+//! `picture_coding_extension()` (`quant_matrix_extension()`, the display
+//! / scalable extensions) is skipped over by the start-code scan;
+//! downloadable quantiser matrices and the scalable layers are threaded
+//! by a later round. MPEG-1 streams (no `sequence_extension()` /
+//! `picture_coding_extension()`) are a later milestone too — this driver
+//! requires the MPEG-2 extensions for the geometry and f_codes.
 
-use crate::frame_assembly::{decode_intra_picture, FrameBuffer, IntraPictureParams};
+use crate::frame_assembly::{
+    assemble_frame_from_fields, decode_intra_picture, FrameBuffer, IntraPictureParams,
+};
 use crate::inter_reconstruction::ReferenceFrames;
 use crate::picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_START_CODE,
 };
-use crate::picture_reconstruction::{decode_inter_picture, PicturePredictionParams};
+use crate::picture_reconstruction::{
+    decode_field_picture, decode_inter_picture, PicturePredictionParams,
+};
 use crate::sequence_extension::Mpeg2Sequence;
 use crate::sequence_header::SEQUENCE_HEADER_CODE;
 use crate::{Error, Result};
@@ -124,8 +140,6 @@ pub struct DecodedFrame {
 ///   *"the first coded frame after a sequence header shall not be a
 ///   B-frame"* / a P needs a forward anchor), or from any lower-layer
 ///   parse.
-/// * [`Error::NotImplemented`] for a field picture
-///   (`picture_structure != Frame`).
 /// * [`Error::ShortHeader`] on truncation.
 pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
     // The geometry is established by the leading sequence layer and
@@ -144,6 +158,13 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
     // reference for the next P-frame).
     let mut forward_anchor: Option<FrameBuffer> = None;
     let mut backward_anchor: Option<FrameBuffer> = None;
+
+    // §6.1.1.4.1: field pictures occur in pairs (one top + one bottom)
+    // that together constitute a coded frame, encoded in output order.
+    // The first field of a pair is held here until its partner arrives,
+    // when the two are interleaved into one reconstructed frame
+    // ([`assemble_frame_from_fields`]).
+    let mut pending_field: Option<PendingField> = None;
 
     let mut offset = 0usize;
     while let Some(rel) = find_picture_or_sequence_start_code(&stream[offset..]) {
@@ -190,24 +211,45 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
 
         let (header, ext) = Mpeg2PictureHeader::parse_with_extension(picture_region)?;
 
-        if ext.picture_structure != PictureStructure::Frame {
-            return Err(Error::NotImplemented);
-        }
-
-        // The slice region begins after the picture header + extensions:
-        // the per-picture drivers find the first slice_start_code
-        // themselves, so we hand them the whole picture region.
-        let coded = reconstruct_picture(
-            picture_region,
-            &header,
-            &ext,
-            geometry,
-            forward_anchor.as_ref(),
-            backward_anchor.as_ref(),
-        )?;
+        // §6.1.1.4.1 field-picture pair: decode the field, hold the first
+        // of a pair until its partner arrives, then interleave the pair
+        // into one reconstructed frame and route that frame exactly as a
+        // frame picture would be.
+        let coded = if ext.picture_structure != PictureStructure::Frame {
+            match reconstruct_field_pair(
+                picture_region,
+                &header,
+                &ext,
+                geometry,
+                forward_anchor.as_ref(),
+                backward_anchor.as_ref(),
+                &mut pending_field,
+            )? {
+                // First field of a pair: held back, no frame yet.
+                None => {
+                    offset = next_offset;
+                    continue;
+                }
+                // Second field completed the pair into a frame.
+                Some(frame) => frame,
+            }
+        } else {
+            // The slice region begins after the picture header +
+            // extensions: the per-picture drivers find the first
+            // slice_start_code themselves, so we hand them the whole
+            // picture region.
+            reconstruct_picture(
+                picture_region,
+                &header,
+                &ext,
+                geometry,
+                forward_anchor.as_ref(),
+                backward_anchor.as_ref(),
+            )?
+        };
 
         // §6.1.1.11 reorder + §7.6 reference rotation.
-        match header.picture_coding_type {
+        match coded.picture_coding_type {
             PictureCodingType::Bidirectional => {
                 // B-frames are displayed immediately, in coded order, and
                 // never become a reference. They emit before the held-back
@@ -365,6 +407,244 @@ fn reconstruct_picture(
         temporal_reference: header.temporal_reference,
         picture_coding_type: header.picture_coding_type,
     })
+}
+
+/// The first field of a §6.1.1.4.1 coded-frame pair, held until its
+/// partner field arrives so the two can be interleaved into one
+/// reconstructed frame.
+struct PendingField {
+    /// The reconstructed first field (field-height [`FrameBuffer`]).
+    field: FrameBuffer,
+    /// Which field of the frame this is (`TopField` / `BottomField`).
+    structure: PictureStructure,
+    /// §6.3.10 `picture_coding_type` — both fields of a coded frame share
+    /// the I/P/B classification for reordering purposes (an I+P pair is
+    /// still an anchor frame; §6.1.1.4.1 also constrains the second field
+    /// type by the first).
+    coding_type: PictureCodingType,
+    /// §6.3.10 `temporal_reference` — identical for both field pictures of
+    /// a coded frame (§6.3.10 *"When a frame is coded as two field
+    /// pictures, the temporal_reference associated with each coded picture
+    /// shall be the same"*).
+    temporal_reference: u16,
+}
+
+/// Decode one **field picture** and, when it completes a §6.1.1.4.1 pair,
+/// interleave the two fields into one reconstructed [`DecodedFrame`].
+///
+/// Returns `Ok(None)` when this is the **first** field of a pair (held in
+/// `pending_field` for its partner), and `Ok(Some(frame))` when this is
+/// the **second** field, which interleaves the held first field with this
+/// one into a frame (§3.131 / §3.13 top→even / bottom→odd lines).
+///
+/// ## Reference fields (§7.6.2.1)
+///
+/// * **First field** of a coded frame, or any **B**-field: the two
+///   reference fields are the two fields of the previously reconstructed
+///   reference frame(s) — `backward_anchor` for the forward/P reference
+///   and `forward_anchor` for the B backward reference, exactly as a
+///   frame picture uses them.
+/// * **Second field** of a **P** coded frame: §7.6.2.1 / Figures 7-7,
+///   7-8 — the most-recent reference field is the *first field of this
+///   same coded frame* (just reconstructed); the other reference field is
+///   the opposite-parity field of the previous reconstructed frame. The
+///   synthetic reference frame handed to the driver therefore carries the
+///   current first field in its own parity slot and the previous frame's
+///   field in the opposite slot ([`reference_frame_for_second_p_field`]).
+///   A second I-field needs no reference; a second B-field uses the two
+///   anchor frames like the first.
+fn reconstruct_field_pair(
+    picture_region: &[u8],
+    header: &Mpeg2PictureHeader,
+    ext: &PictureCodingExtension,
+    base_geometry: IntraPictureParams,
+    forward_anchor: Option<&FrameBuffer>,
+    backward_anchor: Option<&FrameBuffer>,
+    pending_field: &mut Option<PendingField>,
+) -> Result<Option<DecodedFrame>> {
+    let structure = ext.picture_structure;
+    let is_second_field = pending_field
+        .as_ref()
+        .is_some_and(|p| p.structure != structure);
+
+    // The field geometry: half the frame height, frame_pred_frame_dct
+    // forced off (§6.3.10 forbids it in a field picture). The DCT-context
+    // flags come from the picture coding extension.
+    let geometry = field_geometry(base_geometry, ext);
+
+    // Build, when this is the P second field, the synthetic reference
+    // frame that pairs the just-decoded first field with the previous
+    // frame's opposite-parity field. Materialised here so it outlives the
+    // `ReferenceFrames` borrow below.
+    let second_field_reference =
+        if is_second_field && header.picture_coding_type == PictureCodingType::Predictive {
+            let pending = pending_field
+                .as_ref()
+                .expect("second field implies pending");
+            let prev = backward_anchor.ok_or(Error::InvalidBitstream(
+                "§7.6.2.1: P second field before any reference frame exists",
+            ))?;
+            Some(reference_frame_for_second_p_field(
+                &pending.field,
+                pending.structure,
+                prev,
+            )?)
+        } else {
+            None
+        };
+
+    let field = match header.picture_coding_type {
+        PictureCodingType::Intra => {
+            let (field, _placed) = decode_intra_picture(picture_region, geometry)?;
+            field
+        }
+        PictureCodingType::Predictive => {
+            let params = inter_params(header, ext, geometry);
+            let reference = if let Some(synthetic) = second_field_reference.as_ref() {
+                synthetic
+            } else {
+                backward_anchor.ok_or(Error::InvalidBitstream(
+                    "§7.6.2.1: P field before any reference frame exists",
+                ))?
+            };
+            let (field, _placed) = decode_field_picture(
+                picture_region,
+                params,
+                structure,
+                ReferenceFrames::forward_only(reference),
+            )?;
+            field
+        }
+        PictureCodingType::Bidirectional => {
+            let forward = forward_anchor.ok_or(Error::InvalidBitstream(
+                "§7.6.2.1: B field before two reference frames exist (no forward reference)",
+            ))?;
+            let backward = backward_anchor.ok_or(Error::InvalidBitstream(
+                "§7.6.2.1: B field before two reference frames exist (no backward reference)",
+            ))?;
+            let params = inter_params(header, ext, geometry);
+            let (field, _placed) = decode_field_picture(
+                picture_region,
+                params,
+                structure,
+                ReferenceFrames::bidirectional(forward, backward),
+            )?;
+            field
+        }
+    };
+
+    match pending_field.take() {
+        // First field of a pair: hold it back for its partner.
+        None => {
+            *pending_field = Some(PendingField {
+                field,
+                structure,
+                coding_type: header.picture_coding_type,
+                temporal_reference: header.temporal_reference,
+            });
+            Ok(None)
+        }
+        // Second field: interleave the pair into one frame (§3.131 /
+        // §3.13). The top field always supplies the even lines regardless
+        // of which field was coded first.
+        Some(first) => {
+            let (top, bottom) = match first.structure {
+                PictureStructure::TopField => (&first.field, &field),
+                _ => (&field, &first.field),
+            };
+            let frame = assemble_frame_from_fields(top, bottom)?;
+            Ok(Some(DecodedFrame {
+                frame,
+                // §6.3.10: both fields share the temporal_reference; the
+                // frame's I/P/B class for reordering follows the first
+                // field (an I+P field pair is an anchor frame).
+                temporal_reference: first.temporal_reference,
+                picture_coding_type: first.coding_type,
+            }))
+        }
+    }
+}
+
+/// Derive the **field** geometry of a field picture from the frame
+/// geometry: the field height is half the frame height (§6.1.1.4.1), and
+/// `frame_pred_frame_dct` is forced off (a field picture forbids it,
+/// §6.3.10). The §6.2.3.1 DCT-context flags are taken from the picture
+/// coding extension.
+fn field_geometry(
+    base_geometry: IntraPictureParams,
+    ext: &PictureCodingExtension,
+) -> IntraPictureParams {
+    IntraPictureParams {
+        height: base_geometry.height / 2,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: ext.intra_dc_precision,
+        intra_vlc_format: ext.intra_vlc_format,
+        alternate_scan: ext.alternate_scan,
+        q_scale_type: ext.q_scale_type,
+        ..base_geometry
+    }
+}
+
+/// Build the synthetic reference **frame** a §7.6.2.1 P second field
+/// predicts from (Figures 7-7 / 7-8): the just-decoded first field sits
+/// in its own parity slot, and the opposite-parity reference field is
+/// taken from `prev_frame` (the previously reconstructed reference
+/// frame). The driver's §6.3.17.2 `motion_vertical_field_select` then
+/// picks between the two as usual.
+///
+/// `first_field` is the field-height first field; `first_structure` is
+/// its parity; `prev_frame` is the full-height previous reference frame.
+/// The returned frame interleaves the two fields by parity (§3.131 /
+/// §3.13).
+fn reference_frame_for_second_p_field(
+    first_field: &FrameBuffer,
+    first_structure: PictureStructure,
+    prev_frame: &FrameBuffer,
+) -> Result<FrameBuffer> {
+    // Extract the previous frame's two fields, then replace the
+    // first-field parity slot with this frame's first field.
+    let prev_top = extract_field(prev_frame, PictureStructure::TopField);
+    let prev_bottom = extract_field(prev_frame, PictureStructure::BottomField);
+    let (top, bottom) = match first_structure {
+        PictureStructure::TopField => (first_field, &prev_bottom),
+        _ => (&prev_top, first_field),
+    };
+    assemble_frame_from_fields(top, bottom)
+}
+
+/// Extract one field (even / odd lines) of a full-height frame into a
+/// field-height [`FrameBuffer`], the inverse of
+/// [`assemble_frame_from_fields`]: top field = even frame lines (§3.131),
+/// bottom field = odd frame lines (§3.13). Used to recover the previous
+/// frame's individual reference fields for §7.6.2.1 second-field
+/// prediction.
+fn extract_field(frame: &FrameBuffer, structure: PictureStructure) -> FrameBuffer {
+    let parity = match structure {
+        PictureStructure::BottomField => 1usize,
+        _ => 0usize,
+    };
+    let field_height = frame.height.div_ceil(2);
+    let mut field = FrameBuffer::new(frame.width, field_height, frame.chroma_format);
+    copy_field_plane(&mut field.y, &frame.y, parity);
+    copy_field_plane(&mut field.cb, &frame.cb, parity);
+    copy_field_plane(&mut field.cr, &frame.cr, parity);
+    field
+}
+
+/// Copy every `2·r + parity` row of `src` into row `r` of `dst`.
+fn copy_field_plane(
+    dst: &mut crate::frame_assembly::Plane,
+    src: &crate::frame_assembly::Plane,
+    parity: usize,
+) {
+    for r in 0..dst.height() {
+        let src_y = 2 * r + parity;
+        for x in 0..dst.width() {
+            if let Some(v) = src.get(x, src_y) {
+                dst.put_sample(x, r, v);
+            }
+        }
+    }
 }
 
 /// Build the §7.6.3 motion-vector parameters for a P/B picture from the
