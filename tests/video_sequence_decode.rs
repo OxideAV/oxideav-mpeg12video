@@ -539,3 +539,74 @@ fn single_unpaired_field_picture_emits_no_frame() {
     let frames = decode_video_sequence(&stream).expect("lone field decode");
     assert!(frames.is_empty(), "an unpaired first field emits no frame");
 }
+
+/// Write a field-picture P "MC, Not Coded" macroblock with a zero
+/// motion vector, selecting reference field `select` (0 = top, 1 =
+/// bottom). Simple field prediction (`field_motion_type = 01`).
+fn write_p_copy_field_macroblock(bw: &mut BitWriter, select: u32) {
+    bw.write_bit(true); // macroblock_address_increment = 1
+    bw.write_u32(0b001, 3); // macroblock_type "MC, Not Coded" (Table B-3)
+    bw.write_u32(0b01, 2); // field_motion_type = Field-based (1 vector)
+    bw.write_u32(select, 1); // motion_vertical_field_select
+    bw.write_bit(true); // motion_code horiz = 0 (Table B-10 `1`)
+    bw.write_bit(true); // motion_code vert = 0
+}
+
+#[test]
+fn decodes_i_then_p_field_pairs_end_to_end() {
+    // An I field-pair (anchor) followed by a P field-pair. The P top
+    // field copies the previous frame's top reference field (zero MV);
+    // the P bottom field is the *second* field of its coded frame, so its
+    // top-reference-field read (select = 0) resolves to the just-decoded
+    // P top field of the SAME frame (§7.6.2.1). Both anchor fields are
+    // flat-128, so the whole P frame is flat 128 too — but the decode
+    // exercises the synthetic-reference path end-to-end through the
+    // bitstream (a non-flat result here would indicate a wrong reference).
+    let mut bw = BitWriter::new();
+    write_sequence_header_16x32(&mut bw);
+    write_sequence_extension(&mut bw);
+    // I field-pair, tr = 0 (the anchor frame).
+    write_field_picture(&mut bw, 0, PictureCodingType::Intra, 0b01, 15, 15, |b| {
+        write_intra_macroblock_field(b)
+    });
+    write_field_picture(&mut bw, 0, PictureCodingType::Intra, 0b10, 15, 15, |b| {
+        write_intra_macroblock_field(b)
+    });
+    // P field-pair, tr = 1: top then bottom, both zero-MV top-field copy.
+    write_field_picture(
+        &mut bw,
+        1,
+        PictureCodingType::Predictive,
+        0b01,
+        1,
+        15,
+        |b| write_p_copy_field_macroblock(b, 0),
+    );
+    write_field_picture(
+        &mut bw,
+        1,
+        PictureCodingType::Predictive,
+        0b10,
+        1,
+        15,
+        |b| write_p_copy_field_macroblock(b, 0),
+    );
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+
+    let frames = decode_video_sequence(&stream).expect("I+P field-pair decode");
+    // Two coded frames (one I, one P); no B-frames → coded == display.
+    assert_eq!(frames.len(), 2, "two field-pair frames decoded");
+    assert_eq!(frames[0].picture_coding_type, PictureCodingType::Intra);
+    assert_eq!(frames[1].picture_coding_type, PictureCodingType::Predictive);
+    assert_eq!(frames[0].temporal_reference, 0);
+    assert_eq!(frames[1].temporal_reference, 1);
+    for f in &frames {
+        assert_eq!((f.frame.y.width(), f.frame.y.height()), (16, 32));
+        for y in 0..32 {
+            for x in 0..16 {
+                assert_eq!(f.frame.y.get(x, y), Some(128), "flat-128 at ({x},{y})");
+            }
+        }
+    }
+}
