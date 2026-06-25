@@ -33,7 +33,11 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `video_sequence_decode` integration tests (field-pair → one frame; lone
   unpaired field emits no frame); the former
   `rejects_field_picture_structure` test is rewritten to the field-pair
-  assembly path.
+  assembly path. Four further `video_sequence` unit tests pin the
+  §7.6.2.1 synthetic-reference plumbing directly: `extract_field`
+  even/odd recovery, the second-P-field reference pairing for a top first
+  field and for a bottom first field, and the `field_geometry`
+  half-height / forced-field-DCT derivation.
 - round 365: **top-level `video_sequence()` decode loop with §6.1.1.11
   display-order frame reordering** — the crate's #1 open gap, the driver
   *above* the per-picture reconstructors. New `video_sequence` module

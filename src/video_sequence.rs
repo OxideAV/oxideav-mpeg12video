@@ -818,4 +818,122 @@ mod tests {
     fn trefs(output: &[DecodedFrame]) -> Vec<u16> {
         output.iter().map(|f| f.temporal_reference).collect()
     }
+
+    use crate::sequence_extension::ChromaFormat;
+
+    /// A field-height frame whose every luma sample equals `value`.
+    fn flat_field(width: usize, height: usize, value: u8) -> FrameBuffer {
+        let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+        for y in 0..height {
+            for x in 0..width {
+                f.y.put_sample(x, y, value);
+            }
+        }
+        f
+    }
+
+    /// A full-height frame whose luma sample equals `2·row + parity-ish`
+    /// encoding so even / odd lines are distinguishable.
+    fn full_frame_row_coded(width: usize, height: usize) -> FrameBuffer {
+        let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+        for y in 0..height {
+            for x in 0..width {
+                f.y.put_sample(x, y, y as u8);
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn extract_field_recovers_even_and_odd_lines() {
+        // A 4×8 frame whose luma row r == r. Top field (even lines) must
+        // be 0,2,4,6; bottom field (odd lines) 1,3,5,7 (§3.131 / §3.13).
+        let frame = full_frame_row_coded(4, 8);
+        let top = extract_field(&frame, PictureStructure::TopField);
+        let bottom = extract_field(&frame, PictureStructure::BottomField);
+        assert_eq!((top.y.width(), top.y.height()), (4, 4));
+        for r in 0..4u8 {
+            assert_eq!(top.y.get(0, r as usize), Some(2 * r));
+            assert_eq!(bottom.y.get(0, r as usize), Some(2 * r + 1));
+        }
+    }
+
+    #[test]
+    fn second_p_field_reference_pairs_current_first_with_prev_opposite() {
+        // §7.6.2.1 / Figures 7-7, 7-8: when the second P field is the
+        // BOTTOM field, the synthetic reference frame must carry the
+        // just-decoded TOP first field (value 99) on its even lines and
+        // the previous frame's BOTTOM field on its odd lines. The
+        // previous frame's row r == r, so its bottom field lines are
+        // 1,3,5,7.
+        let first_field = flat_field(4, 4, 99); // current frame's top field
+        let prev = full_frame_row_coded(4, 8);
+        let synthetic =
+            reference_frame_for_second_p_field(&first_field, PictureStructure::TopField, &prev)
+                .unwrap();
+        assert_eq!((synthetic.y.width(), synthetic.y.height()), (4, 8));
+        for r in 0..4u8 {
+            // Even (top reference field) = current first field (99).
+            assert_eq!(synthetic.y.get(0, (2 * r) as usize), Some(99));
+            // Odd (bottom reference field) = previous frame's odd rows.
+            assert_eq!(synthetic.y.get(0, (2 * r + 1) as usize), Some(2 * r + 1));
+        }
+    }
+
+    #[test]
+    fn second_p_field_reference_bottom_first_field() {
+        // When the first field is the BOTTOM field, it sits on the odd
+        // lines and the previous frame's TOP field (even rows 0,2,4,6) on
+        // the even lines.
+        let first_field = flat_field(4, 4, 77); // current frame's bottom field
+        let prev = full_frame_row_coded(4, 8);
+        let synthetic =
+            reference_frame_for_second_p_field(&first_field, PictureStructure::BottomField, &prev)
+                .unwrap();
+        for r in 0..4u8 {
+            assert_eq!(synthetic.y.get(0, (2 * r) as usize), Some(2 * r)); // prev top
+            assert_eq!(synthetic.y.get(0, (2 * r + 1) as usize), Some(77)); // current bottom
+        }
+    }
+
+    #[test]
+    fn field_geometry_halves_height_and_forces_field_dct() {
+        let base = IntraPictureParams {
+            width: 16,
+            height: 32,
+            chroma_format: ChromaFormat::Yuv420,
+            frame_pred_frame_dct: true,
+            intra_dc_precision: 0,
+            intra_vlc_format: false,
+            alternate_scan: false,
+            q_scale_type: false,
+        };
+        let ext = PictureCodingExtension {
+            f_code_fwd_horiz: 15,
+            f_code_fwd_vert: 15,
+            f_code_bwd_horiz: 15,
+            f_code_bwd_vert: 15,
+            intra_dc_precision: 2,
+            picture_structure: PictureStructure::TopField,
+            top_field_first: true,
+            frame_pred_frame_dct: false,
+            concealment_motion_vectors: false,
+            q_scale_type: true,
+            intra_vlc_format: true,
+            alternate_scan: true,
+            repeat_first_field: false,
+            chroma_420_type: false,
+            progressive_frame: false,
+            composite_display_flag: false,
+        };
+        let geom = field_geometry(base, &ext);
+        assert_eq!(geom.height, 16, "field height is half the frame height");
+        assert!(!geom.frame_pred_frame_dct, "field picture forbids it");
+        // The §6.2.3.1 DCT-context flags come from the picture coding ext.
+        assert_eq!(geom.intra_dc_precision, 2);
+        assert!(geom.intra_vlc_format);
+        assert!(geom.alternate_scan);
+        assert!(geom.q_scale_type);
+        assert_eq!(geom.width, 16, "width is unchanged");
+    }
 }
