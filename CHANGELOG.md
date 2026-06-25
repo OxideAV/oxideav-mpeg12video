@@ -42,7 +42,11 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   anchor followed by a P field-pair** end-to-end, driving the §7.6.2.1
   synthetic-reference path (the P bottom second field resolving its
   top-reference-field read to the just-decoded P top field of the same
-  coded frame) through the real bitstream.
+  coded frame) through the real bitstream. A final
+  `video_sequence_decode` test decodes a full **I/P/B field-pair run**
+  (coded I·P·B, displayed I·B·P) — completing the field-pair coverage
+  matrix and confirming the §6.1.1.11 display-order reorder applies
+  identically whether the pictures are frame pictures or field pairs.
 - round 365: **top-level `video_sequence()` decode loop with §6.1.1.11
   display-order frame reordering** — the crate's #1 open gap, the driver
   *above* the per-picture reconstructors. New `video_sequence` module

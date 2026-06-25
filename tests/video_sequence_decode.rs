@@ -610,3 +610,101 @@ fn decodes_i_then_p_field_pairs_end_to_end() {
         }
     }
 }
+
+/// Write a field-picture B forward-only "MC, Not Coded" macroblock
+/// (Table B-4 `010`) with a zero motion vector reading the top reference
+/// field. A B field never becomes a reference, so it always predicts from
+/// the two anchor frames (no same-frame synthetic reference).
+fn write_b_fwd_field_macroblock(bw: &mut BitWriter) {
+    bw.write_bit(true); // macroblock_address_increment = 1
+    bw.write_u32(0b010, 3); // macroblock_type forward-only B (Table B-4)
+    bw.write_u32(0b01, 2); // field_motion_type = Field-based
+    bw.write_u32(0b0, 1); // motion_vertical_field_select = 0 (top)
+    bw.write_bit(true); // fwd motion_code horiz = 0
+    bw.write_bit(true); // fwd motion_code vert = 0
+}
+
+#[test]
+fn decodes_i_p_b_field_pairs_in_display_order() {
+    // Field-picture I/P/B run, all as field pairs. Coded order:
+    //   I(tr=0) P(tr=2) B(tr=1), each a top+bottom field pair.
+    // Display order: I(0) B(1) P(2). The B field-pair predicts forward
+    // from the I anchor; both its fields use the two anchor frames (a B
+    // field is never a reference, so no synthetic same-frame reference).
+    let mut bw = BitWriter::new();
+    write_sequence_header_16x32(&mut bw);
+    write_sequence_extension(&mut bw);
+    // I field-pair, tr = 0.
+    write_field_picture(&mut bw, 0, PictureCodingType::Intra, 0b01, 15, 15, |b| {
+        write_intra_macroblock_field(b)
+    });
+    write_field_picture(&mut bw, 0, PictureCodingType::Intra, 0b10, 15, 15, |b| {
+        write_intra_macroblock_field(b)
+    });
+    // P field-pair, tr = 2 (zero-MV copy of the I anchor).
+    write_field_picture(
+        &mut bw,
+        2,
+        PictureCodingType::Predictive,
+        0b01,
+        1,
+        15,
+        |b| write_p_copy_field_macroblock(b, 0),
+    );
+    write_field_picture(
+        &mut bw,
+        2,
+        PictureCodingType::Predictive,
+        0b10,
+        1,
+        15,
+        |b| write_p_copy_field_macroblock(b, 0),
+    );
+    // B field-pair, tr = 1 (forward-only zero-MV from the I anchor).
+    write_field_picture(
+        &mut bw,
+        1,
+        PictureCodingType::Bidirectional,
+        0b01,
+        1,
+        1,
+        write_b_fwd_field_macroblock,
+    );
+    write_field_picture(
+        &mut bw,
+        1,
+        PictureCodingType::Bidirectional,
+        0b10,
+        1,
+        1,
+        write_b_fwd_field_macroblock,
+    );
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+
+    let frames = decode_video_sequence(&stream).expect("I/P/B field-pair decode");
+    // Three field-pair frames, reordered to display order I(0) B(1) P(2).
+    assert_eq!(frames.len(), 3, "three field-pair frames decoded");
+    assert_eq!(
+        frames
+            .iter()
+            .map(|f| f.temporal_reference)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "display-order temporal_references"
+    );
+    assert_eq!(frames[0].picture_coding_type, PictureCodingType::Intra);
+    assert_eq!(
+        frames[1].picture_coding_type,
+        PictureCodingType::Bidirectional
+    );
+    assert_eq!(frames[2].picture_coding_type, PictureCodingType::Predictive);
+    for f in &frames {
+        assert_eq!((f.frame.y.width(), f.frame.y.height()), (16, 32));
+        for y in 0..32 {
+            for x in 0..16 {
+                assert_eq!(f.frame.y.get(x, y), Some(128), "flat-128 at ({x},{y})");
+            }
+        }
+    }
+}
