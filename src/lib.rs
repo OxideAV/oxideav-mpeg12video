@@ -383,6 +383,7 @@ pub mod sequence_scalable_extension;
 pub mod skipped_macroblock;
 pub mod slice_header;
 pub mod slice_macroblock_walk;
+pub mod spatial_prediction_picture;
 pub mod spatial_resampling;
 pub mod spatial_temporal_combine;
 pub mod video_sequence;
@@ -550,6 +551,7 @@ pub use slice_macroblock_walk::{
     MacroblockRecord, ReconstructedMotionVectors, ReconstructedVector, SliceMotionRecord,
     SliceMotionWalk, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
+pub use spatial_prediction_picture::{spatial_prediction_picture, SpatialPredictionPicture};
 pub use spatial_resampling::{
     deinterlace, horizontal_resample, reinterlace, resample_progressive,
     upsample_spatial_prediction, vertical_resample, Field as ResampleField, Plane as ResamplePlane,

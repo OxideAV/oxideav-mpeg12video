@@ -8,6 +8,24 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 373: **§7.7.3 picture-level spatial-prediction driver
+  (`spatial_prediction_picture`)**. Composes the per-component §7.7.3.1
+  `upsample_spatial_prediction` driver across a whole picture: derives the
+  luminance + chrominance `ResampleParams` (Tables 7-16 / 7-17 / 7-18)
+  from the parsed `sequence_scalable_extension()`
+  `SpatialScalabilityParams` and the
+  `picture_spatial_scalable_extension()` offsets/flags + the two layers'
+  chrominance formats (§7.7.3.3), selects the Table 7-15 upsampling case
+  once for the whole picture, and runs the deinterlace → resample →
+  reinterlace stages over the lower-layer reconstructed frame's Y / Cb /
+  Cr planes to emit the enhancement-grid `SpatialPredictionPicture`
+  (`spat_pred_pic` per component) that the §7.7.4 combiner consumes. The
+  chrominance output extent follows the **enhancement** layer's
+  `chroma_shift`; negative `lower_layer_*_offset` cropping is rejected
+  (documented limitation). Closes the README "deriving the Table 7-16
+  `ResampleParams` from the sequence/picture geometry" gap for spatial
+  scalability. New public `spatial_prediction_picture` /
+  `SpatialPredictionPicture` re-exported at the crate root.
 - round 370: **field-picture pair → frame assembly in the
   `video_sequence()` decode loop (§6.1.1.4.1)**. The top-level driver now
   handles field-picture sequences end-to-end: a field picture
