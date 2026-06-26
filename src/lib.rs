@@ -383,6 +383,7 @@ pub mod sequence_scalable_extension;
 pub mod skipped_macroblock;
 pub mod slice_header;
 pub mod slice_macroblock_walk;
+pub mod snr_coefficient_addition;
 pub mod spatial_prediction_picture;
 pub mod spatial_resampling;
 pub mod spatial_temporal_combine;
@@ -550,6 +551,9 @@ pub use slice_macroblock_walk::{
     reconstruct_record_motion_vectors, reconstruct_slice_motion_vectors, walk_slice, walk_slice_at,
     MacroblockRecord, ReconstructedMotionVectors, ReconstructedVector, SliceMotionRecord,
     SliceMotionWalk, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
+};
+pub use snr_coefficient_addition::{
+    add_layer_block, add_layer_chroma_simulcast, simulcast_dc_predictor_block, CoeffBlock,
 };
 pub use spatial_prediction_picture::{spatial_prediction_picture, SpatialPredictionPicture};
 pub use spatial_resampling::{

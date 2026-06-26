@@ -8,6 +8,22 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 373: **§7.8.3.4 SNR-scalability addition of coefficients from
+  two layers** (`snr_coefficient_addition`). `add_layer_block` forms
+  `F'' = F''lower + F''enhance` for luminance / non-simulcast blocks;
+  `add_layer_chroma_simulcast` implements the `chroma_simulcast == 1`
+  special case (DC predicted from the lower layer, AC taken entirely from
+  the enhancement layer); `simulcast_dc_predictor_block` resolves
+  Table 7-27 — the lower-layer chrominance block index whose DC predicts
+  a given enhancement chrominance block for each allowed `(base, upper)`
+  chroma-format pair (4:2:0→4:2:2, 4:2:0→4:4:4, 4:2:2→4:4:4, and the
+  identity same-format case). The §7.8.2.2 enhancement-skipped
+  (`F''enhance == 0`) and lower-skipped (`F''lower == 0`) cases need no
+  special path — the all-zero block flows through. New public
+  `add_layer_block` / `add_layer_chroma_simulcast` /
+  `simulcast_dc_predictor_block` / `CoeffBlock` re-exported at the crate
+  root. Adds the SNR-scalability §7.8 combination half of the
+  enhancement-layer combiner named in the README.
 - round 373: **§7.7.4 co-located spatial extraction +
   per-macroblock spatial/temporal combiner**. `extract_colocated_spatial`
   reads a macroblock-sized region from a `SpatialPredictionPicture`
