@@ -558,7 +558,8 @@ pub use spatial_resampling::{
     ResampleParams, UpsampleCase,
 };
 pub use spatial_temporal_combine::{
-    combine_field_interleaved, combine_spatial_temporal, combine_uniform, SpatialWeight,
+    combine_field_interleaved, combine_macroblock_spatial_temporal, combine_spatial_temporal,
+    combine_uniform, extract_colocated_spatial, SpatialWeight,
 };
 pub use video_sequence::{decode_video_sequence, DecodedFrame};
 

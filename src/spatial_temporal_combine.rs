@@ -223,6 +223,85 @@ pub fn combine_spatial_temporal(
     combine_field_interleaved(top, bottom, width, temporal, spatial)
 }
 
+/// Extract `pel_pred_spat` for one macroblock-sized region — the §7.7.4
+/// *"appropriate samples, co-located with the current macroblock
+/// position, from spat_pred_pic"* step.
+///
+/// `spat_pred_pic` is one component plane of the enhancement-grid
+/// [`crate::SpatialPredictionPicture`]; `(base_x, base_y)` is the
+/// top-left sample coordinate of the region in that plane (the
+/// macroblock's pixel position for luma, or its chroma-subsampled
+/// position for a chroma plane); `(width, height)` the region size
+/// (16×16 for a luma macroblock, the chroma footprint otherwise).
+///
+/// Samples are read with §7.7.3.5 / §7.7.3.6 pad-to-edge border
+/// extension ([`crate::ResamplePlane::get_clamped`]) so a macroblock
+/// whose footprint runs past the bottom/right edge of `spat_pred_pic`
+/// reads the edge sample, matching the spatial-prediction picture's own
+/// border-extension convention. Output is row-major, clamped to the
+/// `[0, 255]` sample range (the spatial prediction is always an 8-bit
+/// reconstructed plane).
+pub fn extract_colocated_spatial(
+    spat_pred_pic: &crate::ResamplePlane,
+    base_x: usize,
+    base_y: usize,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(width * height);
+    for dy in 0..height {
+        for dx in 0..width {
+            let s = spat_pred_pic.get_clamped((base_x + dx) as i64, (base_y + dy) as i64);
+            out.push(s.clamp(0, 255) as u8);
+        }
+    }
+    out
+}
+
+/// §7.7.4 per-macroblock driver: combine a macroblock's temporal
+/// prediction (`pel_pred_temp`, formed in the enhancement layer per
+/// §7.6) with the co-located spatial prediction extracted from
+/// `spat_pred_pic`, under a resolved Table 7-21
+/// [`SpatialTemporalWeight`].
+///
+/// This composes [`extract_colocated_spatial`] with
+/// [`combine_spatial_temporal`]: it reads the `width × height` region of
+/// `spat_pred_pic` at the macroblock's `(base_x, base_y)` position and
+/// blends it with `temporal` per the weight (single `(a)` or per-field
+/// `(a; b)` form). `temporal` must hold `width * height` row-major
+/// samples.
+///
+/// The §7.7.4 weight-class `0` (temporal-only) and `4` (spatial-only)
+/// cases are signalled by `macroblock_type`, not by a
+/// `spatial_temporal_weight_code`, so they are not represented by a
+/// [`SpatialTemporalWeight`] and are handled by the caller (a class-0
+/// macroblock keeps `temporal` unchanged; a class-4 macroblock uses the
+/// extracted spatial block directly). A resolved
+/// [`SpatialTemporalWeight`] here only carries weight classes `1`, `2`,
+/// `3`.
+///
+/// # Errors
+/// * [`Error::InvalidBitstream`] if `temporal.len() != width * height`,
+///   or on a geometry error propagated from [`combine_spatial_temporal`].
+#[allow(clippy::too_many_arguments)]
+pub fn combine_macroblock_spatial_temporal(
+    weight: &SpatialTemporalWeight,
+    spat_pred_pic: &crate::ResamplePlane,
+    base_x: usize,
+    base_y: usize,
+    width: usize,
+    height: usize,
+    temporal: &[u8],
+) -> Result<Vec<u8>> {
+    if temporal.len() != width * height {
+        return Err(Error::InvalidBitstream(
+            "combine_macroblock_spatial_temporal: temporal block size != width * height (§7.7.4)",
+        ));
+    }
+    let spatial = extract_colocated_spatial(spat_pred_pic, base_x, base_y, width, height);
+    combine_spatial_temporal(weight, width, temporal, &spatial)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +551,84 @@ mod tests {
         let s = vec![3u8, 4];
         assert!(matches!(
             combine_spatial_temporal(&w, 2, &t, &s),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    // ---- extract_colocated_spatial / combine_macroblock_spatial_temporal ----
+
+    fn rplane(width: u32, height: u32, samples: &[i32]) -> crate::ResamplePlane {
+        crate::ResamplePlane::new(width, height, samples.to_vec()).expect("plane")
+    }
+
+    #[test]
+    fn extract_colocated_reads_the_region_at_the_macroblock_position() {
+        // 4×3 picture; extract the 2×2 region at (1, 1).
+        let pic = rplane(4, 3, &[0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23]);
+        let blk = extract_colocated_spatial(&pic, 1, 1, 2, 2);
+        assert_eq!(blk, vec![11, 12, 21, 22]);
+    }
+
+    #[test]
+    fn extract_colocated_pads_to_edge_past_the_picture_bounds() {
+        // 2×2 picture; a 3×3 region at (1, 1) runs off the bottom/right
+        // edge — the off-edge samples clamp to the nearest in-bounds one.
+        let pic = rplane(2, 2, &[1, 2, 3, 4]);
+        let blk = extract_colocated_spatial(&pic, 1, 1, 3, 3);
+        // Row at y=1: x=1->4, x=2->4(clamp), x=3->4(clamp).
+        // Rows y=2,3 clamp to y=1.
+        assert_eq!(blk, vec![4, 4, 4, 4, 4, 4, 4, 4, 4]);
+    }
+
+    #[test]
+    fn extract_colocated_clamps_negative_overshoot_samples_to_u8() {
+        // A resampled plane sample below 0 / above 255 (shouldn't occur
+        // for a valid reconstruction, but the extractor is defensive).
+        let pic = rplane(2, 1, &[-5, 300]);
+        let blk = extract_colocated_spatial(&pic, 0, 0, 2, 1);
+        assert_eq!(blk, vec![0, 255]);
+    }
+
+    #[test]
+    fn macroblock_combine_single_half_averages_colocated_block() {
+        // 2×2 spat_pred_pic; single 0,5 weight averages temporal with the
+        // co-located spatial block.
+        let pic = rplane(2, 2, &[100, 100, 100, 100]);
+        let w = single(8); // 0,5
+        let temporal = vec![0u8, 50, 200, 254];
+        let out = combine_macroblock_spatial_temporal(&w, &pic, 0, 0, 2, 2, &temporal).unwrap();
+        // (0+100)//2=50, (50+100)//2=75, (200+100)//2=150, (254+100)//2=177
+        assert_eq!(out, vec![50, 75, 150, 177]);
+    }
+
+    #[test]
+    fn macroblock_combine_single_spatial_uses_colocated_block_directly() {
+        let pic = rplane(4, 4, &(0..16).collect::<Vec<i32>>());
+        let w = single(16); // weight 1 — spatial-only
+                            // Extract the 2×2 region at (2, 2): rows {10,11},{14,15}.
+        let temporal = vec![0u8; 4];
+        let out = combine_macroblock_spatial_temporal(&w, &pic, 2, 2, 2, 2, &temporal).unwrap();
+        assert_eq!(out, vec![10, 11, 14, 15]);
+    }
+
+    #[test]
+    fn macroblock_combine_paired_splits_colocated_block_by_field() {
+        // 2×2 region; paired (1; 0): top row spatial, bottom row temporal.
+        let pic = rplane(2, 2, &[200, 201, 202, 203]);
+        let w = paired(16, 0, 2);
+        let temporal = vec![10u8, 11, 12, 13];
+        let out = combine_macroblock_spatial_temporal(&w, &pic, 0, 0, 2, 2, &temporal).unwrap();
+        // row0 spatial (200,201); row1 temporal (12,13).
+        assert_eq!(out, vec![200, 201, 12, 13]);
+    }
+
+    #[test]
+    fn macroblock_combine_rejects_wrong_temporal_size() {
+        let pic = rplane(2, 2, &[1, 2, 3, 4]);
+        let w = single(8);
+        let temporal = vec![1u8, 2, 3]; // 3 != 2*2
+        assert!(matches!(
+            combine_macroblock_spatial_temporal(&w, &pic, 0, 0, 2, 2, &temporal),
             Err(Error::InvalidBitstream(_))
         ));
     }

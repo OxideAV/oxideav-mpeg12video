@@ -389,6 +389,18 @@ impl Plane {
     }
 
     /// Sample at `(x, y)` with pad-to-edge clamping (border extension).
+    /// Coordinates outside `[0, width)` / `[0, height)` clamp to the
+    /// nearest in-bounds sample. This is the §7.7.4 *"extracting the
+    /// appropriate samples, co-located with the current macroblock
+    /// position, from spat_pred_pic"* accessor — a macroblock whose
+    /// 16×16 footprint runs off the bottom/right edge of `spat_pred_pic`
+    /// reads the edge sample.
+    #[inline]
+    pub fn get_clamped(&self, x: i64, y: i64) -> i32 {
+        self.sample_clamped(x, y)
+    }
+
+    /// Sample at `(x, y)` with pad-to-edge clamping (border extension).
     /// `x` / `y` outside `[0, width)` / `[0, height)` clamp to the
     /// nearest in-bounds sample per the §7.7.3.5 / §7.7.3.6 border-
     /// extension rule.

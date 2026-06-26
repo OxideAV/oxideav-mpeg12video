@@ -8,6 +8,23 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 373: **§7.7.4 co-located spatial extraction +
+  per-macroblock spatial/temporal combiner**. `extract_colocated_spatial`
+  reads a macroblock-sized region from a `SpatialPredictionPicture`
+  component plane at the macroblock's `(base_x, base_y)` pixel position
+  (the §7.7.4 *"appropriate samples, co-located with the current
+  macroblock position, from spat_pred_pic"* step), with §7.7.3.5/.6
+  pad-to-edge border extension for macroblocks running off the picture
+  edge and a `[0, 255]` clamp. `combine_macroblock_spatial_temporal`
+  composes that extraction with the existing `combine_spatial_temporal`,
+  blending a macroblock's temporal prediction (`pel_pred_temp`, §7.6) with
+  the co-located spatial prediction under a resolved Table 7-21
+  `SpatialTemporalWeight` (single `(a)` or per-field `(a; b)` form). Both
+  re-exported at the crate root; `ResamplePlane::get_clamped` is now
+  public. This closes the per-macroblock side of the §7.7.4 combiner loop
+  (extract → weight → blend), leaving only the full enhancement-layer
+  decode loop that walks the macroblocks and feeds the temporal
+  predictions in.
 - round 373: **§7.7.3 picture-level spatial-prediction driver
   (`spatial_prediction_picture`)**. Composes the per-component §7.7.3.1
   `upsample_spatial_prediction` driver across a whole picture: derives the
