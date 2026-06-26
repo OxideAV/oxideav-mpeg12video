@@ -8,6 +8,18 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 373: **§7.9 temporal-scalability reference-frame selection
+  (`PictureTemporalScalableExtension::resolve_references`)**. Resolves the
+  `reference_select_code` into the named prediction reference source(s)
+  for each picture type — Table 7-28 for P-pictures (forward = most-recent
+  enhancement / most-recent lower / next lower) and Table 7-29 for
+  B-pictures (the three allowed forward/backward pairs, backward always a
+  lower-layer frame per §7.9). I-pictures resolve to `Intra` (no
+  references). The forbidden codes (`'11'` for P, `'00'` for B) are
+  rejected. New public `PictureReferences` / `ReferenceSource` enums
+  re-exported at the crate root. Completes the §7.9 reference-selection
+  half of the temporal-scalability enhancement-layer path (the parse +
+  picture-type validation were already present).
 - round 373: **§7.8.3.4 SNR-scalability addition of coefficients from
   two layers** (`snr_coefficient_addition`). `add_layer_block` forms
   `F'' = F''lower + F''enhance` for luminance / non-simulcast blocks;

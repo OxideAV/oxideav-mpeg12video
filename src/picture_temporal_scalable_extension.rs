@@ -160,6 +160,119 @@ impl PictureTemporalScalableExtension {
         }
         Ok(())
     }
+
+    /// §7.9 / Tables 7-28 + 7-29: resolve the `reference_select_code`
+    /// into the named prediction reference source(s) for this picture's
+    /// `picture_coding_type`.
+    ///
+    /// In temporal scalability the enhancement-layer picture's prediction
+    /// references are drawn from the enhancement layer's own decoded
+    /// pictures and/or the lower layer's decoded frames; which combination
+    /// is keyed by `reference_select_code` (Table 7-28 for P-pictures,
+    /// Table 7-29 for B-pictures). I-pictures use no references
+    /// ([`PictureReferences::Intra`]); their `reference_select_code` is
+    /// `'11'` (§7.9), validated by [`Self::validate`].
+    ///
+    /// Returns a [`PictureReferences`] that names the §7.6.2 reference
+    /// each prediction direction draws from. The
+    /// `forward_temporal_reference` / `backward_temporal_reference`
+    /// fields (which lower-layer frame, by its `temporal_reference`) are
+    /// available directly on `self`; §7.9 says they *"take the value 0"*
+    /// when the picture type does not imply a reference in that
+    /// direction.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidBitstream`] for a code Table 7-28 / 7-29 marks
+    ///   *"forbidden"* for this picture type (the same conditions
+    ///   [`Self::validate`] rejects).
+    pub fn resolve_references(
+        &self,
+        picture_coding_type: PictureCodingType,
+    ) -> Result<PictureReferences> {
+        match picture_coding_type {
+            // §7.9: I-pictures use no prediction references.
+            PictureCodingType::Intra => Ok(PictureReferences::Intra),
+            // Table 7-28: forward-only prediction.
+            PictureCodingType::Predictive => {
+                let forward =
+                    match self.reference_select_code {
+                        0b00 => ReferenceSource::MostRecentEnhancement,
+                        0b01 => ReferenceSource::MostRecentLowerLayer,
+                        0b10 => ReferenceSource::NextLowerLayer,
+                        _ => return Err(Error::InvalidBitstream(
+                            "reference_select_code: '11' is forbidden in P-pictures (Table 7-28)",
+                        )),
+                    };
+                Ok(PictureReferences::Predictive { forward })
+            }
+            // Table 7-29: forward + backward prediction.
+            PictureCodingType::Bidirectional => {
+                let (forward, backward) =
+                    match self.reference_select_code {
+                        0b01 => (
+                            ReferenceSource::MostRecentEnhancement,
+                            ReferenceSource::MostRecentLowerLayer,
+                        ),
+                        0b10 => (
+                            ReferenceSource::MostRecentEnhancement,
+                            ReferenceSource::NextLowerLayer,
+                        ),
+                        0b11 => (
+                            ReferenceSource::MostRecentLowerLayer,
+                            ReferenceSource::NextLowerLayer,
+                        ),
+                        _ => return Err(Error::InvalidBitstream(
+                            "reference_select_code: '00' is forbidden in B-pictures (Table 7-29)",
+                        )),
+                    };
+                Ok(PictureReferences::Bidirectional { forward, backward })
+            }
+        }
+    }
+}
+
+/// A single §7.9 prediction reference source named by Table 7-28 /
+/// Table 7-29. *"Most recent lower layer frame in display order"*
+/// includes the frame temporally coincident with the enhancement-layer
+/// picture (§7.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceSource {
+    /// *"Most recent decoded enhancement picture(s)"* — the prediction
+    /// is drawn from the enhancement layer's own most recently decoded
+    /// picture(s).
+    MostRecentEnhancement,
+    /// *"Most recent lower layer frame/picture in display order"*
+    /// (including the temporally-coincident lower-layer frame).
+    MostRecentLowerLayer,
+    /// *"Next lower layer frame/picture in display order"* — the
+    /// lower-layer frame that is forward in time relative to the current
+    /// enhancement picture.
+    NextLowerLayer,
+}
+
+/// The resolved §7.9 prediction references for a temporal-scalability
+/// enhancement-layer picture (Tables 7-28 / 7-29), keyed by
+/// `picture_coding_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PictureReferences {
+    /// I-picture: no prediction references (§7.9).
+    Intra,
+    /// P-picture: a single forward reference (Table 7-28).
+    Predictive {
+        /// The forward prediction reference source.
+        forward: ReferenceSource,
+    },
+    /// B-picture: forward + backward references (Table 7-29). §7.9:
+    /// *"Backward prediction cannot be made from a picture in the
+    /// enhancement layer"*, so `backward` is always a lower-layer
+    /// source.
+    Bidirectional {
+        /// The forward prediction reference source.
+        forward: ReferenceSource,
+        /// The backward prediction reference source (always a lower-layer
+        /// frame — §7.9).
+        backward: ReferenceSource,
+    },
 }
 
 #[cfg(test)]
@@ -326,5 +439,94 @@ mod tests {
             ..bad
         };
         assert!(ok.validate(PictureCodingType::Bidirectional).is_ok());
+    }
+
+    // ---- resolve_references: Tables 7-28 / 7-29 ----
+
+    fn ext(code: u8) -> PictureTemporalScalableExtension {
+        PictureTemporalScalableExtension {
+            reference_select_code: code,
+            forward_temporal_reference: 0,
+            backward_temporal_reference: 0,
+        }
+    }
+
+    #[test]
+    fn resolve_intra_has_no_references() {
+        assert_eq!(
+            ext(0b11)
+                .resolve_references(PictureCodingType::Intra)
+                .unwrap(),
+            PictureReferences::Intra
+        );
+    }
+
+    #[test]
+    fn resolve_p_picture_table_7_28() {
+        use ReferenceSource::*;
+        for (code, src) in [
+            (0b00u8, MostRecentEnhancement),
+            (0b01, MostRecentLowerLayer),
+            (0b10, NextLowerLayer),
+        ] {
+            assert_eq!(
+                ext(code)
+                    .resolve_references(PictureCodingType::Predictive)
+                    .unwrap(),
+                PictureReferences::Predictive { forward: src }
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_p_picture_rejects_forbidden_eleven() {
+        assert!(matches!(
+            ext(0b11).resolve_references(PictureCodingType::Predictive),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_b_picture_table_7_29() {
+        use ReferenceSource::*;
+        for (code, fwd, bwd) in [
+            (0b01u8, MostRecentEnhancement, MostRecentLowerLayer),
+            (0b10, MostRecentEnhancement, NextLowerLayer),
+            (0b11, MostRecentLowerLayer, NextLowerLayer),
+        ] {
+            assert_eq!(
+                ext(code)
+                    .resolve_references(PictureCodingType::Bidirectional)
+                    .unwrap(),
+                PictureReferences::Bidirectional {
+                    forward: fwd,
+                    backward: bwd
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_b_picture_rejects_forbidden_zero() {
+        assert!(matches!(
+            ext(0b00).resolve_references(PictureCodingType::Bidirectional),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_b_picture_backward_is_always_lower_layer() {
+        // §7.9: backward prediction cannot come from the enhancement
+        // layer.
+        for code in [0b01u8, 0b10, 0b11] {
+            if let PictureReferences::Bidirectional { backward, .. } = ext(code)
+                .resolve_references(PictureCodingType::Bidirectional)
+                .unwrap()
+            {
+                assert_ne!(backward, ReferenceSource::MostRecentEnhancement);
+            } else {
+                panic!("expected Bidirectional");
+            }
+        }
     }
 }

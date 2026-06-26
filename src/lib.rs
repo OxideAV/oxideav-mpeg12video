@@ -514,7 +514,8 @@ pub use picture_spatial_scalable_extension::{
     PictureSpatialScalableExtension, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
 };
 pub use picture_temporal_scalable_extension::{
-    PictureTemporalScalableExtension, PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
+    PictureReferences, PictureTemporalScalableExtension, ReferenceSource,
+    PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
 };
 pub use pmv::{
     apply_spatial_temporal_reset, compute_delta, decode_motion_vector, reconstruct_component,
