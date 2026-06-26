@@ -276,6 +276,138 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
     Ok(output)
 }
 
+/// Compute the **continuous display index** of each frame in a
+/// **coded-order** sequence from its §6.3.10 `temporal_reference`,
+/// tracking the §6.3.8 / §6.1.1.11 GOP reset.
+///
+/// `temporal_reference` is a 10-bit field that, in display order,
+/// increments by one (modulo 1024) within a group of pictures and is
+/// *"set to zero"* for the first frame (in display order) after each
+/// `group_of_pictures_header()` (§6.3.9). On its own a `temporal_reference`
+/// is therefore only meaningful relative to its GOP base; to compare
+/// frames across GOPs (or to detect the modulo-1024 wrap inside a long
+/// GOP) the per-GOP base must be accumulated.
+///
+/// This function walks the **coded-order** frames and assigns each a
+/// strictly-GOP-relative-base + `temporal_reference` index that is
+/// globally monotonic in display order:
+///
+/// * A GOP boundary is detected when a frame's `temporal_reference`
+///   returns to `0` after a non-zero value has been seen in the current
+///   GOP (the §6.3.9 *"set to zero"* reset), at which point the running
+///   base advances past the previous GOP's highest display index.
+/// * Within a GOP the index is `gop_base + temporal_reference`.
+///
+/// The result is in **coded order** (same order as the input); each
+/// entry is the display index of that coded frame. Sorting the frames by
+/// this index yields display order — equivalent to the §6.1.1.11
+/// structural reorder, but derived from `temporal_reference` rather than
+/// from the I/P/B hold-back, so the two can be cross-checked
+/// ([`verify_display_order`]).
+///
+/// `temporal_references` is the coded-order list of each frame's
+/// `temporal_reference`. For a coded frame sent as two field pictures
+/// the two share one `temporal_reference` (§6.3.9); pass it once per
+/// **frame**.
+pub fn display_indices_from_temporal_references(temporal_references: &[u16]) -> Vec<u64> {
+    let mut indices = Vec::with_capacity(temporal_references.len());
+    let mut gop_base: u64 = 0;
+    // Highest display index seen in the current GOP (so the next GOP's
+    // base starts just past it). `None` until the first frame.
+    let mut gop_max: Option<u64> = None;
+    // Whether a non-zero temporal_reference has been seen since the last
+    // GOP reset — needed so a leading `tr == 0` (the first GOP) is not
+    // mistaken for a reset, and so a GOP whose first coded frame has
+    // tr != 0 (coded order: the I-frame's tr is its display position,
+    // which can be > 0 when B-frames precede it in display order) still
+    // resets correctly on the next `tr == 0`.
+    let mut seen_nonzero = false;
+
+    for (i, &tr) in temporal_references.iter().enumerate() {
+        if tr == 0 && i != 0 && seen_nonzero {
+            // §6.3.9 reset: a new GOP begins. Advance the base past the
+            // previous GOP's highest display index.
+            gop_base = gop_max.map_or(0, |m| m + 1);
+            seen_nonzero = false;
+        }
+        if tr != 0 {
+            seen_nonzero = true;
+        }
+        let index = gop_base + u64::from(tr);
+        gop_max = Some(gop_max.map_or(index, |m| m.max(index)));
+        indices.push(index);
+    }
+    indices
+}
+
+/// Verify that a **display-order** sequence of frames is consistent with
+/// the §6.1.1.11 reorder: the continuous display indices derived from
+/// each frame's `temporal_reference`
+/// ([`display_indices_from_temporal_references`], computed over the
+/// *coded* order) must be strictly increasing when the frames are read in
+/// display order.
+///
+/// `coded_order_trefs` is the `temporal_reference` of each frame in
+/// **coded** order; `display_order_trefs` is the `temporal_reference` of
+/// each frame in **display** order (e.g. the order
+/// [`decode_video_sequence`] returns). Both list one entry per frame and
+/// must be permutations of each other.
+///
+/// Returns `Ok(())` when the display order is a valid §6.1.1.11
+/// presentation order; otherwise [`Error::InvalidBitstream`].
+///
+/// # Errors
+/// * [`Error::InvalidBitstream`] if the two lists differ in length, are
+///   not permutations of one another, or the display order is not
+///   strictly increasing in display index (a reorder inconsistency).
+pub fn verify_display_order(coded_order_trefs: &[u16], display_order_trefs: &[u16]) -> Result<()> {
+    if coded_order_trefs.len() != display_order_trefs.len() {
+        return Err(Error::InvalidBitstream(
+            "verify_display_order: coded / display frame counts differ (§6.1.1.11)",
+        ));
+    }
+    let coded_indices = display_indices_from_temporal_references(coded_order_trefs);
+    // A `temporal_reference` value can repeat across GOPs but never within
+    // one GOP, and the derived display indices are globally unique. Walk
+    // the display order; each frame's index must exceed the previous one.
+    // Match each display frame to the smallest unconsumed coded frame
+    // carrying the same `temporal_reference`, so cross-GOP duplicates pair
+    // up in increasing-index order.
+    let mut available: Vec<(u16, u64)> = coded_order_trefs
+        .iter()
+        .copied()
+        .zip(coded_indices.iter().copied())
+        .collect();
+
+    let mut prev: Option<u64> = None;
+    for &tr in display_order_trefs {
+        // Find the smallest unconsumed display index whose frame carries
+        // this temporal_reference.
+        let pick = available
+            .iter()
+            .enumerate()
+            .filter(|(_, (t, _))| *t == tr)
+            .min_by_key(|(_, (_, idx))| *idx)
+            .map(|(pos, (_, idx))| (pos, *idx));
+        let Some((pos, idx)) = pick else {
+            return Err(Error::InvalidBitstream(
+                "verify_display_order: display frame has no matching coded frame (not a permutation)",
+            ));
+        };
+        if let Some(p) = prev {
+            if idx <= p {
+                return Err(Error::InvalidBitstream(
+                    "verify_display_order: display order not strictly increasing in display index (§6.1.1.11)",
+                ));
+            }
+        }
+        prev = Some(idx);
+        available.swap_remove(pos);
+    }
+    debug_assert!(available.is_empty());
+    Ok(())
+}
+
 /// Holds back one I/P anchor by one picture so it displays *after* the
 /// B-frames that follow it in coded order but precede it in display
 /// order (§6.1.1.11).
@@ -935,5 +1067,92 @@ mod tests {
         assert!(geom.alternate_scan);
         assert!(geom.q_scale_type);
         assert_eq!(geom.width, 16, "width is unchanged");
+    }
+
+    // ---- display_indices_from_temporal_references / verify_display_order ----
+
+    #[test]
+    fn display_indices_single_gop_passes_through_temporal_reference() {
+        // Coded order I P B B P B B with temporal_references
+        // 0 3 1 2 6 4 5 (the §6.1.1.11 worked example, GOP-relative).
+        let coded = [0u16, 3, 1, 2, 6, 4, 5];
+        let idx = display_indices_from_temporal_references(&coded);
+        // Single GOP: index == temporal_reference.
+        assert_eq!(idx, vec![0, 3, 1, 2, 6, 4, 5]);
+    }
+
+    #[test]
+    fn display_indices_accumulate_across_a_gop_reset() {
+        // Two GOPs: first GOP trefs 0 2 1 (max display index 2), second
+        // GOP resets to 0: trefs 0 2 1. The second GOP's base is 3.
+        let coded = [0u16, 2, 1, 0, 2, 1];
+        let idx = display_indices_from_temporal_references(&coded);
+        assert_eq!(idx, vec![0, 2, 1, 3, 5, 4]);
+    }
+
+    #[test]
+    fn display_indices_leading_zero_is_not_a_reset() {
+        // The very first frame's tref 0 must not be treated as a GOP
+        // reset; the base stays 0.
+        let coded = [0u16, 1, 2];
+        let idx = display_indices_from_temporal_references(&coded);
+        assert_eq!(idx, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn display_indices_consecutive_zero_anchors_each_start_a_gop() {
+        // I-only stream, one I per GOP, each tref 0. Every 0 after the
+        // first that follows a non-zero is a reset; but here there is no
+        // non-zero between them, so they share a GOP base (degenerate but
+        // consistent — an all-I, all-tref-0 stream maps to base 0 for
+        // every frame). The structural and tref reorders agree (identity).
+        let coded = [0u16, 0, 0];
+        let idx = display_indices_from_temporal_references(&coded);
+        assert_eq!(idx, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn verify_display_order_accepts_the_6_1_1_11_example() {
+        // Coded order: I(0) P(3) B(1) B(2) P(6) B(4) B(5).
+        let coded = [0u16, 3, 1, 2, 6, 4, 5];
+        // Display order: I(0) B(1) B(2) P(3) B(4) B(5) P(6).
+        let display = [0u16, 1, 2, 3, 4, 5, 6];
+        assert!(verify_display_order(&coded, &display).is_ok());
+    }
+
+    #[test]
+    fn verify_display_order_accepts_two_gops() {
+        let coded = [0u16, 2, 1, 0, 2, 1];
+        // GOP1 display 0,1,2 then GOP2 display 0,1,2.
+        let display = [0u16, 1, 2, 0, 1, 2];
+        assert!(verify_display_order(&coded, &display).is_ok());
+    }
+
+    #[test]
+    fn verify_display_order_rejects_a_wrong_permutation() {
+        let coded = [0u16, 3, 1, 2, 6, 4, 5];
+        // Swap the two anchors out of order in display.
+        let bad = [0u16, 1, 2, 6, 4, 5, 3];
+        assert!(matches!(
+            verify_display_order(&coded, &bad),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    #[test]
+    fn verify_display_order_rejects_length_mismatch() {
+        assert!(matches!(
+            verify_display_order(&[0u16, 1], &[0u16]),
+            Err(Error::InvalidBitstream(_))
+        ));
+    }
+
+    #[test]
+    fn verify_display_order_rejects_non_permutation() {
+        // display has a tref the coded order never produced.
+        assert!(matches!(
+            verify_display_order(&[0u16, 1, 2], &[0u16, 1, 9]),
+            Err(Error::InvalidBitstream(_))
+        ));
     }
 }

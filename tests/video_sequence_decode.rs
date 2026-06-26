@@ -250,6 +250,15 @@ fn decodes_i_p_b_run_in_display_order() {
     );
     assert_eq!(frames[2].picture_coding_type, PictureCodingType::Predictive);
 
+    // The §6.1.1.11 structural reorder agrees with the
+    // temporal_reference-derived display order: coded order trefs
+    // [0, 2, 1] reordered to display trefs [0, 1, 2] is a valid
+    // presentation order.
+    let coded_trefs = [0u16, 2, 1];
+    let display_trefs: Vec<u16> = frames.iter().map(|f| f.temporal_reference).collect();
+    oxideav_mpeg12video::verify_display_order(&coded_trefs, &display_trefs)
+        .expect("structural reorder agrees with temporal_reference order (§6.1.1.11)");
+
     // Every frame is the flat-128 reconstruction (the I anchor copied
     // forward through the P, averaged through the B).
     for f in &frames {

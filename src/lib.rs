@@ -566,7 +566,10 @@ pub use spatial_temporal_combine::{
     combine_field_interleaved, combine_macroblock_spatial_temporal, combine_spatial_temporal,
     combine_uniform, extract_colocated_spatial, SpatialWeight,
 };
-pub use video_sequence::{decode_video_sequence, DecodedFrame};
+pub use video_sequence::{
+    decode_video_sequence, display_indices_from_temporal_references, verify_display_order,
+    DecodedFrame,
+};
 
 /// Crate-local error type. Each variant is raised at most by the
 /// specific decoder stage named in its docstring; sites may grow as

@@ -8,6 +8,22 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 373: **`temporal_reference`-driven display-order verification
+  (§6.1.1.11 / §6.3.8 / §6.3.9)**.
+  `display_indices_from_temporal_references` walks a coded-order list of
+  `temporal_reference` values and assigns each frame a globally-monotonic
+  continuous display index, accumulating a per-GOP base across the §6.3.9
+  *"set to zero"* GOP reset (so frames are comparable across GOPs and
+  across the modulo-1024 wrap). `verify_display_order` cross-checks that a
+  display-ordered frame sequence is strictly increasing in those indices —
+  i.e. that the structural §6.1.1.11 hold-back reorder agrees with the
+  `temporal_reference`-implied presentation order — matching display
+  frames to the smallest unconsumed coded frame of the same
+  `temporal_reference` so cross-GOP duplicates pair up in order. An
+  integration test asserts the two reorders agree on a decoded I-P-B run.
+  Both re-exported at the crate root. Makes `temporal_reference`
+  load-bearing for the display-order reorder rather than purely
+  structural.
 - round 373: **§7.9 temporal-scalability reference-frame selection
   (`PictureTemporalScalableExtension::resolve_references`)**. Resolves the
   `reference_select_code` into the named prediction reference source(s)

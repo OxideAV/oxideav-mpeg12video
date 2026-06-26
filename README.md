@@ -204,7 +204,13 @@ verifying the parsers against known-good encoded streams.
   dispatches each frame picture to the matching per-picture driver with
   the running §7.6 anchor pair, and reorders the reconstructed frames
   into **display order** per §6.1.1.11 (B-frames pass through, I/P frames
-  held back one). It covers **frame pictures** (the MPEG-2 common case +
+  held back one). The structural reorder is independently cross-checkable
+  against the `temporal_reference`-derived display order:
+  `display_indices_from_temporal_references` accumulates a continuous
+  display index per coded frame across §6.3.8/§6.3.9 GOP resets, and
+  `verify_display_order` confirms a display-ordered sequence is strictly
+  increasing in those indices (an integration test asserts the two agree
+  on a decoded I-P-B run). It covers **frame pictures** (the MPEG-2 common case +
   MPEG-1 entirely) **and field-picture pairs** (§6.1.1.4.1): each field
   picture is reconstructed by `decode_field_picture`, the first field of
   a pair is held until its partner arrives, and the two are interleaved
