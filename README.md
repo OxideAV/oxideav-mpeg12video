@@ -166,6 +166,26 @@ The decode pipeline is implemented end-to-end at the module level:
   under the Table 7-21 `spatial_temporal_weight`, in both the single
   `(a)` whole-block form and the per-field `(a; b)` even/odd-row form
   (the `weight ∈ {0, 0.5, 1}` cases, with the `// 2` average for `0.5`).
+  The **picture-level** spatial-prediction driver
+  (`spatial_prediction_picture`) derives the Table 7-16 / 7-17 / 7-18
+  `ResampleParams` from the parsed scalable-extension geometry and
+  upsamples a whole lower-layer frame's Y/Cb/Cr planes to the
+  enhancement-grid `SpatialPredictionPicture`; the **per-macroblock**
+  combiner (`combine_macroblock_spatial_temporal` /
+  `extract_colocated_spatial`) reads the co-located `spat_pred_pic` block
+  at a macroblock's position (with §7.7.3 pad-to-edge border extension)
+  and blends it with the temporal prediction under the resolved weight.
+- **SNR-scalable coefficient addition (§7.8.3.4)**: `add_layer_block`
+  forms `F'' = F''lower + F''enhance`; the `chroma_simulcast == 1` case
+  (`add_layer_chroma_simulcast`) predicts the chroma DC from the lower
+  layer and takes AC from the enhancement layer, with the Table 7-27
+  `simulcast_dc_predictor_block` lookup selecting the coincident
+  lower-layer chroma block per `(base, upper)` chroma pair.
+- **Temporal-scalable reference selection (§7.9)**:
+  `PictureTemporalScalableExtension::resolve_references` maps the
+  `reference_select_code` into the named Table 7-28 (P-picture) /
+  Table 7-29 (B-picture) prediction reference sources
+  (`PictureReferences` / `ReferenceSource`).
 - **Block / macroblock drivers**: `mpeg2_block_decoder::decode_block`
   chains DC prelude → residual VLC → inverse scan → inverse quant →
   IDCT into a single bitstream→plane entry point, and
@@ -207,16 +227,35 @@ verifying the parsers against known-good encoded streams.
   field-picture **B-field skipped-macroblock** §7.6.6.3 direction
   inheritance. (Frame-picture 16×8-MC does not exist — §7.6 restricts 16×8
   MC to field pictures.)
-- Scalability profiles and the spatial/temporal/SNR enhancement layers
-  (parsed structurally; the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
-  resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15 upsampling-
-  case dispatch + `upsample_spatial_prediction` driver, the §7.7.4
-  spatial/temporal prediction combination, and §7.7.5.1 PMV reset are all
-  implemented, but the full enhancement-layer decode loop that drives
-  them per macroblock — deriving the Table 7-16 `ResampleParams` from the
-  sequence/picture geometry and threading the per-macroblock
-  `spat_pred_pic` into the §7.7.4 combiner across a whole picture — is not
-  yet composed).
+- Scalability profiles and the spatial/temporal/SNR enhancement layers.
+  Nearly all of the per-stage math is now implemented and composed:
+  - **Spatial (§7.7)**: the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
+    resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15
+    upsampling-case dispatch + `upsample_spatial_prediction` driver, the
+    §7.7.4 spatial/temporal prediction combination, and §7.7.5.1 PMV
+    reset. The **picture-level spatial-prediction driver**
+    (`spatial_prediction_picture`) now derives the Table 7-16 / 7-17 /
+    7-18 `ResampleParams` from the parsed `sequence_scalable_extension()`
+    + `picture_spatial_scalable_extension()` geometry and runs the
+    upsample over a whole lower-layer frame to emit the enhancement-grid
+    `SpatialPredictionPicture` (`spat_pred_pic` per component), and the
+    **§7.7.4 per-macroblock combiner**
+    (`combine_macroblock_spatial_temporal` /
+    `extract_colocated_spatial`) extracts the co-located `spat_pred_pic`
+    block at each macroblock position (with §7.7.3 border extension) and
+    blends it with the temporal prediction under the Table 7-21 weight.
+  - **SNR (§7.8)**: the §7.8.3.4 two-layer coefficient addition
+    (`add_layer_block`, plus the `chroma_simulcast` DC-prediction case
+    `add_layer_chroma_simulcast` with the Table 7-27
+    `simulcast_dc_predictor_block` lookup).
+  - **Temporal (§7.9)**: the Table 7-28 / 7-29 reference-frame selection
+    (`PictureTemporalScalableExtension::resolve_references`).
+
+  What remains uncomposed is the **top-level multi-layer decode loop**
+  that demuxes the two layer bitstreams, decodes the lower layer, and
+  walks the enhancement-layer macroblocks feeding the temporal
+  predictions and lower-layer coefficients/frames into these combiners
+  picture-by-picture.
 
 ## Clean-room provenance
 
