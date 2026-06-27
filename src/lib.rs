@@ -457,7 +457,8 @@ pub use macroblock_pipeline::{
 pub use macroblock_type::{MacroblockType, MacroblockTypeTable};
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 pub use motion_vector::{
-    MotionVector, MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,
+    encode_dmvector, encode_motion_component, encode_motion_vector, split_delta, MotionVector,
+    MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,
 };
 pub use motion_vector_selection::{
     select_predictions, MacroblockPrediction, PredictionOp, PredictionRegion, ReferenceTarget,

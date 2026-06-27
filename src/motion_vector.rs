@@ -394,6 +394,96 @@ impl MotionVector {
     }
 }
 
+// =============================================================
+// Encoder — §6.2.5.2.1 motion_vector emission
+// =============================================================
+
+/// Emit the Table B-10 `motion_code` VLC for the signed value
+/// `motion_code` (`-16..=16`) into `bw`.
+fn encode_motion_code(bw: &mut oxideav_core::bits::BitWriter, motion_code: i8) {
+    let entry = TABLE_B10
+        .iter()
+        .find(|e| e.value == motion_code)
+        .expect("every motion_code -16..=16 has a Table B-10 codeword");
+    bw.write_u32(u32::from(entry.code), u32::from(entry.bits));
+}
+
+/// Emit the Table B-11 `dmvector[t]` value (`{-1, 0, +1}`): `0` →
+/// 1-bit `0`; `+1` → `10`; `-1` → `11`. Used by the dual-prime
+/// (§6.3.17.2) motion-vector encode path.
+pub fn encode_dmvector(bw: &mut oxideav_core::bits::BitWriter, dmvector: i8) {
+    match dmvector {
+        0 => bw.write_bit(false),
+        1 => {
+            bw.write_bit(true);
+            bw.write_bit(false);
+        }
+        -1 => {
+            bw.write_bit(true);
+            bw.write_bit(true);
+        }
+        _ => panic!("dmvector must be in {{-1, 0, +1}}"),
+    }
+}
+
+/// Split a desired per-component `delta` (half-sample units, already in
+/// the §7.6.3.1 `[low, high]` range) into the `(motion_code,
+/// motion_residual)` pair that [`crate::pmv::compute_delta`]
+/// reconstructs back to `delta`, for the given `f_code`.
+///
+/// Inverts the §7.6.3.1 formula:
+/// * `f == 1` or `delta == 0` → `motion_code = delta`, no residual.
+/// * otherwise → `motion_code = sign(delta) * ((|delta| - 1) / f + 1)`,
+///   `motion_residual = (|delta| - 1) mod f`.
+///
+/// # Panics (debug)
+/// Debug-asserts `f_code` in `1..=9` and the resulting `motion_code` in
+/// `-16..=16`.
+pub fn split_delta(delta: i32, f_code: u8) -> (i8, Option<u8>) {
+    debug_assert!((1..=9).contains(&f_code));
+    let r_size = u32::from(f_code - 1);
+    let f: i32 = 1i32 << r_size;
+    if f == 1 || delta == 0 {
+        debug_assert!((-16..=16).contains(&delta));
+        return (delta as i8, None);
+    }
+    let abs = delta.unsigned_abs() as i32;
+    let q = (abs - 1) / f + 1;
+    let residual = ((abs - 1) % f) as u8;
+    let motion_code = if delta < 0 { -q } else { q };
+    debug_assert!((-16..=16).contains(&motion_code));
+    (motion_code as i8, Some(residual))
+}
+
+/// Emit one motion-vector component `(motion_code, motion_residual)` for
+/// the half-sample `delta` and `f_code` per §6.2.5.2.1: the Table B-10
+/// `motion_code`, then the `(f_code - 1)`-bit `motion_residual` when the
+/// §6.2.5.2.1 gate (`f_code != 1 && motion_code != 0`) requires it.
+pub fn encode_motion_component(bw: &mut oxideav_core::bits::BitWriter, delta: i32, f_code: u8) {
+    let (motion_code, residual) = split_delta(delta, f_code);
+    encode_motion_code(bw, motion_code);
+    if f_code != 1 && motion_code != 0 {
+        let r_size = u32::from(f_code - 1);
+        let r = residual.expect("residual present when f_code != 1 && motion_code != 0");
+        bw.write_u32(u32::from(r), r_size);
+    }
+}
+
+/// Emit a full `motion_vector(r, s)` for the horizontal + vertical
+/// half-sample deltas `(dx, dy)` and per-component f_codes, with no
+/// dual-prime `dmvector`. The `_` parameter mirrors the decoder's
+/// signature shape.
+pub fn encode_motion_vector(
+    bw: &mut oxideav_core::bits::BitWriter,
+    dx: i32,
+    dy: i32,
+    f_code_horiz: u8,
+    f_code_vert: u8,
+) {
+    encode_motion_component(bw, dx, f_code_horiz);
+    encode_motion_component(bw, dy, f_code_vert);
+}
+
 /// `s`-index — the `motion_vectors(s)` argument selecting between the
 /// forward (`s = 0`) and backward (`s = 1`) reference (Table 7-7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1012,5 +1102,89 @@ mod tests {
         assert!(s.contains("Forward"));
         let kind_s = format!("{:?}", MotionVectorsKind::Backward);
         assert!(kind_s.contains("Backward"));
+    }
+
+    // ----- encoder round-trips -----
+
+    /// Encode a single component delta, then decode it back via
+    /// match_b10 + the §7.6.3.1 compute_delta and confirm equality.
+    fn roundtrip_delta(delta: i32, f_code: u8) {
+        let mut bw = BitWriter::new();
+        encode_motion_component(&mut bw, delta, f_code);
+        bw.write_bit(true); // sentinel so the reader has trailing bits
+        bw.align_to_byte();
+        let bytes = bw.finish();
+        let mut br = BitReader::new(&bytes);
+        let entry = match_b10(&mut br).expect("decode motion_code");
+        let motion_code = entry.value;
+        let residual = if f_code != 1 && motion_code != 0 {
+            let r = br
+                .read_u32(u32::from(f_code - 1))
+                .expect("read motion_residual");
+            Some(r)
+        } else {
+            None
+        };
+        let decoded = crate::pmv::compute_delta(i32::from(motion_code), residual, f_code)
+            .expect("compute_delta");
+        assert_eq!(decoded, delta, "delta {delta} f_code {f_code}");
+    }
+
+    #[test]
+    fn encode_motion_component_roundtrips() {
+        // f_code 1: motion_code carries the whole delta (range -16..=16).
+        for delta in -16..=16 {
+            roundtrip_delta(delta, 1);
+        }
+        // f_code 2..=4: larger ranges using motion_residual.
+        for &f_code in &[2u8, 3, 4] {
+            let (low, high, _) = crate::pmv::vector_range(f_code).unwrap();
+            for delta in [low, low + 1, -5, -1, 0, 1, 7, high - 1, high] {
+                roundtrip_delta(delta, f_code);
+            }
+        }
+    }
+
+    #[test]
+    fn split_delta_zero_has_no_residual() {
+        assert_eq!(split_delta(0, 4), (0, None));
+        assert_eq!(split_delta(5, 1), (5, None));
+    }
+
+    #[test]
+    fn encode_dmvector_roundtrips() {
+        for dmv in [-1i8, 0, 1] {
+            let mut bw = BitWriter::new();
+            encode_dmvector(&mut bw, dmv);
+            bw.write_bit(true);
+            bw.align_to_byte();
+            let bytes = bw.finish();
+            let mut br = BitReader::new(&bytes);
+            assert_eq!(match_b11(&mut br).unwrap(), dmv);
+        }
+    }
+
+    #[test]
+    fn encode_full_motion_vector_roundtrips() {
+        let mut bw = BitWriter::new();
+        encode_motion_vector(&mut bw, 3, -5, 3, 3);
+        bw.write_bit(true);
+        bw.align_to_byte();
+        let bytes = bw.finish();
+        let mut br = BitReader::new(&bytes);
+        let mv = MotionVector::parse(&mut br, 3, 3, false).expect("parse mv");
+        let dx = crate::pmv::compute_delta(
+            i32::from(mv.motion_code_horiz),
+            mv.motion_residual_horiz.map(u32::from),
+            3,
+        )
+        .unwrap();
+        let dy = crate::pmv::compute_delta(
+            i32::from(mv.motion_code_vert),
+            mv.motion_residual_vert.map(u32::from),
+            3,
+        )
+        .unwrap();
+        assert_eq!((dx, dy), (3, -5));
     }
 }
