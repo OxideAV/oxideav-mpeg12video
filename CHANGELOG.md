@@ -8,6 +8,32 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 377: **MPEG-2 video encoder — intra + zero-MV inter paths**. The
+  encoder is built as the bit-exact inverse of the decode pipeline so
+  everything it emits round-trips through `decode_video_sequence`.
+  Forward DCT (`forward_dct::fdct_8x8`, the §A transpose of the IDCT
+  kernel, with `f64` reference + separable layers); forward quantiser
+  (`forward_quant::forward_quantise_block`) inverting §7.4.2.3
+  (round-to-nearest intra AC, dead-zone non-intra, `Round(F/intra_dc_mult)`
+  intra DC); entropy encoders against the same Annex B tables the decoder
+  walks (`mpeg2_block_dc::encode_intra_dc` §7.2.1 DC VLC;
+  `mpeg2_dct_coeff::encode_dct_coeff` / `encode_end_of_block` §7.2.2
+  run-level + Table B-16 escape with the §7.2.2.2 NOTE 2/3 FIRST/NEXT
+  gating; `coded_block_pattern::encode_cbp420` §6.2.5.3 Table B-9;
+  `motion_vector::encode_motion_vector` / `split_delta` §6.2.5.2.1 Tables
+  B-10/B-11 inverting §7.6.3.1); §6.2 bitstream layer writers
+  (`stream_writer`); `encode_intra_picture` (a complete all-intra
+  frame-picture encoder, sequence header → sequence-end code);
+  `encode_nonintra_block` + `encode_p_copy_picture` /
+  `encode_i_then_p_copy` (the inter residual block encoder and a zero-MV
+  P-picture assembler). `tests/encode_intra_roundtrip.rs` proves a flat
+  frame round-trips exactly, a gradient round-trips with luma MAE < 4,
+  the encoder is reconstruction-idempotent (decode→re-encode→decode is a
+  pixel-exact fixed point), and the I→P-copy stream reproduces the
+  decoded anchor sample-for-sample. All new entry points re-exported at
+  the crate root. Motion estimation (non-zero MV search) and B-picture
+  encoding remain future work; their MV-coding / residual / cbp
+  primitives are already in place.
 - round 373: **`temporal_reference`-driven display-order verification
   (§6.1.1.11 / §6.3.8 / §6.3.9)**.
   `display_indices_from_temporal_references` walks a coded-order list of

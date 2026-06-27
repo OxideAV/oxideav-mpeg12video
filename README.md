@@ -1,9 +1,9 @@
 # oxideav-mpeg12video
 
 Clean-room MPEG-1 Video (ISO/IEC 11172-2) and MPEG-2 Video
-(ITU-T H.262 / ISO/IEC 13818-2) decode building blocks for the
-[oxideav](https://github.com/OxideAV/oxideav-workspace) framework.
-Pure Rust, no C dependencies.
+(ITU-T H.262 / ISO/IEC 13818-2) decode **and encode** building blocks
+for the [oxideav](https://github.com/OxideAV/oxideav-workspace)
+framework. Pure Rust, no C dependencies.
 
 ## Status
 
@@ -194,6 +194,46 @@ The decode pipeline is implemented end-to-end at the module level:
 
 Each stage is covered by synthetic unit tests plus integration fixtures
 verifying the parsers against known-good encoded streams.
+
+## Encoder
+
+An **MPEG-2 video encoder** is now in hand for the baseline intra +
+zero-motion-vector inter paths, built as the bit-exact inverse of the
+decode pipeline so that everything it emits round-trips back through
+`decode_video_sequence`:
+
+- **§A forward DCT** (`forward_dct::fdct_8x8`, plus the `f64` reference
+  / separable layers) — the transpose of the §A IDCT kernel.
+- **Forward quantiser** (`forward_quant::forward_quantise_block`)
+  inverting the §7.4.2.3 arithmetic: round-to-nearest for intra AC,
+  dead-zone-toward-zero for non-intra, `Round(F/intra_dc_mult)` for the
+  §7.4.1 intra DC.
+- **Entropy encoders** against the same Annex B tables the decoder
+  walks: `mpeg2_block_dc::encode_intra_dc` (§7.2.1 DC size VLC +
+  differential), `mpeg2_dct_coeff::encode_dct_coeff` /
+  `encode_end_of_block` (§7.2.2 run-level VLC + Table B-16 escape, with
+  the §7.2.2.2 NOTE 2/3 FIRST/NEXT gating), `coded_block_pattern::encode_cbp420`
+  (§6.2.5.3 Table B-9), and `motion_vector::encode_motion_vector` /
+  `split_delta` (§6.2.5.2.1 Tables B-10/B-11, inverting §7.6.3.1).
+- **Bitstream layer writers** (`stream_writer`) for the §6.2
+  sequence / sequence-extension / picture / picture-coding-extension /
+  slice headers + the sequence-end code.
+- **`encode_intra_picture`** — a complete all-intra frame-picture
+  encoder (sequence header → sequence-end code). The encode→decode
+  round-trip in `tests/encode_intra_roundtrip.rs` proves: a flat frame
+  round-trips exactly, a gradient round-trips with luma MAE < 4, and the
+  encoder is reconstruction-idempotent (decode → re-encode → decode is a
+  pixel-exact fixed point — the forward and inverse quantisers are exact
+  inverses on the lattice).
+- **`encode_nonintra_block`** + **`encode_p_copy_picture`** /
+  **`encode_i_then_p_copy`** — the inter residual-block encoder
+  (dead-zone non-intra quantise, no DC prelude, `dct_coeff_first`
+  leading symbol) and a zero-MV P-picture assembler that reproduces the
+  forward anchor exactly when decoded.
+
+Motion estimation (non-zero MV search) and B-picture encoding remain
+future work; the MV-coding, residual, and cbp primitives they need are
+already in place.
 
 ## Not yet supported
 
