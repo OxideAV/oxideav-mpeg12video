@@ -350,6 +350,7 @@ pub mod dual_prime;
 pub mod extension_and_user_data;
 pub mod forming_predictions;
 pub mod forward_dct;
+pub mod forward_quant;
 pub mod frame_assembly;
 pub mod gop_header;
 pub mod idct;
@@ -421,6 +422,7 @@ pub use forming_predictions::{
     HalfPattern, ReferencePlane, SplitVector,
 };
 pub use forward_dct::{fdct_8x8, fdct_candidate_f64, fdct_reference_f64};
+pub use forward_quant::{forward_quantise_block, forward_quantise_intra_dc, MAX_CODED_LEVEL};
 pub use frame_assembly::{
     assemble_frame_from_fields, block_placement, chroma_shift, decode_intra_picture,
     place_intra_block, place_intra_macroblock, BlockPlacement, FrameBuffer, IntraPictureParams,
