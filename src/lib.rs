@@ -355,6 +355,7 @@ pub mod frame_assembly;
 pub mod gop_header;
 pub mod idct;
 pub mod inter_reconstruction;
+pub mod intra_encoder;
 pub mod macroblock_modes;
 pub mod macroblock_pipeline;
 pub mod macroblock_type;
@@ -443,6 +444,7 @@ pub use inter_reconstruction::{
     FieldPicture16x8Motion, FieldPictureMotion, FrameMotion, InterError, MotionVectorPel,
     ReferenceFrames, ResidualBlock,
 };
+pub use intra_encoder::encode_intra_picture;
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
     SpatialTemporalWeight,
