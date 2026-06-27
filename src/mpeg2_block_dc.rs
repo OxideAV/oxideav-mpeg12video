@@ -319,6 +319,76 @@ fn read_dc_differential(br: &mut BitReader<'_>, dct_dc_size: u8) -> Result<i32> 
 }
 
 // =============================================================
+// Encoder — §7.2.1 dct_dc_size VLC + dc_dct_differential emission
+// =============================================================
+
+/// Find the §7.2.1 entry that codes `dct_dc_size = size` in Table B-12
+/// (luminance) or B-13 (chrominance), returning `(code, bits)`.
+fn dc_size_entry(component: DcComponent, size: u8) -> (u16, u8) {
+    let table = match component {
+        DcComponent::Luminance => TABLE_B12,
+        DcComponent::Chrominance => TABLE_B13,
+    };
+    let entry = table
+        .iter()
+        .find(|e| e.size == size)
+        .expect("every dct_dc_size 0..=11 has a Table B-12/B-13 codeword");
+    (entry.code, entry.bits)
+}
+
+/// Smallest `dct_dc_size` (`0..=11`) able to carry the signed
+/// `dct_diff`. `dct_diff == 0` needs size 0; otherwise the minimal
+/// `size` with `|dct_diff| <= 2^size - 1`.
+fn dc_size_for_diff(dct_diff: i32) -> u8 {
+    if dct_diff == 0 {
+        return 0;
+    }
+    let mag = dct_diff.unsigned_abs();
+    let mut size = 1u8;
+    while (1u32 << size) - 1 < mag {
+        size += 1;
+        debug_assert!(
+            size <= MAX_DC_SIZE,
+            "dct_diff {dct_diff} exceeds MAX_DC_SIZE range"
+        );
+    }
+    size
+}
+
+/// Emit a §7.2.1 intra DC prelude: the `dct_dc_size_*` VLC (Table
+/// B-12 / B-13 by `component`) followed by the `dct_dc_size`-bit
+/// `dc_dct_differential` field that reconstructs `dct_diff` exactly.
+///
+/// `dct_diff` is the signed DC differential `QFS[0] - dc_dct_pred[cc]`
+/// the encoder must transmit. The function is the exact inverse of
+/// [`reconstruct_dc_diff`]: for a non-zero `dct_diff` it picks the
+/// minimal `dct_dc_size`, writes its codeword, then the
+/// `dc_dct_differential` value (`dct_diff` itself when positive, or
+/// `dct_diff + 2^size - 1` when negative).
+pub fn encode_intra_dc(
+    bw: &mut oxideav_core::bits::BitWriter,
+    component: DcComponent,
+    dct_diff: i32,
+) {
+    let size = dc_size_for_diff(dct_diff);
+    let (code, bits) = dc_size_entry(component, size);
+    bw.write_u32(u32::from(code), u32::from(bits));
+    if size == 0 {
+        return;
+    }
+    // Invert reconstruct_dc_diff: for dct_diff >= half_range we sent the
+    // value verbatim; for dct_diff < half_range the wire value is
+    // dct_diff + (2^size - 1).
+    let half_range = 1i32 << (size - 1);
+    let differential = if dct_diff >= half_range {
+        dct_diff
+    } else {
+        dct_diff + (1i32 << size) - 1
+    };
+    bw.write_u32(differential as u32, u32::from(size));
+}
+
+// =============================================================
 // §7.2.1 / Table 7-2 — dc_dct_pred[cc] state + reset values
 // =============================================================
 
@@ -1088,5 +1158,45 @@ mod tests {
         assert!(format!("{p:?}").contains("DcPredictors"));
         assert!(format!("{:?}", ColourComponent::Cb).contains("Cb"));
         assert!(format!("{:?}", DcComponent::Chrominance).contains("Chrominance"));
+    }
+
+    #[test]
+    fn dc_size_for_diff_picks_minimal_size() {
+        assert_eq!(dc_size_for_diff(0), 0);
+        assert_eq!(dc_size_for_diff(1), 1); // |1| <= 2^1-1=1
+        assert_eq!(dc_size_for_diff(-1), 1);
+        assert_eq!(dc_size_for_diff(2), 2); // |2| <= 2^2-1=3
+        assert_eq!(dc_size_for_diff(3), 2);
+        assert_eq!(dc_size_for_diff(4), 3); // 4 > 3
+        assert_eq!(dc_size_for_diff(2047), 11);
+        assert_eq!(dc_size_for_diff(-2047), 11);
+    }
+
+    #[test]
+    fn encode_intra_dc_roundtrips_through_decode() {
+        // Encode each signed differential, then decode it back through
+        // decode_dc_block starting from a known predictor; the decoded
+        // dct_diff must equal the input.
+        for &component in &[ColourComponent::Y, ColourComponent::Cb] {
+            for diff in [-2047i32, -300, -4, -1, 0, 1, 3, 4, 255, 1024, 2047] {
+                let dc = component.dc_component();
+                let mut bw = BitWriter::new();
+                encode_intra_dc(&mut bw, dc, diff);
+                let bytes = pad_and_finish(bw);
+                let mut br = BitReader::new(&bytes);
+                // Predictor base chosen per-diff so QFS[0] = base + diff
+                // stays inside [0, 2047] for 11-bit precision: any base in
+                // [max(0,-diff), min(2047, 2047-diff)] works.
+                let mut preds = DcPredictors::new(3).unwrap();
+                let lo = (-diff).max(0);
+                let hi = (2047 - diff).min(2047);
+                let base = 1024.clamp(lo, hi);
+                preds.set(component, base);
+                let out = decode_dc_block(&mut br, &mut preds, component)
+                    .expect("decode encoded DC differential");
+                assert_eq!(out.dct_diff, diff, "component {component:?} diff {diff}");
+                assert_eq!(out.qfs_zero, base + diff);
+            }
+        }
     }
 }

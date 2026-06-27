@@ -468,15 +468,17 @@ pub use mpeg1_reconstruct::{
 };
 pub use mpeg2_block_dc::{
     dc_pred_reset_value as mpeg2_dc_pred_reset_value, decode_dc_block as mpeg2_decode_dc_block,
-    qfs_zero_max as mpeg2_qfs_zero_max, ColourComponent as Mpeg2ColourComponent,
-    DcCoefficient as Mpeg2DcCoefficient, DcComponent as Mpeg2DcComponent,
-    DcPredictors as Mpeg2DcPredictors, MAX_DC_SIZE as MPEG2_MAX_DC_SIZE,
+    encode_intra_dc as mpeg2_encode_intra_dc, qfs_zero_max as mpeg2_qfs_zero_max,
+    ColourComponent as Mpeg2ColourComponent, DcCoefficient as Mpeg2DcCoefficient,
+    DcComponent as Mpeg2DcComponent, DcPredictors as Mpeg2DcPredictors,
+    MAX_DC_SIZE as MPEG2_MAX_DC_SIZE,
 };
 pub use mpeg2_block_decoder::{
     decode_block as mpeg2_decode_block, BlockContext as Mpeg2BlockContext,
     DecodedBlock as Mpeg2DecodedBlock,
 };
 pub use mpeg2_dct_coeff::{
+    encode_dct_coeff as mpeg2_encode_dct_coeff, encode_end_of_block as mpeg2_encode_end_of_block,
     CoefficientPosition as Mpeg2CoefficientPosition, DctCoeff as Mpeg2DctCoeff,
     DctCoeffStep as Mpeg2DctCoeffStep, TableSelection as Mpeg2VlcTable,
     ESCAPE_SIGNED_LEVEL_MAX as MPEG2_ESCAPE_SIGNED_LEVEL_MAX,

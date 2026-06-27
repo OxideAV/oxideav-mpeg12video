@@ -1812,6 +1812,112 @@ impl DctCoeffStep {
 }
 
 // =============================================================
+// Encoder — §7.2.2 run-level VLC emission (Tables B-14/B-15/B-16)
+// =============================================================
+
+/// The four pages of the selected §7.2.2.1 Table 7-3 codeword table.
+fn table_pages(table: TableSelection) -> [&'static [CoeffEntry]; 4] {
+    match table {
+        TableSelection::TableZero => [
+            TABLE_B14_PAGE1,
+            TABLE_B14_PAGE2,
+            TABLE_B14_PAGE3,
+            TABLE_B14_PAGE4,
+        ],
+        TableSelection::TableOne => [
+            TABLE_B15_PAGE1,
+            TABLE_B15_PAGE2,
+            TABLE_B15_PAGE3,
+            TABLE_B15_PAGE4,
+        ],
+    }
+}
+
+/// Find the VLC entry that codes `(run, |level|)` in `table`, honouring
+/// the §7.2.2.2 NOTE 2 / NOTE 3 FIRST/NEXT gating for the Table B-14
+/// `(0, 1)` alternates.
+///
+/// Returns `Some((code, bits))` for the codeword (excluding the trailing
+/// sign bit) if the pair has a short VLC form, or `None` if the encoder
+/// must fall back to the Table B-16 escape.
+fn find_vlc_entry(
+    table: TableSelection,
+    position: CoefficientPosition,
+    run: u8,
+    level_mag: u16,
+) -> Option<(u16, u8)> {
+    if level_mag == 0 || level_mag > u16::from(u8::MAX) {
+        return None;
+    }
+    let level = level_mag as u8;
+    for page in table_pages(table) {
+        for &entry in page {
+            if entry.run != run || entry.level != level {
+                continue;
+            }
+            // §7.2.2.2 NOTE 2/3: Table B-14 has two `(0, 1)` rows — the
+            // 1-bit `1s` (FIRST-only) and the 2-bit `11s` (NEXT-only).
+            if table == TableSelection::TableZero && run == 0 && level == 1 {
+                match (entry.bits, position) {
+                    (1, CoefficientPosition::Next) => continue,
+                    (2, CoefficientPosition::First) => continue,
+                    _ => {}
+                }
+            }
+            return Some((entry.code, entry.bits));
+        }
+    }
+    None
+}
+
+/// Emit one `(run, signed_level)` coefficient into `bw` per §7.2.2,
+/// using the short VLC form from Table B-14 / B-15 when the pair is
+/// listed, or the Table B-16 escape (`000001` + 6-bit run + 12-bit
+/// signed_level) otherwise.
+///
+/// `table` is the §7.2.2.1 Table 7-3 selection; `position` is FIRST for
+/// the first coefficient of a non-intra block and NEXT otherwise (it
+/// only affects the Table B-14 `(0, ±1)` codeword choice). `run` is the
+/// zero-run (`0..=63`); `signed_level` is the non-zero amplitude in
+/// `[-2047, +2047] \ {0}`.
+///
+/// # Panics (debug)
+/// Debug-asserts `signed_level != 0` and `run <= MAX_RUN`.
+pub fn encode_dct_coeff(
+    bw: &mut oxideav_core::bits::BitWriter,
+    table: TableSelection,
+    position: CoefficientPosition,
+    run: u8,
+    signed_level: i16,
+) {
+    debug_assert!(signed_level != 0, "signed_level = 0 is not codable");
+    debug_assert!(run <= MAX_RUN, "run {run} exceeds MAX_RUN");
+    let negative = signed_level < 0;
+    let level_mag = signed_level.unsigned_abs();
+    if let Some((code, bits)) = find_vlc_entry(table, position, run, level_mag) {
+        bw.write_u32(u32::from(code), u32::from(bits));
+        bw.write_bit(negative); // sign bit `s`: 0 = positive, 1 = negative
+    } else {
+        // Table B-16 escape: prefix + 6-bit run + 12-bit signed_level
+        // two's complement.
+        bw.write_u32(ESCAPE_CODE, ESCAPE_BITS);
+        bw.write_u32(u32::from(run), ESCAPE_RUN_BITS);
+        let level_word = (i32::from(signed_level) & 0xFFF) as u32;
+        bw.write_u32(level_word, ESCAPE_LEVEL_BITS);
+    }
+}
+
+/// Emit the table-dependent `end_of_block` codeword per §7.2.2: `10`
+/// (2 bits) for Table B-14, `0110` (4 bits) for Table B-15.
+pub fn encode_end_of_block(bw: &mut oxideav_core::bits::BitWriter, table: TableSelection) {
+    let (code, bits) = match table {
+        TableSelection::TableZero => (EOB_B14_CODE, EOB_B14_BITS),
+        TableSelection::TableOne => (EOB_B15_CODE, EOB_B15_BITS),
+    };
+    bw.write_u32(code, bits);
+}
+
+// =============================================================
 // Tests
 // =============================================================
 
@@ -2537,5 +2643,94 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidBitstream(_)));
+    }
+
+    // ----- encoder round-trip -----
+
+    /// Encode then decode a single (run, signed_level), confirming the
+    /// decoder recovers the same pair via whichever form the encoder
+    /// chose (short VLC or Table B-16 escape).
+    fn roundtrip_one(
+        table: TableSelection,
+        position: CoefficientPosition,
+        run: u8,
+        signed_level: i16,
+    ) {
+        let mut bw = BitWriter::new();
+        encode_dct_coeff(&mut bw, table, position, run, signed_level);
+        let bytes = pad_and_finish(bw);
+        let mut br = BitReader::new(&bytes);
+        let step = DctCoeffStep::parse(&mut br, table, position).expect("decode encoded coeff");
+        match step.symbol {
+            DctCoeff::RunLevel {
+                run: r,
+                signed_level: l,
+                ..
+            } => {
+                assert_eq!(
+                    (r, l),
+                    (run, signed_level),
+                    "table {table:?} pos {position:?}"
+                );
+            }
+            DctCoeff::EndOfBlock => panic!("expected run-level, got EOB"),
+        }
+    }
+
+    #[test]
+    fn encode_short_vlc_pairs_roundtrip() {
+        // Pairs that have a listed short VLC in both tables.
+        for &table in &[TableSelection::TableZero, TableSelection::TableOne] {
+            for &(run, level) in &[(0u8, 1i16), (1, 1), (0, 2), (2, 1), (0, 3), (5, 1)] {
+                roundtrip_one(table, CoefficientPosition::Next, run, level);
+                roundtrip_one(table, CoefficientPosition::Next, run, -level);
+            }
+        }
+    }
+
+    #[test]
+    fn encode_first_position_uses_one_bit_form() {
+        // Table B-14 (0, 1) FIRST is the 1-bit `1s` code; decoding with
+        // First position must recover (0, 1).
+        roundtrip_one(TableSelection::TableZero, CoefficientPosition::First, 0, 1);
+        roundtrip_one(TableSelection::TableZero, CoefficientPosition::First, 0, -1);
+    }
+
+    #[test]
+    fn encode_escape_for_large_level_roundtrips() {
+        // A (run, level) with no short VLC form must use the Table B-16
+        // escape and still decode back exactly.
+        roundtrip_one(TableSelection::TableZero, CoefficientPosition::Next, 0, 200);
+        roundtrip_one(
+            TableSelection::TableZero,
+            CoefficientPosition::Next,
+            30,
+            -1500,
+        );
+        roundtrip_one(
+            TableSelection::TableOne,
+            CoefficientPosition::Next,
+            10,
+            2047,
+        );
+        roundtrip_one(
+            TableSelection::TableOne,
+            CoefficientPosition::Next,
+            5,
+            -2047,
+        );
+    }
+
+    #[test]
+    fn encode_end_of_block_roundtrips() {
+        for &table in &[TableSelection::TableZero, TableSelection::TableOne] {
+            let mut bw = BitWriter::new();
+            encode_end_of_block(&mut bw, table);
+            let bytes = pad_and_finish(bw);
+            let mut br = BitReader::new(&bytes);
+            let step =
+                DctCoeffStep::parse(&mut br, table, CoefficientPosition::Next).expect("decode EOB");
+            assert_eq!(step.symbol, DctCoeff::EndOfBlock, "table {table:?}");
+        }
     }
 }
