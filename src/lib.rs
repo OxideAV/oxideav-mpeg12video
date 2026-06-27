@@ -389,6 +389,7 @@ pub mod snr_coefficient_addition;
 pub mod spatial_prediction_picture;
 pub mod spatial_resampling;
 pub mod spatial_temporal_combine;
+pub mod stream_writer;
 pub mod video_sequence;
 
 pub use add_coefficients::{
@@ -569,6 +570,11 @@ pub use spatial_resampling::{
 pub use spatial_temporal_combine::{
     combine_field_interleaved, combine_macroblock_spatial_temporal, combine_spatial_temporal,
     combine_uniform, extract_colocated_spatial, SpatialWeight,
+};
+pub use stream_writer::{
+    write_picture_coding_extension, write_picture_header, write_sequence_extension,
+    write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
+    SEQUENCE_END_CODE,
 };
 pub use video_sequence::{
     decode_video_sequence, display_indices_from_temporal_references, verify_display_order,
