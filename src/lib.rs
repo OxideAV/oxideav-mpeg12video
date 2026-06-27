@@ -354,6 +354,7 @@ pub mod forward_quant;
 pub mod frame_assembly;
 pub mod gop_header;
 pub mod idct;
+pub mod inter_encoder;
 pub mod inter_reconstruction;
 pub mod intra_encoder;
 pub mod macroblock_modes;
@@ -398,7 +399,7 @@ pub use add_coefficients::{
     saturate as saturate_decoded_sample,
 };
 pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
-pub use coded_block_pattern::CodedBlockPattern;
+pub use coded_block_pattern::{encode_cbp420, CodedBlockPattern};
 pub use combine_predictions::{
     average_dual_prime_predictions, average_predictions, average_predictions_in_place,
     combine_directional_predictions, PredictionDirection,
@@ -436,6 +437,7 @@ pub use idct::{
     saturate_input as saturate_idct_input, saturate_output as saturate_idct_output, F_INPUT_MAX,
     F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
 };
+pub use inter_encoder::{encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture};
 pub use inter_reconstruction::{
     predict_field_based_macroblock_planes, predict_field_picture_16x8_macroblock_planes,
     predict_field_picture_macroblock_planes, predict_frame_macroblock_planes,

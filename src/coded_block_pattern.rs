@@ -458,6 +458,22 @@ fn match_cbp(br: &mut BitReader<'_>) -> Result<Row> {
     ))
 }
 
+/// Emit the §6.2.5.3 `coded_block_pattern_420` Table B-9 VLC for the
+/// 6-bit `cbp` value (bit `5 - i` set means block `i` is coded). The
+/// 4:2:2 / 4:4:4 extension fields are the caller's responsibility.
+///
+/// # Panics
+/// Panics if `cbp` has no Table B-9 codeword (only `cbp == 0` is
+/// unlisted — a macroblock with no coded blocks is signalled via
+/// `macroblock_pattern == 0`, not an all-zero cbp).
+pub fn encode_cbp420(bw: &mut oxideav_core::bits::BitWriter, cbp: u8) {
+    let row = TABLE_B9
+        .iter()
+        .find(|r| r.cbp == cbp)
+        .expect("cbp must have a Table B-9 codeword (cbp != 0)");
+    bw.write_u32(u32::from(row.code), u32::from(row.bits));
+}
+
 impl CodedBlockPattern {
     /// Parse one `coded_block_pattern()` starting at the current
     /// position of `br`. `chroma_format` (from
@@ -824,5 +840,22 @@ mod tests {
         let s = format!("{cbp:?}");
         assert!(s.contains("CodedBlockPattern"));
         assert!(s.contains("cbp"));
+    }
+
+    #[test]
+    fn encode_cbp420_roundtrips_every_listed_value() {
+        // Encoding each Table B-9 cbp then decoding via parse must
+        // recover the same 6-bit pattern.
+        for &row in TABLE_B9 {
+            let mut bw = BitWriter::new();
+            super::encode_cbp420(&mut bw, row.cbp);
+            bw.write_bit(true);
+            bw.align_to_byte();
+            let bytes = bw.finish();
+            let mut br = BitReader::new(&bytes);
+            let parsed =
+                CodedBlockPattern::parse(&mut br, ChromaFormat::Yuv420).expect("parse cbp");
+            assert_eq!(parsed.cbp, row.cbp, "cbp {} mismatch", row.cbp);
+        }
     }
 }
