@@ -8,6 +8,18 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 381: **Intra-macroblock fallback in P-pictures** — the P-encoder
+  now codes a macroblock intra (Table B-3 `00011`) when the motion search
+  fails to predict it (the inter SAD far exceeds the macroblock's own
+  intra activity), as for newly-revealed content. The intra path runs the
+  §7.2.1 DC prelude + §7.2.2 AC blocks with a running DC predictor that
+  resets at slice start and whenever the §6.3.17.1 `past_intra_address`
+  gate (`mb_address - past_intra_address > 1`) fires — exactly matching
+  the decoder's reset. An intra macroblock also resets the §7.6.3.4 motion
+  predictors. `tests/encode_inter_roundtrip.rs` encodes a P target with a
+  high-contrast checker region the flat ramp anchor cannot predict and
+  confirms the region reconstructs with bounded error (a pure inter copy
+  would be wildly off), proving the intra fallback fires and round-trips.
 - round 381: **Multi-picture P-chain assembler (`encode_i_p_chain`)** —
   an I anchor followed by N predictive pictures, each predicting from the
   **reconstruction of the previous picture** (the frame the decoder

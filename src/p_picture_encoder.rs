@@ -41,6 +41,10 @@
 
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::too_many_arguments)]
+// The Table B-3 `00011` Intra codeword is grouped to mirror the spec's
+// MSB-first table layout (`0001_1`) so an audit reads it against the
+// printed table; clippy's equal-size grouping would obscure that.
+#![allow(clippy::unusual_byte_groupings)]
 
 use oxideav_core::bits::BitWriter;
 
@@ -52,12 +56,13 @@ use crate::idct::idct_8x8_from_i32;
 use crate::inter_reconstruction::{predict_frame_macroblock_planes, FrameMotion, ReferenceFrames};
 use crate::motion_estimation::{estimate_forward_mv, max_search_range};
 use crate::motion_vector::encode_motion_component;
-use crate::mpeg2_block_dc::ColourComponent;
+use crate::mpeg2_block_dc::{encode_intra_dc, ColourComponent, DcComponent};
 use crate::mpeg2_dct_coeff::{
     encode_dct_coeff, encode_end_of_block, CoefficientPosition, TableSelection,
 };
 use crate::mpeg2_dequantize::{
-    inverse_quantise_block, quantiser_scale, BlockCoding, DEFAULT_NON_INTRA_WEIGHT,
+    intra_dc_mult, inverse_quantise_block, quantiser_scale, BlockCoding, DEFAULT_INTRA_WEIGHT,
+    DEFAULT_NON_INTRA_WEIGHT,
 };
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
@@ -252,6 +257,173 @@ fn reconstruct_inter_mb(
     }
 }
 
+/// Per-component running intra DC predictor, used when a P-picture codes
+/// a macroblock intra (§7.2.1). Resets to the Table 7-2 seed.
+#[derive(Clone, Copy)]
+struct IntraDcPred {
+    luma: i32,
+    cb: i32,
+    cr: i32,
+}
+
+impl IntraDcPred {
+    fn reset(intra_dc_precision: u8) -> Self {
+        let v = 128i32 << intra_dc_precision;
+        Self {
+            luma: v,
+            cb: v,
+            cr: v,
+        }
+    }
+    fn get(&self, c: ColourComponent) -> i32 {
+        match c {
+            ColourComponent::Y => self.luma,
+            ColourComponent::Cb => self.cb,
+            ColourComponent::Cr => self.cr,
+        }
+    }
+    fn set(&mut self, c: ColourComponent, value: i32) {
+        match c {
+            ColourComponent::Y => self.luma = value,
+            ColourComponent::Cb => self.cb = value,
+            ColourComponent::Cr => self.cr = value,
+        }
+    }
+}
+
+fn dc_table_component(c: ColourComponent) -> DcComponent {
+    match c {
+        ColourComponent::Y => DcComponent::Luminance,
+        ColourComponent::Cb | ColourComponent::Cr => DcComponent::Chrominance,
+    }
+}
+
+/// Sum of absolute differences of a macroblock's luma against a flat
+/// predictor equal to its own mean — a cheap proxy for the intra-coding
+/// cost. A macroblock the motion search predicts worse than this is
+/// better coded intra. Returns `(sad_to_mean)`.
+fn intra_activity(current: &FrameBuffer, mb_col: usize, mb_row: usize) -> u32 {
+    let plane = &current.y;
+    let w = plane.width();
+    let h = plane.height();
+    let base_x = mb_col * 16;
+    let base_y = mb_row * 16;
+    let mut sum = 0u32;
+    for r in 0..16 {
+        let sy = (base_y + r).min(h.saturating_sub(1));
+        for c in 0..16 {
+            let sx = (base_x + c).min(w.saturating_sub(1));
+            sum += u32::from(plane.get(sx, sy).unwrap_or(0));
+        }
+    }
+    let mean = (sum / 256) as i32;
+    let mut sad = 0u32;
+    for r in 0..16 {
+        let sy = (base_y + r).min(h.saturating_sub(1));
+        for c in 0..16 {
+            let sx = (base_x + c).min(w.saturating_sub(1));
+            sad += (i32::from(plane.get(sx, sy).unwrap_or(0)) - mean).unsigned_abs();
+        }
+    }
+    sad
+}
+
+/// Encode + reconstruct one intra macroblock inside an inter picture
+/// (§7.2.1 DC prelude + §7.2.2 AC). Writes the block layer for every
+/// block and reconstructs the samples into `recon`. The macroblock type
+/// (`00011`) and `macroblock_address_increment` are written by the
+/// caller; this writes only the block run.
+fn encode_intra_mb(
+    bw: &mut BitWriter,
+    current: &FrameBuffer,
+    recon: &mut FrameBuffer,
+    mb_col: usize,
+    mb_row: usize,
+    qscale: u8,
+    dc_mult: i32,
+    pred: &mut IntraDcPred,
+    nblocks: usize,
+    chroma_format: crate::sequence_extension::ChromaFormat,
+) {
+    let scan = inverse_scan_table(false);
+    let table = TableSelection::TableZero;
+    for i in 0..nblocks {
+        let placement =
+            block_placement(i, chroma_format, mb_col, mb_row, false).expect("valid block index");
+        let component = block_component(i, chroma_format).expect("valid component");
+        let cur_plane = match component {
+            ColourComponent::Y => &current.y,
+            ColourComponent::Cb => &current.cb,
+            ColourComponent::Cr => &current.cr,
+        };
+        // Gather the raw 8x8 block (clamp at edges).
+        let mut raw = [[0i16; 8]; 8];
+        let w = cur_plane.width();
+        let h = cur_plane.height();
+        for r in 0..8 {
+            let sy = (placement.base_y + r).min(h.saturating_sub(1));
+            for c in 0..8 {
+                let sx = (placement.base_x + c).min(w.saturating_sub(1));
+                raw[r][c] = i16::from(cur_plane.get(sx, sy).unwrap_or(128));
+            }
+        }
+        let f = fdct_8x8(&raw);
+        let qf = forward_quantise_block(
+            &f,
+            BlockCoding::Intra,
+            &DEFAULT_INTRA_WEIGHT,
+            qscale,
+            dc_mult,
+        );
+
+        // DC differential.
+        let qfs0 = qf[0][0];
+        let diff = qfs0 - pred.get(component);
+        encode_intra_dc(bw, dc_table_component(component), diff);
+        pred.set(component, qfs0);
+
+        // AC run-level.
+        let mut run = 0u8;
+        for &(v, u) in scan.iter().skip(1) {
+            let level = qf[v as usize][u as usize];
+            if level == 0 {
+                run += 1;
+                continue;
+            }
+            encode_dct_coeff(
+                bw,
+                table,
+                CoefficientPosition::Next,
+                run,
+                level.clamp(-2047, 2047) as i16,
+            );
+            run = 0;
+        }
+        encode_end_of_block(bw, table);
+
+        // Reconstruct: inverse-quantise + IDCT → absolute samples.
+        let dequant = inverse_quantise_block(
+            &qf,
+            BlockCoding::Intra,
+            &DEFAULT_INTRA_WEIGHT,
+            qscale,
+            dc_mult,
+        );
+        let f_pel = idct_8x8_from_i32(&dequant);
+        let plane = match component {
+            ColourComponent::Y => &mut recon.y,
+            ColourComponent::Cb => &mut recon.cb,
+            ColourComponent::Cr => &mut recon.cr,
+        };
+        for r in 0..8 {
+            for c in 0..8 {
+                let d = i32::from(f_pel[r][c]).clamp(0, 255) as u8;
+                plane.put_sample(placement.base_x + c, placement.base_y + r, d);
+            }
+        }
+    }
+}
+
 /// Encode one predictive (P) frame picture from `current`, predicting
 /// from the reconstructed `reference` frame, appending the picture layer
 /// (picture header through the final slice's byte alignment) to `bw`.
@@ -301,16 +473,64 @@ pub fn encode_p_picture(
     let mb_height = params.mb_height();
     let nblocks = block_count(params.chroma_format);
 
+    let dc_mult = intra_dc_mult(params.intra_dc_precision)?;
+    let chroma_format = params.chroma_format;
+
     for mb_row in 0..mb_height {
         write_slice_header(bw, mb_row as u32, quantiser_scale_code);
         // §7.6.3.4: the motion-vector predictor resets at slice start.
         let mut pmv_x = 0i32;
         let mut pmv_y = 0i32;
+        // §7.2.1 intra DC predictor + §6.3.17.1 past_intra_address gate
+        // (relative to the slice's first macroblock address). A fresh
+        // slice resets both.
+        let mut intra_pred = IntraDcPred::reset(params.intra_dc_precision);
+        let slice_first_addr = (mb_row * mb_width) as i32;
+        let mut past_intra_address = slice_first_addr - 2; // §6.3.17.1 reset sentinel
 
         for mb_col in 0..mb_width {
+            let mb_address = slice_first_addr + mb_col as i32;
             // 1. Motion search against the reconstructed reference.
             let search = estimate_forward_mv(current, reference, mb_col, mb_row, search_range);
             let mv = search.vector;
+
+            // Intra decision: if the best inter prediction is much worse
+            // than the macroblock's own intra activity, code it intra.
+            // The intra cost proxy is the SAD to the block mean; the inter
+            // cost is the motion-search SAD. A generous margin keeps the
+            // encoder inter-biased (intra is only chosen when prediction
+            // genuinely fails, e.g. newly-revealed content).
+            let intra_cost = intra_activity(current, mb_col, mb_row);
+            if search.sad > intra_cost.saturating_mul(2).saturating_add(512) {
+                // §6.3.17.1: reset the intra DC predictor when this intra
+                // macroblock is not immediately preceded by another intra
+                // macroblock.
+                if mb_address - past_intra_address > 1 {
+                    intra_pred = IntraDcPred::reset(params.intra_dc_precision);
+                }
+                // macroblock_address_increment = 1, macroblock_type =
+                // Intra (Table B-3 `00011`).
+                bw.write_bit(true);
+                bw.write_u32(0b0001_1, 5);
+                encode_intra_mb(
+                    bw,
+                    current,
+                    &mut recon,
+                    mb_col,
+                    mb_row,
+                    qscale,
+                    dc_mult,
+                    &mut intra_pred,
+                    nblocks,
+                    chroma_format,
+                );
+                // §7.6.3.4: an intra macroblock (no concealment vectors)
+                // resets the motion-vector predictors.
+                pmv_x = 0;
+                pmv_y = 0;
+                past_intra_address = mb_address;
+                continue;
+            }
 
             // 2. Prediction planes (the exact §7.6.4 prediction).
             let (luma_pred, cb_pred, cr_pred) = predict_frame_macroblock_planes(

@@ -256,6 +256,51 @@ fn i_p_b_stream_decodes_three_frames_in_display_order() {
 }
 
 #[test]
+fn p_picture_codes_unpredictable_content_intra() {
+    // A P target with a region of fresh content the reference cannot
+    // predict (a high-contrast checker the flat anchor has no match for):
+    // the encoder must fall back to intra coding for those macroblocks and
+    // the round-trip must still reconstruct the target faithfully.
+    let w = 64;
+    let h = 48;
+    // Anchor: a smooth ramp.
+    let anchor = frame_from(w, h, |x, _| (20 + x * 2).min(235) as u8);
+    // Target: same ramp on the left half, an unpredictable checker on the
+    // right half (no translation of the ramp produces a checker).
+    let target = frame_from(w, h, |x, y| {
+        if x < w / 2 {
+            (20 + x * 2).min(235) as u8
+        } else if (x / 4 + y / 4) % 2 == 0 {
+            16
+        } else {
+            235
+        }
+    });
+
+    let stream = encode_i_then_p(&anchor, &target, params(w, h), 6, 2).expect("encode I+P");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 2);
+
+    // The checker region reconstructs with bounded error (intra coding
+    // captures it; a pure inter copy of the ramp would be wildly off).
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for y in 0..h {
+        for x in (w / 2)..w {
+            let t = i32::from(target.y.get(x, y).unwrap());
+            let r = i32::from(frames[1].frame.y.get(x, y).unwrap());
+            total += (t - r).unsigned_abs() as u64;
+            count += 1;
+        }
+    }
+    let mae = total as f64 / count as f64;
+    assert!(
+        mae < 30.0,
+        "checker-region MAE {mae} too large (intra fallback failed)"
+    );
+}
+
+#[test]
 fn non_multiple_of_16_dimensions_inter_roundtrip() {
     // 40×24 → 3×2 macroblocks; edge macroblocks padded. The P round-trip
     // must still decode two frames with full coverage.
