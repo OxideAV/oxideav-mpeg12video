@@ -197,10 +197,10 @@ verifying the parsers against known-good encoded streams.
 
 ## Encoder
 
-An **MPEG-2 video encoder** is now in hand for the baseline intra +
-zero-motion-vector inter paths, built as the bit-exact inverse of the
-decode pipeline so that everything it emits round-trips back through
-`decode_video_sequence`:
+An **MPEG-2 video encoder** is now in hand for the baseline intra path
+**and motion-compensated P + B pictures**, built as the bit-exact
+inverse of the decode pipeline so that everything it emits round-trips
+back through `decode_video_sequence`:
 
 - **§A forward DCT** (`forward_dct::fdct_8x8`, plus the `f64` reference
   / separable layers) — the transpose of the §A IDCT kernel.
@@ -230,10 +230,32 @@ decode pipeline so that everything it emits round-trips back through
   (dead-zone non-intra quantise, no DC prelude, `dct_coeff_first`
   leading symbol) and a zero-MV P-picture assembler that reproduces the
   forward anchor exactly when decoded.
+- **Motion estimation** (`motion_estimation::estimate_forward_mv`) — an
+  integer-pel full search + half-pel refinement scoring each candidate by
+  the SAD of the exact `forming_predictions::predict_block` prediction the
+  decoder forms, with the window clamped to the §7.6.3.1 codable band.
+- **`encode_p_picture`** — a full motion-compensated P-picture: per-MB
+  search, §7.6.4 prediction, `current - prediction` residual, Table B-3
+  `MC, Coded` / `MC, Not Coded` mode, §6.2.5.3 cbp, MVs differentially
+  coded against the §7.6.3.4 PMV, **plus an intra-MB fallback** (Table
+  B-3 `00011`) for content the prediction can't capture. The encoder
+  reconstructs each MB the way the decoder does and returns that frame so
+  it chains as the next reference.
+- **`encode_b_picture`** — a bidirectional B-picture: forward / backward
+  / interpolated (§7.6.7.1 `// 2` average) prediction chosen per MB by
+  luma SAD, Table B-4 mode, with forward MVs before backward and a
+  per-direction PMV slot.
+- **Stream assemblers** — `encode_i_then_p` (I→P), `encode_i_p_chain`
+  (I→P→P→… reference rotation), and `encode_i_p_b` (I→P→B coded order,
+  display I-B-P). Each decodes the intermediate anchors so the encoder
+  predicts from the decoder's exact reconstruction, making the whole
+  round-trip faithful. `tests/encode_inter_roundtrip.rs` proves a
+  motion-compensated copy is a bit-exact fixed point, a clean translation
+  reconstructs with luma MAE < 4, an unpredictable region triggers the
+  intra fallback, and an I-B-P group decodes in display order.
 
-Motion estimation (non-zero MV search) and B-picture encoding remain
-future work; the MV-coding, residual, and cbp primitives they need are
-already in place.
+Field-picture / field-based inter encoding (`frame_pred_frame_dct = 0`),
+rate control, and runtime-registry wiring remain future work.
 
 ## Not yet supported
 
