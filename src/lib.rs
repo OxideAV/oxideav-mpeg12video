@@ -372,6 +372,7 @@ pub mod mpeg2_dct_coeff;
 pub mod mpeg2_dequantize;
 pub mod mpeg2_inverse_scan;
 pub mod mpeg2_macroblock_blocks;
+pub mod p_picture_encoder;
 pub mod picture_display_extension;
 pub mod picture_header;
 pub mod picture_reconstruction;
@@ -438,7 +439,9 @@ pub use idct::{
     saturate_input as saturate_idct_input, saturate_output as saturate_idct_output, F_INPUT_MAX,
     F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
 };
-pub use inter_encoder::{encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture};
+pub use inter_encoder::{
+    encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
+};
 pub use inter_reconstruction::{
     predict_field_based_macroblock_planes, predict_field_picture_16x8_macroblock_planes,
     predict_field_picture_macroblock_planes, predict_frame_macroblock_planes,
@@ -512,6 +515,7 @@ pub use mpeg2_macroblock_blocks::{
     MacroblockBlockContext as Mpeg2MacroblockBlockContext,
     DEFAULT_WEIGHT_MATRICES as MPEG2_DEFAULT_WEIGHT_MATRICES,
 };
+pub use p_picture_encoder::encode_p_picture;
 pub use picture_display_extension::{
     number_of_frame_centre_offsets, FieldUsage, FrameCentreOffset, FrameCentreOffsetDriver,
     FrameCentreOffsetState, PictureDisplayContext, PictureDisplayExtension,

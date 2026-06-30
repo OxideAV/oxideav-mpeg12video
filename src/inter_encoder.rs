@@ -41,7 +41,7 @@ use crate::stream_writer::{
     write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
     SEQUENCE_END_CODE,
 };
-use crate::Result;
+use crate::{Error, Result};
 
 /// Forward-quantise + entropy-code one non-intra residual block into
 /// `bw`. `residual[y][x]` is the signed `current - prediction` block
@@ -189,6 +189,79 @@ pub fn encode_i_then_p_copy(
 
     // P-picture copy, temporal_reference = 1.
     encode_p_copy_picture(&mut bw, params, 1, quantiser_scale_code, 1);
+
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+    Ok(stream)
+}
+
+/// Build a complete two-picture I→P elementary stream where the
+/// P-picture is **motion-compensated**: an all-intra anchor followed by a
+/// predictive picture that motion-searches `target` against the decoded
+/// anchor and codes the residual.
+///
+/// The reference the P-encoder predicts from is the **decoder's own**
+/// reconstruction of the I-anchor (obtained by decoding the I-only
+/// stream), so the encoder and decoder share an identical reference and
+/// the round-trip is exact: decoding the returned stream yields the I
+/// anchor followed by the encoder's P-reconstruction
+/// sample-for-sample.
+///
+/// `anchor` is the I-picture source; `target` is the frame the P-picture
+/// approximates. `forward_f_code` (1..=9) sets the motion-vector range.
+///
+/// # Errors
+/// Propagates encode / decode errors; returns
+/// [`Error::InvalidBitstream`] if the spliced anchor lacks a picture
+/// start code or the intermediate decode fails to produce the anchor.
+pub fn encode_i_then_p(
+    anchor: &crate::frame_assembly::FrameBuffer,
+    target: &crate::frame_assembly::FrameBuffer,
+    params: IntraPictureParams,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+) -> Result<Vec<u8>> {
+    // Encode the I anchor on its own, then decode it back to recover the
+    // exact reference the decoder will hold for the P-picture.
+    let i_stream =
+        crate::intra_encoder::encode_intra_picture(anchor, params, 0, quantiser_scale_code)?;
+    let decoded_anchor = crate::decode_video_sequence(&i_stream)?;
+    let reference =
+        decoded_anchor
+            .first()
+            .map(|d| d.frame.clone())
+            .ok_or(Error::InvalidBitstream(
+                "encode_i_then_p: I anchor decode produced no frame",
+            ))?;
+
+    // Build the combined stream: sequence layer, the anchor's picture
+    // layer, then the motion-compensated P-picture.
+    let mut bw = BitWriter::new();
+    write_sequence_header(
+        &mut bw,
+        &SequenceHeaderParams {
+            horizontal_size: params.width as u16,
+            vertical_size: params.height as u16,
+            ..Default::default()
+        },
+    );
+    write_sequence_extension(&mut bw, params.chroma_format, false);
+
+    let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
+        "encode_i_then_p: I picture start code missing",
+    ))?;
+    let end = i_stream.len() - 4; // strip the trailing sequence_end_code
+    bw.write_bytes(&i_stream[pic_start..end]);
+
+    crate::p_picture_encoder::encode_p_picture(
+        &mut bw,
+        target,
+        &reference,
+        params,
+        1,
+        quantiser_scale_code,
+        forward_f_code,
+    )?;
 
     let mut stream = bw.finish();
     stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());

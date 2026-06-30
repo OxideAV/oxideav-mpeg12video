@@ -8,6 +8,31 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 381: **Motion-compensated P-picture encoder (`p_picture_encoder`)**
+  — the first non-trivial inter encode. `encode_p_picture` writes a full
+  predictive frame picture (`frame_pred_frame_dct = 1`, one forward
+  vector per macroblock): for each macroblock it runs the
+  `motion_estimation` search against the reconstructed reference, forms
+  the exact §7.6.4 prediction via
+  `inter_reconstruction::predict_frame_macroblock_planes`, builds the
+  `current - prediction` residual per block, forward-DCTs + dead-zone
+  non-intra quantises it, and chooses the Table B-3 macroblock type
+  (`MC, Coded` `1` when any block is coded, else `MC, Not Coded` `001`).
+  Motion vectors are differentially coded against the §7.6.3.4 PMV
+  (reset at slice start, updated to each coded vector) with a `wrap_delta`
+  that maps `vector' - PMV` into the §7.6.3.1 codable band so the
+  decoder's wrap inverts it exactly. The encoder reconstructs every
+  macroblock the way the decoder will (inverse-quantise + IDCT +
+  `Saturate(residual + prediction)`) and returns that reconstruction so
+  it can chain as the next reference. `encode_i_then_p` assembles a
+  complete I→P stream, decoding the I anchor to recover the **decoder's**
+  reference so encoder and decoder share an identical anchor and the
+  round-trip is bit-exact. `tests/encode_inter_roundtrip.rs` proves: a
+  target equal to the decoded anchor reproduces it sample-for-sample
+  (the MC-copy fixed point); a pure 4-pel translation reconstructs the
+  interior with luma MAE < 4; a modified target reconstructs with bounded
+  error; and non-multiple-of-16 dimensions round-trip with full coverage.
+  `encode_p_picture` + `encode_i_then_p` re-exported at the crate root.
 - round 381: **Motion estimation (`motion_estimation`)** — the
   encoder-side forward-MV search a P-picture macroblock uses to choose
   its motion vector. Neither MPEG video standard specifies the search
