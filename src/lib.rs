@@ -361,6 +361,7 @@ pub mod macroblock_modes;
 pub mod macroblock_pipeline;
 pub mod macroblock_type;
 pub mod mb_address_increment;
+pub mod motion_estimation;
 pub mod motion_vector;
 pub mod motion_vector_selection;
 pub mod mpeg1_motion_vector;
@@ -458,6 +459,7 @@ pub use macroblock_pipeline::{
 };
 pub use macroblock_type::{MacroblockType, MacroblockTypeTable};
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
+pub use motion_estimation::{estimate_forward_mv, max_search_range, MotionSearchResult};
 pub use motion_vector::{
     encode_dmvector, encode_motion_component, encode_motion_vector, split_delta, MotionVector,
     MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,

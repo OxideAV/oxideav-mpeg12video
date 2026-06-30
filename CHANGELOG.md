@@ -8,6 +8,21 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 381: **Motion estimation (`motion_estimation`)** — the
+  encoder-side forward-MV search a P-picture macroblock uses to choose
+  its motion vector. Neither MPEG video standard specifies the search
+  (only how a decoder *uses* a transmitted vector), so this is an
+  integer-pel full search over a `±range` luma window followed by a
+  half-pel refinement, scoring every candidate by the SAD of the exact
+  `forming_predictions::predict_block` prediction the decoder will form.
+  `estimate_forward_mv` returns a half-sample `MotionVectorPel` plus its
+  luma SAD; a small Manhattan tie-break biases equal-SAD candidates
+  toward the cheaper-to-code (smaller) vector. `max_search_range` clamps
+  the window so every reachable vector stays inside the §7.6.3.1
+  `[low, high]` codable band of an `f_code`. Re-exported at the crate
+  root. Unit tests cover zero-vector recovery on identical frames,
+  exact recovery of a pure integer translation, and half-pel preference
+  on a half-sample-shifted ramp.
 - round 377: **MPEG-2 video encoder — intra + zero-MV inter paths**. The
   encoder is built as the bit-exact inverse of the decode pipeline so
   everything it emits round-trips through `decode_video_sequence`.
