@@ -8,6 +8,27 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 381: **Bidirectional B-picture encoder (`b_picture_encoder`)** —
+  forward / backward / interpolated motion-compensated prediction.
+  `encode_b_picture` predicts each macroblock from two reconstructed
+  anchors (the past forward reference and the future backward reference),
+  running a motion search in both directions, scoring the three §7.6.7
+  prediction modes by luma SAD and keeping the cheapest, then coding the
+  residual with the shared `p_picture_encoder` block path. The Table B-4
+  macroblock type (`Fwd`/`Bwd`/`Interp` × `Coded`/`Not Coded`) is emitted
+  with forward vectors before backward vectors; each direction keeps its
+  own §7.6.3.4 PMV slot (reset at slice start, updated only when that
+  direction is present). `encode_i_p_b` assembles a complete three-frame
+  I→P→B stream in coded order (display order I-B-P, `temporal_reference`
+  0-1-2): the P is coded against the decoded I and the B against the
+  decoded I (forward) plus the P reconstruction (backward), so every
+  reference is the decoder's exact frame. `tests/encode_inter_roundtrip.rs`
+  decodes the stream into three frames in display order with correct
+  temporal references and a bounded B-frame reconstruction error. The
+  P-encoder's `InterBlock` / `quantise_inter_block` / `wrap_delta` /
+  `write_inter_block_coeffs` are now `pub(crate)` and shared by both inter
+  encoders. `encode_b_picture` + `encode_i_p_b` re-exported at the crate
+  root.
 - round 381: **Motion-compensated P-picture encoder (`p_picture_encoder`)**
   — the first non-trivial inter encode. `encode_p_picture` writes a full
   predictive frame picture (`frame_pred_frame_dct = 1`, one forward

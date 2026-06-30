@@ -340,6 +340,7 @@
 use oxideav_core::RuntimeContext;
 
 pub mod add_coefficients;
+pub mod b_picture_encoder;
 pub mod block_dc;
 pub mod coded_block_pattern;
 pub mod combine_predictions;
@@ -400,6 +401,7 @@ pub use add_coefficients::{
     add_intra_block, add_prediction_and_coefficients, add_prediction_and_coefficients_in_place,
     saturate as saturate_decoded_sample,
 };
+pub use b_picture_encoder::encode_b_picture;
 pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
 pub use coded_block_pattern::{encode_cbp420, CodedBlockPattern};
 pub use combine_predictions::{
@@ -440,7 +442,8 @@ pub use idct::{
     F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
 };
 pub use inter_encoder::{
-    encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
+    encode_i_p_b, encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block,
+    encode_p_copy_picture,
 };
 pub use inter_reconstruction::{
     predict_field_based_macroblock_planes, predict_field_picture_16x8_macroblock_planes,

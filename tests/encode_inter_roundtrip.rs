@@ -20,7 +20,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_i_then_p, encode_intra_picture, FrameBuffer, IntraPictureParams,
+    decode_video_sequence, encode_i_p_b, encode_i_then_p, encode_intra_picture, FrameBuffer,
+    IntraPictureParams,
 };
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
@@ -157,6 +158,53 @@ fn p_frame_matches_encoder_reconstruction_on_a_modified_target() {
         }
     }
     assert!(max_err < 40, "P reconstruction max err {max_err} too large");
+}
+
+#[test]
+fn i_p_b_stream_decodes_three_frames_in_display_order() {
+    // A 3-frame group with a moving feature: the B frame sits temporally
+    // between the I and P, so bidirectional prediction (averaging the
+    // past I and future P) should track it well. Verify the decoder
+    // produces I, B, P in display order with the right temporal
+    // references, and that the B reconstruction approximates its target.
+    let w = 48;
+    let h = 32;
+    // A vertical bar that slides right over the three display frames.
+    let bar = |pos: usize| {
+        move |x: usize, _y: usize| -> u8 {
+            if x.abs_diff(pos) < 4 {
+                220
+            } else {
+                40
+            }
+        }
+    };
+    let i_frame = frame_from(w, h, bar(8));
+    let b_frame = frame_from(w, h, bar(16));
+    let p_frame = frame_from(w, h, bar(24));
+
+    let stream =
+        encode_i_p_b(&i_frame, &b_frame, &p_frame, params(w, h), 6, 3, 3).expect("encode I+P+B");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 3, "I, B, P in display order");
+    // Display order: I (tr 0), B (tr 1), P (tr 2).
+    assert_eq!(frames[0].temporal_reference, 0);
+    assert_eq!(frames[1].temporal_reference, 1);
+    assert_eq!(frames[2].temporal_reference, 2);
+
+    // The decoded B frame approximates its target (a clean bar slide is
+    // well predicted by averaging the I and P anchors / by forward or
+    // backward prediction, whichever the per-MB mode picked).
+    let mut total = 0u64;
+    for y in 0..h {
+        for x in 0..w {
+            let t = i32::from(b_frame.y.get(x, y).unwrap());
+            let r = i32::from(frames[1].frame.y.get(x, y).unwrap());
+            total += (t - r).unsigned_abs() as u64;
+        }
+    }
+    let mae = total as f64 / (w * h) as f64;
+    assert!(mae < 30.0, "B-frame luma MAE {mae} too large");
 }
 
 #[test]

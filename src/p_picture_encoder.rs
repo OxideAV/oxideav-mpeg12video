@@ -82,7 +82,7 @@ const CHROMA_MB: usize = 8;
 /// `PMV` are both already inside the band, `delta` lies in
 /// `[-(range-1), range-1]`; a single ±`range` correction brings it into
 /// `[low, high]` and the decoder's wrap inverts it exactly.
-fn wrap_delta(delta: i32, f_code: u8) -> Result<i32> {
+pub(crate) fn wrap_delta(delta: i32, f_code: u8) -> Result<i32> {
     let (low, high, range) = vector_range(f_code)?;
     let mut d = delta;
     if d < low {
@@ -127,8 +127,9 @@ fn gather_residual(
 }
 
 /// The per-block forward-quantised levels of one inter macroblock plus
-/// the spatial-domain reconstruction the decoder would form.
-struct InterBlock {
+/// the spatial-domain reconstruction the decoder would form. Shared by
+/// the P- and B-picture encoders.
+pub(crate) struct InterBlock {
     /// §7.3 raster `QF[v][u]` levels (all 64), or `None` if every level
     /// is zero (the block is not coded).
     qf: Option<[[i32; 8]; 8]>,
@@ -137,8 +138,21 @@ struct InterBlock {
     f_pel: [[i16; 8]; 8],
 }
 
+impl InterBlock {
+    /// Whether this block carried any non-zero level (so it sets a
+    /// `coded_block_pattern` bit).
+    pub(crate) fn is_coded(&self) -> bool {
+        self.qf.is_some()
+    }
+
+    /// The raster `QF[v][u]` levels, or `None` if the block is not coded.
+    pub(crate) fn qf_ref(&self) -> Option<&[[i32; 8]; 8]> {
+        self.qf.as_ref()
+    }
+}
+
 /// Forward-quantise one non-intra residual block and reconstruct it.
-fn quantise_inter_block(residual: &[[i16; 8]; 8], qscale: u8) -> InterBlock {
+pub(crate) fn quantise_inter_block(residual: &[[i16; 8]; 8], qscale: u8) -> InterBlock {
     let f = fdct_8x8(residual);
     let qf = forward_quantise_block(
         &f,
@@ -171,7 +185,7 @@ fn quantise_inter_block(residual: &[[i16; 8]; 8], qscale: u8) -> InterBlock {
 
 /// Emit one non-intra block's §7.2.2 run-level VLCs from its raster
 /// `QF[v][u]` levels (already known non-zero).
-fn write_inter_block_coeffs(bw: &mut BitWriter, qf: &[[i32; 8]; 8]) {
+pub(crate) fn write_inter_block_coeffs(bw: &mut BitWriter, qf: &[[i32; 8]; 8]) {
     let scan = inverse_scan_table(false);
     let table = TableSelection::TableZero;
     let mut run = 0u8;

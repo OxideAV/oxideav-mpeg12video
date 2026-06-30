@@ -268,6 +268,97 @@ pub fn encode_i_then_p(
     Ok(stream)
 }
 
+/// Build a complete three-picture I→P→B elementary stream in **coded
+/// order** (`I`, `P`, `B`) — the display order is `I`, `B`, `P` with
+/// `temporal_reference` 0, 1, 2.
+///
+/// * The `I` anchor is encoded all-intra (`temporal_reference = 0`).
+/// * The `P` picture (`temporal_reference = 2`) is motion-compensated
+///   against the **decoded** `I` anchor.
+/// * The `B` picture (`temporal_reference = 1`) is bidirectionally
+///   predicted from the decoded `I` (forward / past) and the encoder's
+///   reconstruction of the `P` (backward / future).
+///
+/// Because every reference the B-encoder predicts from is the exact frame
+/// the decoder reconstructs, the whole stream round-trips faithfully:
+/// decoding it reproduces, in display order, the `I` anchor, then the
+/// `B` reconstruction, then the `P` reconstruction.
+///
+/// `i_frame` / `p_frame` / `b_frame` are the three source frames in
+/// **display** order. `forward_f_code` / `backward_f_code` (1..=9) set
+/// the motion-vector ranges.
+///
+/// # Errors
+/// Propagates encode / decode errors; returns [`Error::InvalidBitstream`]
+/// if an intermediate decode fails to produce its anchor.
+pub fn encode_i_p_b(
+    i_frame: &crate::frame_assembly::FrameBuffer,
+    b_frame: &crate::frame_assembly::FrameBuffer,
+    p_frame: &crate::frame_assembly::FrameBuffer,
+    params: IntraPictureParams,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+) -> Result<Vec<u8>> {
+    // 1. Encode + decode the I anchor to get the decoder's exact I
+    //    reference.
+    let i_stream =
+        crate::intra_encoder::encode_intra_picture(i_frame, params, 0, quantiser_scale_code)?;
+    let i_ref = crate::decode_video_sequence(&i_stream)?
+        .first()
+        .map(|d| d.frame.clone())
+        .ok_or(Error::InvalidBitstream(
+            "encode_i_p_b: I anchor decode produced no frame",
+        ))?;
+
+    // 2. Assemble the stream: sequence layer + I picture layer.
+    let mut bw = BitWriter::new();
+    write_sequence_header(
+        &mut bw,
+        &SequenceHeaderParams {
+            horizontal_size: params.width as u16,
+            vertical_size: params.height as u16,
+            ..Default::default()
+        },
+    );
+    write_sequence_extension(&mut bw, params.chroma_format, false);
+    let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
+        "encode_i_p_b: I picture start code missing",
+    ))?;
+    let end = i_stream.len() - 4;
+    bw.write_bytes(&i_stream[pic_start..end]);
+
+    // 3. P picture (temporal_reference = 2) against the decoded I.
+    //    Its returned reconstruction is the decoder's P reconstruction
+    //    (the encoder predicted from the decoder's exact reference).
+    let p_ref = crate::p_picture_encoder::encode_p_picture(
+        &mut bw,
+        p_frame,
+        &i_ref,
+        params,
+        2,
+        quantiser_scale_code,
+        forward_f_code,
+    )?;
+
+    // 4. B picture (temporal_reference = 1) between them.
+    crate::b_picture_encoder::encode_b_picture(
+        &mut bw,
+        b_frame,
+        &i_ref,
+        &p_ref,
+        params,
+        1,
+        quantiser_scale_code,
+        forward_f_code,
+        backward_f_code,
+    )?;
+
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+    Ok(stream)
+}
+
 /// Find the first 4-byte big-endian `code` start-code in `buf`.
 fn find_start(buf: &[u8], code: u32) -> Option<usize> {
     buf.windows(4).position(|w| {
