@@ -20,8 +20,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_i_p_b, encode_i_then_p, encode_intra_picture, FrameBuffer,
-    IntraPictureParams,
+    decode_video_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p, encode_intra_picture,
+    FrameBuffer, IntraPictureParams,
 };
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
@@ -158,6 +158,54 @@ fn p_frame_matches_encoder_reconstruction_on_a_modified_target() {
         }
     }
     assert!(max_err < 40, "P reconstruction max err {max_err} too large");
+}
+
+#[test]
+fn i_p_p_p_chain_tracks_a_moving_feature() {
+    // I followed by three P pictures, each a further right-shift of a
+    // sliding bar. Each P predicts from the previous reconstruction, so a
+    // clean translation propagates through the whole chain with small
+    // error. Verify all four frames decode in coded == display order and
+    // each P tracks its target.
+    let w = 64;
+    let h = 32;
+    let bar = |pos: usize| {
+        move |x: usize, _y: usize| -> u8 {
+            if x.abs_diff(pos) < 5 {
+                210
+            } else {
+                30
+            }
+        }
+    };
+    let anchor = frame_from(w, h, bar(8));
+    let targets = [
+        frame_from(w, h, bar(12)),
+        frame_from(w, h, bar(16)),
+        frame_from(w, h, bar(20)),
+    ];
+
+    let stream = encode_i_p_chain(&anchor, &targets, params(w, h), 6, 3).expect("encode I+PPP");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 4, "I + 3 P frames");
+    for (k, frame) in frames.iter().enumerate() {
+        assert_eq!(frame.temporal_reference, k as u16);
+    }
+
+    // Each P frame tracks its target with bounded mean error (the chain
+    // accumulates a little drift but a clean shift stays well-predicted).
+    for (k, target) in targets.iter().enumerate() {
+        let mut total = 0u64;
+        for y in 0..h {
+            for x in 0..w {
+                let t = i32::from(target.y.get(x, y).unwrap());
+                let r = i32::from(frames[k + 1].frame.y.get(x, y).unwrap());
+                total += (t - r).unsigned_abs() as u64;
+            }
+        }
+        let mae = total as f64 / (w * h) as f64;
+        assert!(mae < 20.0, "P[{k}] luma MAE {mae} too large");
+    }
 }
 
 #[test]

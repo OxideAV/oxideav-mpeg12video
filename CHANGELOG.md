@@ -8,6 +8,15 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 381: **Multi-picture P-chain assembler (`encode_i_p_chain`)** —
+  an I anchor followed by N predictive pictures, each predicting from the
+  **reconstruction of the previous picture** (the frame the decoder
+  holds), so every P's reconstruction becomes the next P's forward anchor
+  exactly as the decoder rotates its anchors. Validates the
+  reference-chaining across a whole GOP. `tests/encode_inter_roundtrip.rs`
+  encodes an I + three P pictures tracking a sliding feature and confirms
+  all four decode in coded == display order with bounded per-P error.
+  Re-exported at the crate root.
 - round 381: **Bidirectional B-picture encoder (`b_picture_encoder`)** —
   forward / backward / interpolated motion-compensated prediction.
   `encode_b_picture` predicts each macroblock from two reconstructed

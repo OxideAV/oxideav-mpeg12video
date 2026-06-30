@@ -268,6 +268,70 @@ pub fn encode_i_then_p(
     Ok(stream)
 }
 
+/// Build a complete I→P→P→… elementary stream: an all-intra anchor
+/// followed by one predictive picture per entry of `targets`, each
+/// predicting from the **reconstruction of the previous picture** (the
+/// frame the decoder will hold). This exercises the multi-picture
+/// reference chain — every P's reconstruction becomes the next P's
+/// forward anchor, exactly as the decoder rotates its anchors.
+///
+/// `anchor` is the I source; `targets[k]` is the source for the `k`-th
+/// P-picture (`temporal_reference = k + 1`). The returned stream decodes
+/// to `1 + targets.len()` frames in coded == display order (no B frames).
+///
+/// # Errors
+/// Propagates encode / decode errors.
+pub fn encode_i_p_chain(
+    anchor: &crate::frame_assembly::FrameBuffer,
+    targets: &[crate::frame_assembly::FrameBuffer],
+    params: IntraPictureParams,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+) -> Result<Vec<u8>> {
+    let i_stream =
+        crate::intra_encoder::encode_intra_picture(anchor, params, 0, quantiser_scale_code)?;
+    let mut reference = crate::decode_video_sequence(&i_stream)?
+        .first()
+        .map(|d| d.frame.clone())
+        .ok_or(Error::InvalidBitstream(
+            "encode_i_p_chain: I anchor decode produced no frame",
+        ))?;
+
+    let mut bw = BitWriter::new();
+    write_sequence_header(
+        &mut bw,
+        &SequenceHeaderParams {
+            horizontal_size: params.width as u16,
+            vertical_size: params.height as u16,
+            ..Default::default()
+        },
+    );
+    write_sequence_extension(&mut bw, params.chroma_format, false);
+    let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
+        "encode_i_p_chain: I picture start code missing",
+    ))?;
+    let end = i_stream.len() - 4;
+    bw.write_bytes(&i_stream[pic_start..end]);
+
+    for (k, target) in targets.iter().enumerate() {
+        // Each P predicts from the previous picture's reconstruction and
+        // its own reconstruction becomes the next P's reference.
+        reference = crate::p_picture_encoder::encode_p_picture(
+            &mut bw,
+            target,
+            &reference,
+            params,
+            (k + 1) as u16,
+            quantiser_scale_code,
+            forward_f_code,
+        )?;
+    }
+
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+    Ok(stream)
+}
+
 /// Build a complete three-picture I→P→B elementary stream in **coded
 /// order** (`I`, `P`, `B`) — the display order is `I`, `B`, `P` with
 /// `temporal_reference` 0, 1, 2.
