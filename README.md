@@ -1,5 +1,7 @@
 # oxideav-mpeg12video
 
+[![CI](https://github.com/OxideAV/oxideav-mpeg12video/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-mpeg12video/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-mpeg12video.svg)](https://crates.io/crates/oxideav-mpeg12video) [![docs.rs](https://docs.rs/oxideav-mpeg12video/badge.svg)](https://docs.rs/oxideav-mpeg12video) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Clean-room MPEG-1 Video (ISO/IEC 11172-2) and MPEG-2 Video
 (ITU-T H.262 / ISO/IEC 13818-2) decode **and encode** building blocks
 for the [oxideav](https://github.com/OxideAV/oxideav-workspace)
