@@ -28,6 +28,21 @@
 //! reconstructed frames drain in display order and the decoder finally
 //! returns [`Error::Eof`].
 //!
+//! # Codec-id coverage
+//!
+//! Both `"mpeg1video"` and `"mpeg2video"` are registered and route
+//! through the same [`decode_video_sequence`] driver. That driver
+//! resolves the picture geometry and `f_code`s from the MPEG-2 extension
+//! family (`sequence_extension()` / `picture_coding_extension()`), so it
+//! decodes the MPEG-2 bitstream (and the MPEG-1-compatible subset a
+//! §13818-2 encoder emits) end-to-end. A *pure* ISO/IEC 11172-2 (MPEG-1)
+//! elementary stream, which carries no extension start codes, is not yet
+//! driven at the whole-stream level — the MPEG-1 macroblock-layer
+//! machinery exists per-stage but the picture driver is a later
+//! milestone — so such a stream currently surfaces a clean parse error
+//! rather than frames. The registration reserves the `mpeg1video` id for
+//! that path.
+//!
 //! Each reconstructed [`crate::frame_assembly::FrameBuffer`] is converted
 //! to a planar Y/Cb/Cr [`VideoFrame`] (three [`VideoPlane`]s, each
 //! tightly packed at `stride == plane width`); the stream's pixel format

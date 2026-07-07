@@ -8,6 +8,19 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 398: **Decoder robustness harness** (`tests/decoder_robustness.rs`)
+  — proves the runtime `Decoder` never panics on malformed input: every
+  header-region byte truncation plus a coarse whole-stream truncation
+  sweep, single-byte bit-flips strided across the fixture, empty input,
+  a bare sequence-header prefix, and deterministic pseudo-random bytes
+  salted with valid-looking start codes (alone and behind a real
+  sequence header). Each input is driven through the full
+  `send_packet` / `flush` / `receive_frame` lifecycle; all surface a
+  clean error or empty output, none unwind. Also documents the current
+  MPEG-1 whole-stream coverage in the `decoder` module: both codec ids
+  route through `decode_video_sequence`, which requires the MPEG-2
+  extension family, so a pure ISO/IEC 11172-2 stream surfaces a clean
+  parse error until the MPEG-1 picture driver lands.
 - round 398: **Runtime `oxideav_core::Decoder` wiring + registry
   registration** (`decoder` module). `register` is no longer a no-op:
   it installs decoder factories under both `"mpeg1video"` and
