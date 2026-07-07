@@ -8,6 +8,28 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 398: **Runtime `oxideav_core::Decoder` wiring + registry
+  registration** (`decoder` module). `register` is no longer a no-op:
+  it installs decoder factories under both `"mpeg1video"` and
+  `"mpeg2video"` (with the `mp1v`/`mpg1`/`mp2v`/`mpg2`/`hdv2`/`m2v1`
+  FourCC + `V_MPEG1`/`V_MPEG2` Matroska tags the container crates map
+  onto these ids). `Mpeg12Decoder` adapts the whole-elementary-stream
+  driver `decode_video_sequence` to the packet-based `Decoder` contract:
+  it concatenates every packet's payload into one contiguous
+  elementary-stream buffer (the §6.1.1.11 display reorder spans the whole
+  sequence, so a B-picture cannot commit until its trailing anchor is
+  decoded), runs the driver at `flush()`, and drains the reconstructed
+  frames in display order — returning `NeedMore` before the flush and
+  `Eof` once drained. Each `FrameBuffer` converts to a tightly-packed
+  planar Y/Cb/Cr `VideoFrame` (`frame_buffer_to_video_frame`) stamped
+  with a monotonic display-order index; `reset()` returns the decoder to
+  a fresh state. Direct factory endpoint `decoder::make_decoder` and the
+  registry path (`oxideav_core::register!`) are both exposed.
+  `tests/runtime_decoder.rs` proves the trait output is **sample-exact**
+  with `decode_video_sequence` on the real 352×240 4:2:0 fixture and a
+  split-packet feed, that both codec ids resolve through a
+  `RuntimeContext`, and that `reset` makes the decoder reusable.
+
 - round 381: **Intra-macroblock fallback in P-pictures** — the P-encoder
   now codes a macroblock intra (Table B-3 `00011`) when the motion search
   fails to predict it (the inter SAD far exceeds the macroblock's own

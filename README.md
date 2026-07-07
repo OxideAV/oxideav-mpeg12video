@@ -13,11 +13,14 @@ Clean-room rebuild. The crate implements the full MPEG-1 and MPEG-2
 video decode pipeline as a set of composable, per-stage public modules
 covering the bitstream-parsing surface and the pixel-reconstruction
 math, topped by a `video_sequence()` driver
-(`decode_video_sequence`) that decodes a whole elementary stream of
-**frame** pictures into reconstructed frames in §6.1.1.11 display order.
-It is not yet wired into the runtime codec registry — `register`
-is a no-op placeholder, so the codec is consumed today through its
-direct module APIs rather than `oxideav_core::make_decoder`.
+(`decode_video_sequence`) that decodes a whole elementary stream into
+reconstructed frames in §6.1.1.11 display order (frame pictures and
+field-picture pairs alike). It is now **wired into the runtime codec
+registry**: `register` installs `oxideav_core::Decoder` factories under
+both the `mpeg1video` and `mpeg2video` codec ids, so the codec is
+consumed through `oxideav_core::make_decoder` (a `RuntimeContext` /
+`register_all` lookup) as well as through the direct
+`decoder::make_decoder` factory and the per-stage module APIs.
 
 ## What works today
 
@@ -139,8 +142,9 @@ The decode pipeline is implemented end-to-end at the module level:
   field-picture-only per the §7.6 constraint *"16x8 motion compensation
   shall only be used with field pictures"*, so there is no frame-picture
   16×8 path. The remaining motion-compensation surface is now driven
-  end-to-end; the open work is the GOP-level reference-management /
-  picture-reordering loop and runtime registration.
+  end-to-end; the GOP-level reference-management / picture-reordering
+  loop is driven by `decode_video_sequence`, which the runtime
+  `Decoder` adapter now wraps (see **Runtime decoder** below).
 - **Spatial-scalable lower-layer resampling**: the full §7.7.3 spatial-
   prediction pipeline — §7.7.3.4 deinterlace (`deinterlace`: the
   Table 7-19 vertical/temporal FIR, two-field aperture for Frame-Picture
@@ -196,6 +200,31 @@ The decode pipeline is implemented end-to-end at the module level:
 
 Each stage is covered by synthetic unit tests plus integration fixtures
 verifying the parsers against known-good encoded streams.
+
+## Runtime decoder
+
+`register` / `register_codecs` install `oxideav_core::Decoder`
+factories under both the `mpeg1video` and `mpeg2video` codec ids
+(claiming the `mp1v` / `mpg1` / `mp2v` / `mpg2` / `hdv2` / `m2v1`
+FourCC and `V_MPEG1` / `V_MPEG2` Matroska tags the container crates map
+onto them). The `decoder::Mpeg12Decoder` adapter bridges the
+whole-elementary-stream driver `decode_video_sequence` to the
+packet-oriented `Decoder` contract: it concatenates every packet's
+payload into one contiguous elementary-stream buffer (the §6.1.1.11
+display reorder spans the whole sequence, so a B-picture cannot commit
+until its trailing coded-order anchor has been decoded), runs the driver
+on `flush()`, and drains the reconstructed frames in display order —
+returning `NeedMore` before the flush and `Eof` once drained. Each
+reconstructed `FrameBuffer` converts to a tightly-packed planar Y/Cb/Cr
+`VideoFrame` (`frame_buffer_to_video_frame`, `stride == plane width`)
+stamped with a monotonic display-order presentation index, and `reset()`
+returns the decoder to a fresh state. The direct
+`decoder::make_decoder` factory and the `oxideav_core::register!`
+registry path both reach it. `tests/runtime_decoder.rs` proves the
+trait output is **sample-exact** with `decode_video_sequence` on the
+real 352×240 4:2:0 fixture (and under a split-packet feed), that both
+codec ids resolve through a `RuntimeContext`, and that `reset` makes the
+decoder reusable.
 
 ## Encoder
 
@@ -257,7 +286,8 @@ back through `decode_video_sequence`:
   intra fallback, and an I-B-P group decodes in display order.
 
 Field-picture / field-based inter encoding (`frame_pred_frame_dct = 0`),
-rate control, and runtime-registry wiring remain future work.
+rate control, and encoder runtime-registry wiring remain future work
+(the **decoder** is now registry-wired — see **Runtime decoder** above).
 
 ## Not yet supported
 

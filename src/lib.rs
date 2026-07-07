@@ -337,7 +337,9 @@
 
 #![warn(missing_debug_implementations)]
 
-use oxideav_core::RuntimeContext;
+use oxideav_core::{
+    CodecCapabilities, CodecId, CodecInfo, CodecRegistry, CodecTag, RuntimeContext,
+};
 
 pub mod add_coefficients;
 pub mod b_picture_encoder;
@@ -346,6 +348,7 @@ pub mod coded_block_pattern;
 pub mod combine_predictions;
 pub mod copyright_extension;
 pub mod dct_coeff;
+pub mod decoder;
 pub mod dequantize;
 pub mod dual_prime;
 pub mod extension_and_user_data;
@@ -410,6 +413,10 @@ pub use combine_predictions::{
 };
 pub use copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
 pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
+pub use decoder::{
+    frame_buffer_to_video_frame, make_decoder, Mpeg12Decoder, MPEG1_CODEC_ID_STR,
+    MPEG2_CODEC_ID_STR,
+};
 pub use dequantize::{
     dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
     IntraDcPredictors, DCT_RECON_MAX, DCT_RECON_MIN, DC_PREDICTOR_RESET, DEFAULT_INTRA_QUANT,
@@ -668,59 +675,62 @@ impl From<inter_reconstruction::InterError> for Error {
 /// Crate-local `Result` alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// No-op codec registration. Rounds 1–23 parse the sequence,
-/// group-of-pictures, picture, and slice headers plus the
-/// macroblock-loop syntax through the end of `motion_vectors()`, the
-/// §7.6.3.1 MPEG-2 motion-vector reconstruction, the §7.6.3.3
-/// inter-vector PMV-copy update table, the MPEG-1 §2.4.4.2 /
-/// §2.4.4.3 motion-vector reconstruction, the MPEG-1 §2.4.2.8 /
-/// §2.4.3.7 intra-block DC prelude (Tables B.5a / B.5b + the
-/// `dct_dc_differential` reconstruction plus the §2.4.4.1 zig-zag
-/// scan), the MPEG-1 §2.4.3.7 `dct_coeff_first` /
-/// `dct_coeff_next` run-level walker (Tables B.5c / B.5d / B.5e +
-/// the Table B.5f short and long escape encodings), and the MPEG-1
-/// §2.4.4.1 / §2.4.4.2 dequantiser bodies (intra / non-intra
-/// arithmetic with the `dct_dc_*_past` predictor chain, the
-/// `past_intra_address > 1` reset branch, the `Sign(...)`
-/// even-mismatch fix, the `[-2048, 2047]` saturation, the §2.4.3.2
-/// default `intra_quant` / `non_intra_quant` matrices, and the
-/// non-intra `dct_zz[i] == 0 -> 0` zeroing pass), and the §7.6.3.6
-/// MPEG-2 dual-prime additional arithmetic (Tables 7-12 / 7-13 with
-/// the `//` rounding-away-from-zero operator, both single-vector
-/// field-picture and two-vector frame-picture derivations), and the
-/// §7.6.4 forming-predictions pel reader (per-component
-/// `int_vec[t]` / `half_flag[t]` split with the §4.1 `DIV` floor
-/// operator, the four-way half-pel switch on
-/// `(half_flag[0], half_flag[1])`, and the bilinear `// 2` / `// 4`
-/// averaging over a pad-to-edge reference plane), the §7.6.7.1 /
-/// §7.6.7.4 combine-predictions step (bidirectional `(forward +
-/// backward) // 2` average, single-direction pass-through, and the
-/// dual-prime same-parity / opposite-parity alias of the same
-/// formula), and the §7.6.8 add-prediction-and-coefficients
-/// reconstruction step (`d = saturate(f + p)` with `[0, 255]` clamp,
-/// plus the intra shortcut `d = saturate(f)` for `macroblock_intra ==
-/// 1` blocks), and the §7.6 per-macroblock pipeline driver
-/// ([`macroblock_pipeline::decode_block`] /
-/// [`macroblock_pipeline::decode_macroblock`]) that composes the
-/// §7.6.7 + §7.6.8 endpoints onto a per-coded-block dispatch loop
-/// keyed off the §6.3.17.4 `pattern_code[12]` derivation and the
-/// [`ChromaFormat`]-bounded `blocks_per_macroblock` (6 / 8 / 12)
-/// walk, and the §7.4 MPEG-2 inverse-quantisation pipeline
-/// ([`mpeg2_dequantize::inverse_quantise_block`]) covering §7.4.1
-/// intra DC via Table 7-4 `intra_dc_mult`, §7.4.2.1 weighting-matrix
-/// selection (Table 7-5), §7.4.2.2 `quantiser_scale_code` via
-/// Table 7-6 (both `q_scale_type` columns), §7.4.2.3 reconstruction
-/// (`((2*QF + k) * W * quantiser_scale) / 32` with `k = 0` /
-/// `k = Sign(QF)`), §7.4.3 saturation to `[-2048, 2047]`, and §7.4.4
-/// mismatch control (sum-parity LSB toggle on `F[7][7]`), and the §A
-/// 8×8 IDCT ([`idct::idct_8x8`] over [`idct::idct_candidate_f64`]
-/// with [`idct::idct_reference_f64`] as the IEEE 1180 reference and
-/// the conformance harness exercising `pmse` / `omse` / `pme` / `ome`
-/// plus peak error against the staged bounds) — they do not yet
-/// provide a complete [`oxideav_core::Decoder`] or
-/// [`oxideav_core::Encoder`] (the slice-decoding driver wiring the
-/// dequantiser + IDCT into a bytestream pipeline is still ahead), so
-/// there is nothing to install in the registry.
-pub fn register(_ctx: &mut RuntimeContext) {}
+/// Install the MPEG-1 (`"mpeg1video"`) and MPEG-2 (`"mpeg2video"`)
+/// video decoders into `reg`.
+///
+/// Both ids resolve to [`decoder::make_decoder`], which drives the
+/// whole-elementary-stream reconstruction pipeline
+/// ([`video_sequence::decode_video_sequence`]) behind the packet-based
+/// [`oxideav_core::Decoder`] contract (see the [`decoder`] module docs
+/// for the framing model). The tag sets are the FourCC / Matroska
+/// codec ids the container crates map onto these two ids
+/// (`V_MPEG1` / `V_MPEG2` in Matroska; `mp1v` / `mp2v` / `mpg1` /
+/// `mpg2` / `hdv2` / `m2v1` FourCCs).
+pub fn register_codecs(reg: &mut CodecRegistry) {
+    let mpeg1_caps = CodecCapabilities::video("mpeg1video_sw")
+        .with_lossy(true)
+        .with_intra_only(false)
+        .with_max_size(4096, 4096);
+    reg.register(
+        CodecInfo::new(CodecId::new(decoder::MPEG1_CODEC_ID_STR))
+            .capabilities(mpeg1_caps)
+            .decoder(decoder::make_decoder)
+            .tags([
+                CodecTag::fourcc(b"mp1v"),
+                CodecTag::fourcc(b"mpg1"),
+                CodecTag::fourcc(b"MPG1"),
+                CodecTag::matroska("V_MPEG1"),
+            ]),
+    );
+
+    let mpeg2_caps = CodecCapabilities::video("mpeg2video_sw")
+        .with_lossy(true)
+        .with_intra_only(false)
+        .with_max_size(8192, 8192);
+    reg.register(
+        CodecInfo::new(CodecId::new(decoder::MPEG2_CODEC_ID_STR))
+            .capabilities(mpeg2_caps)
+            .decoder(decoder::make_decoder)
+            .tags([
+                CodecTag::fourcc(b"mp2v"),
+                CodecTag::fourcc(b"mpg2"),
+                CodecTag::fourcc(b"MPG2"),
+                CodecTag::fourcc(b"hdv2"),
+                CodecTag::fourcc(b"m2v1"),
+                CodecTag::matroska("V_MPEG2"),
+            ]),
+    );
+}
+
+/// Unified registration entry point: install the MPEG-1 / MPEG-2 video
+/// codec factories into the codec sub-registry of a [`RuntimeContext`].
+///
+/// This is the entry point every sibling crate follows and the one the
+/// [`oxideav_core::register!`] macro below wires into
+/// `oxideav_meta::register_all`. Direct callers that need only the codec
+/// sub-registry can use [`register_codecs`] instead.
+pub fn register(ctx: &mut RuntimeContext) {
+    register_codecs(&mut ctx.codecs);
+}
 
 oxideav_core::register!("mpeg12video", register);
