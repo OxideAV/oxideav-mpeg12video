@@ -976,10 +976,14 @@ pub fn walk_slice_at(
         // happens to put a `1` bit at the right offset, so we use
         // the conservative 23-bit pattern.
         //
-        // If the buffer is too short to peek 23 bits we treat that
-        // as a successful slice end (the caller bounded the
-        // buffer — the next-start-code itself may live in a parent
-        // buffer).
+        // If the buffer is too short to peek 23 full bits the
+        // slice runs to the end of the stream (a legal stream may
+        // end right after its last slice with no sequence_end_code
+        // appended by the transport). §5.2.3 zero-stuffs up to the
+        // next start code, so the truncated peek is evaluated with
+        // zero extension: an all-zero (or empty) tail is stuffing
+        // — a successful slice end — while any `1` bit in the tail
+        // is the next macroblock's data and the walk continues.
         match br.peek_u32(23) {
             Ok(0) => {
                 end_bit_position = br.bit_position();
@@ -990,8 +994,13 @@ pub fn walk_slice_at(
                 // next macroblock.
             }
             Err(_) => {
-                end_bit_position = br.bit_position();
-                break;
+                let remaining = br.bits_remaining().min(22) as u32;
+                if remaining == 0 || matches!(br.peek_u32(remaining), Ok(0)) {
+                    end_bit_position = br.bit_position();
+                    break;
+                }
+                // A `1` bit inside the short tail: more macroblock
+                // data — fall through and parse the next macroblock.
             }
         }
 
