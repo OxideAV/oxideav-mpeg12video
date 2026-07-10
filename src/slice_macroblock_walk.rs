@@ -954,11 +954,25 @@ pub fn walk_slice_at(
     // `intra_dc_precision`. Block decoding requires
     // `intra_dc_precision` to be in `0..=3` (Table 6-13); the
     // validation surfaces as [`Error::InvalidBitstream`] up-front.
-    let mut dc_predictors: Option<DcPredictors> = if ctx.block_decoding_enabled {
+    let mut dc_predictors: Option<DcPredictors> = if ctx.block_decoding_enabled && !ctx.mpeg1 {
         Some(DcPredictors::new(ctx.intra_dc_precision)?)
     } else {
         None
     };
+
+    // MPEG-1 (ISO/IEC 11172-2) block decoding carries the §2.4.4.1
+    // `dct_dc_*_past` + `past_intra_address` chain instead of the
+    // §7.2.1 predictor bank. The chain starts in its §2.4.4.1
+    // slice-start state (`128 * 8` per component, address `-2`); the
+    // per-non-intra / per-skipped resets are realised through the
+    // `(macroblock_address - past_intra_address) > 1` test the
+    // dequantiser applies, driven by `finalise_intra_macroblock`.
+    let mut mpeg1_dc_predictors: Option<crate::dequantize::IntraDcPredictors> =
+        if ctx.block_decoding_enabled && ctx.mpeg1 {
+            Some(crate::dequantize::IntraDcPredictors::at_slice_start())
+        } else {
+            None
+        };
 
     let end_bit_position: u64;
 
@@ -1234,7 +1248,60 @@ pub fn walk_slice_at(
         // emits an empty `Vec<DecodedBlock>` with no bitstream
         // reads. Intra MBs still emit one §7.2.1 DC prelude per
         // coded block per §6.2.6.
-        let decoded_blocks = if let Some(ref mut predictors) = dc_predictors {
+        let decoded_blocks = if let Some(ref mut mpeg1_predictors) = mpeg1_dc_predictors {
+            // MPEG-1 §2.4.3.7 block loop: iterate the six 4:2:0
+            // block slots gated by `pattern_code[i]` and decode each
+            // through the §2.4.4.1 / §2.4.4.2 pipeline. MPEG-1's
+            // `quantizer_scale` is the 5-bit linear value directly
+            // (there is no Table 7-6 mapping) and the chrominance
+            // blocks share the luminance matrices (§2.4.2.3 defines
+            // one intra and one non-intra matrix for the whole
+            // picture).
+            let mut blocks = Vec::new();
+            for i in 0..6u8 {
+                if !pattern_code[i as usize] {
+                    continue;
+                }
+                let decoded = if macroblock_type.macroblock_intra {
+                    crate::mpeg1_block_decoder::decode_intra_block(
+                        &mut br,
+                        i,
+                        quantiser_scale_code,
+                        &ctx.quantiser_matrices.intra_luma,
+                        mpeg1_predictors,
+                        macroblock_address_u32 as i32,
+                    )?
+                } else {
+                    crate::mpeg1_block_decoder::decode_non_intra_block(
+                        &mut br,
+                        quantiser_scale_code,
+                        &ctx.quantiser_matrices.non_intra_luma,
+                    )?
+                };
+                let component = crate::mpeg2_macroblock_blocks::block_component(
+                    i as usize,
+                    ChromaFormat::Yuv420,
+                )
+                .ok_or(Error::InvalidBitstream(
+                    "mpeg1 block index out of the 4:2:0 range (§2.4.3.7)",
+                ))?;
+                blocks.push(crate::mpeg2_macroblock_blocks::DecodedBlock {
+                    block_index: i,
+                    component,
+                    decoded,
+                });
+            }
+            if macroblock_type.macroblock_intra {
+                // §2.4.4.1: `past_intra_address = macroblock_address`
+                // after all the blocks in the macroblock are
+                // processed.
+                crate::dequantize::finalise_intra_macroblock(
+                    mpeg1_predictors,
+                    macroblock_address_u32 as i32,
+                );
+            }
+            Some(blocks)
+        } else if let Some(ref mut predictors) = dc_predictors {
             // §7.4.2.2 Table 7-6: resolve `quantiser_scale_code`
             // through the `q_scale_type` column to the final
             // `quantiser_scale_value` in `1..=112`. The `quantiser_scale_code`

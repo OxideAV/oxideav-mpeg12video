@@ -90,6 +90,9 @@ use crate::frame_assembly::{
     assemble_frame_from_fields, decode_intra_picture, FrameBuffer, IntraPictureParams,
 };
 use crate::inter_reconstruction::ReferenceFrames;
+use crate::mpeg1_picture::{
+    decode_mpeg1_inter_picture, decode_mpeg1_intra_picture, Mpeg1InterParams, Mpeg1PictureParams,
+};
 use crate::picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
     PICTURE_START_CODE,
@@ -147,7 +150,7 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
     // before a picture, so a multi-sequence stream whose geometry changes
     // mid-stream tracks the new sizes (§6.1.1.6: a repeat sequence header
     // may legally restate the parameters).
-    let mut geometry = sequence_geometry(&parse_leading_sequence(stream)?);
+    let mut geometry = parse_leading_sequence(stream)?;
 
     let mut reorder = ReorderBuffer::new();
     let mut output: Vec<DecodedFrame> = Vec::new();
@@ -178,7 +181,7 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
         // B-frame, is an I/P anchor that flushes the held one in the normal
         // way).
         if is_start_code(&stream[code_start..], SEQUENCE_HEADER_CODE) {
-            geometry = sequence_geometry(&Mpeg2Sequence::from_buf(&stream[code_start..])?);
+            geometry = sequence_geometry_at(&stream[code_start..])?;
             // Advance past this sequence header's start code; the next scan
             // finds the sequence_extension / picture that follows.
             offset = code_start + 4;
@@ -209,43 +212,61 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
         };
         let picture_region = &stream[pic_start..pic_start + region_end];
 
-        let (header, ext) = Mpeg2PictureHeader::parse_with_extension(picture_region)?;
-
-        // §6.1.1.4.1 field-picture pair: decode the field, hold the first
-        // of a pair until its partner arrives, then interleave the pair
-        // into one reconstructed frame and route that frame exactly as a
-        // frame picture would be.
-        let coded = if ext.picture_structure != PictureStructure::Frame {
-            match reconstruct_field_pair(
-                picture_region,
-                &header,
-                &ext,
-                geometry,
-                forward_anchor.as_ref(),
-                backward_anchor.as_ref(),
-                &mut pending_field,
-            )? {
-                // First field of a pair: held back, no frame yet.
-                None => {
-                    offset = next_offset;
-                    continue;
-                }
-                // Second field completed the pair into a frame.
-                Some(frame) => frame,
+        let coded = match geometry {
+            SequenceGeometry::Mpeg1(mpeg1_params) => {
+                // ISO/IEC 11172-2: frame pictures only, no
+                // picture_coding_extension — the motion-vector context
+                // (f_codes + full_pel flags) lives in the picture
+                // header itself (§2.4.3.4).
+                let header = Mpeg2PictureHeader::parse(picture_region)?;
+                reconstruct_mpeg1_picture(
+                    picture_region,
+                    &header,
+                    &mpeg1_params,
+                    forward_anchor.as_ref(),
+                    backward_anchor.as_ref(),
+                )?
             }
-        } else {
-            // The slice region begins after the picture header +
-            // extensions: the per-picture drivers find the first
-            // slice_start_code themselves, so we hand them the whole
-            // picture region.
-            reconstruct_picture(
-                picture_region,
-                &header,
-                &ext,
-                geometry,
-                forward_anchor.as_ref(),
-                backward_anchor.as_ref(),
-            )?
+            SequenceGeometry::Mpeg2(mpeg2_geometry) => {
+                let (header, ext) = Mpeg2PictureHeader::parse_with_extension(picture_region)?;
+
+                // §6.1.1.4.1 field-picture pair: decode the field, hold the
+                // first of a pair until its partner arrives, then interleave
+                // the pair into one reconstructed frame and route that frame
+                // exactly as a frame picture would be.
+                if ext.picture_structure != PictureStructure::Frame {
+                    match reconstruct_field_pair(
+                        picture_region,
+                        &header,
+                        &ext,
+                        mpeg2_geometry,
+                        forward_anchor.as_ref(),
+                        backward_anchor.as_ref(),
+                        &mut pending_field,
+                    )? {
+                        // First field of a pair: held back, no frame yet.
+                        None => {
+                            offset = next_offset;
+                            continue;
+                        }
+                        // Second field completed the pair into a frame.
+                        Some(frame) => frame,
+                    }
+                } else {
+                    // The slice region begins after the picture header +
+                    // extensions: the per-picture drivers find the first
+                    // slice_start_code themselves, so we hand them the whole
+                    // picture region.
+                    reconstruct_picture(
+                        picture_region,
+                        &header,
+                        &ext,
+                        mpeg2_geometry,
+                        forward_anchor.as_ref(),
+                        backward_anchor.as_ref(),
+                    )?
+                }
+            }
         };
 
         // §6.1.1.11 reorder + §7.6 reference rotation.
@@ -448,13 +469,62 @@ impl ReorderBuffer {
 
 /// Parse the leading `sequence_header()` + `sequence_extension()` pair at
 /// the start of `stream`.
-fn parse_leading_sequence(stream: &[u8]) -> Result<Mpeg2Sequence> {
+fn parse_leading_sequence(stream: &[u8]) -> Result<SequenceGeometry> {
     let Some(rel) = find_start_code(stream, |code| code == SEQUENCE_HEADER_CODE) else {
         return Err(Error::InvalidBitstream(
             "video_sequence(): missing leading sequence_header_code 0x000001B3 (§6.2.2)",
         ));
     };
-    Mpeg2Sequence::from_buf(&stream[rel..])
+    sequence_geometry_at(&stream[rel..])
+}
+
+/// The parsed sequence layer, discriminating the two standards this
+/// crate decodes: an ISO/IEC 13818-2 stream (sequence_header +
+/// mandatory sequence_extension, §6.1.1.6) or an ISO/IEC 11172-2
+/// stream (sequence header only — the extension start code does not
+/// follow).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SequenceGeometry {
+    /// ISO/IEC 13818-2 geometry + per-picture DCT context seed.
+    Mpeg2(IntraPictureParams),
+    /// ISO/IEC 11172-2 geometry + sequence-header quantiser matrices.
+    Mpeg1(Mpeg1PictureParams),
+}
+
+/// Parse the sequence layer at `buf` (which begins with the
+/// `sequence_header_code`) and classify the stream: a
+/// `sequence_extension()` immediately after the header makes it an
+/// ISO/IEC 13818-2 sequence (§6.1.1.6 *"sequence_header() shall be
+/// followed by sequence_extension()"*); its absence makes it an
+/// ISO/IEC 11172-2 sequence, whose geometry and quantiser matrices
+/// come from the header alone (§2.4.2.3).
+fn sequence_geometry_at(buf: &[u8]) -> Result<SequenceGeometry> {
+    match Mpeg2Sequence::from_buf(buf) {
+        Ok(seq) => Ok(SequenceGeometry::Mpeg2(sequence_geometry(&seq))),
+        Err(_) => {
+            // No sequence_extension: ISO/IEC 11172-2. Parse the bare
+            // header (geometry + optional downloadable matrices, both
+            // transmitted in zigzag order per §2.4.2.3 / §2.4.3.2).
+            let header = crate::sequence_header::Mpeg2SequenceHeader::parse(buf)?;
+            let to_raster = |zz: [u8; 64]| {
+                crate::quant_matrix_extension::QuantiserMatrixPayload { bytes: zz }.to_matrix()
+            };
+            let intra_quant = header
+                .intra_quant
+                .map(to_raster)
+                .unwrap_or(crate::dequantize::DEFAULT_INTRA_QUANT);
+            let non_intra_quant = header
+                .non_intra_quant
+                .map(to_raster)
+                .unwrap_or([[16u8; 8]; 8]);
+            Ok(SequenceGeometry::Mpeg1(Mpeg1PictureParams {
+                width: header.width as usize,
+                height: header.height as usize,
+                intra_quant,
+                non_intra_quant,
+            }))
+        }
+    }
 }
 
 /// Build the per-picture geometry the I/P/B drivers consume from the
@@ -538,6 +608,89 @@ fn reconstruct_picture(
         frame,
         temporal_reference: header.temporal_reference,
         picture_coding_type: header.picture_coding_type,
+    })
+}
+
+/// Reconstruct one ISO/IEC 11172-2 picture, dispatching on
+/// `picture_coding_type`. MPEG-1 pictures are always frame pictures;
+/// the motion-vector context (forward/backward f_code + full_pel
+/// flags) comes straight from the picture header (§2.4.3.4).
+fn reconstruct_mpeg1_picture(
+    picture_region: &[u8],
+    header: &Mpeg2PictureHeader,
+    params: &Mpeg1PictureParams,
+    forward_anchor: Option<&FrameBuffer>,
+    backward_anchor: Option<&FrameBuffer>,
+) -> Result<DecodedFrame> {
+    let frame = match header.picture_coding_type {
+        PictureCodingType::Intra => {
+            let (frame, _placed) = decode_mpeg1_intra_picture(picture_region, params)?;
+            frame
+        }
+        PictureCodingType::Predictive => {
+            let forward = backward_anchor.ok_or(Error::InvalidBitstream(
+                "§2.4.1: P-picture before any I/P anchor exists (no forward reference)",
+            ))?;
+            let inter = mpeg1_inter_params(header, params)?;
+            let (frame, _placed) = decode_mpeg1_inter_picture(
+                picture_region,
+                &inter,
+                ReferenceFrames::forward_only(forward),
+            )?;
+            frame
+        }
+        PictureCodingType::Bidirectional => {
+            let forward = forward_anchor.ok_or(Error::InvalidBitstream(
+                "§2.4.1: B-picture before two I/P anchors exist (no forward reference)",
+            ))?;
+            let backward = backward_anchor.ok_or(Error::InvalidBitstream(
+                "§2.4.1: B-picture before two I/P anchors exist (no backward reference)",
+            ))?;
+            let inter = mpeg1_inter_params(header, params)?;
+            let (frame, _placed) = decode_mpeg1_inter_picture(
+                picture_region,
+                &inter,
+                ReferenceFrames::bidirectional(forward, backward),
+            )?;
+            frame
+        }
+    };
+
+    Ok(DecodedFrame {
+        frame,
+        temporal_reference: header.temporal_reference,
+        picture_coding_type: header.picture_coding_type,
+    })
+}
+
+/// Build the §2.4.4.2 / §2.4.4.3 motion context for an MPEG-1 P/B
+/// picture from its picture header.
+fn mpeg1_inter_params(
+    header: &Mpeg2PictureHeader,
+    params: &Mpeg1PictureParams,
+) -> Result<Mpeg1InterParams> {
+    let forward_f_code = header.fwd_f_code.ok_or(Error::InvalidBitstream(
+        "mpeg1 P/B picture header missing forward_f_code (§2.4.3.4)",
+    ))?;
+    let full_pel_forward_vector = header.full_pel_forward_vector.unwrap_or(false);
+    let (backward_f_code, full_pel_backward_vector) =
+        if header.picture_coding_type == PictureCodingType::Bidirectional {
+            (
+                header.bwd_f_code.ok_or(Error::InvalidBitstream(
+                    "mpeg1 B picture header missing backward_f_code (§2.4.3.4)",
+                ))?,
+                header.full_pel_backward_vector.unwrap_or(false),
+            )
+        } else {
+            (1, false)
+        };
+    Ok(Mpeg1InterParams {
+        base: *params,
+        picture_coding_type: header.picture_coding_type,
+        forward_f_code,
+        full_pel_forward_vector,
+        backward_f_code,
+        full_pel_backward_vector,
     })
 }
 

@@ -340,11 +340,17 @@ fn reconstruct_component(
         big = little + (32 * f);
     }
 
-    // §2.4.4.2 conformance guard. The wrap-around arithmetic would
-    // land ambiguously on the seam value `±f * 16`.
-    if little == f * 16 || little == -f * 16 {
+    // §2.4.4.2 conformance guard: *"Values of forward_f,
+    // motion_horizontal_forward_code and if present
+    // motion_horizontal_forward_r shall be such that right_little is
+    // not equal to forward_f * 16"* (and likewise vertically). Only
+    // the **positive** seam is forbidden — the representable vector
+    // range is the asymmetric `[-16f, 16f - 1]`, so `little == -16f`
+    // is a legal value real encoders emit (motion_code -16 with a
+    // zero complement).
+    if little == f * 16 {
         return Err(Error::InvalidBitstream(
-            "mpeg1_reconstruct: little hits the ±f*16 wrap seam (§2.4.4.2 conformance guard)",
+            "mpeg1_reconstruct: little hits the +f*16 wrap seam (§2.4.4.2 conformance guard)",
         ));
     }
 
@@ -623,17 +629,22 @@ mod tests {
     }
 
     #[test]
-    fn wrap_seam_conformance_guard_negative() {
-        // Symmetric: code = -16, r = 1, f = 2, complement = 0.
-        // little = -16 * 2 + 0 = -32 = -f * 16. Seam hit.
+    fn negative_seam_is_a_legal_vector() {
+        // The guard is asymmetric: §2.4.4.2 forbids only
+        // `right_little == +forward_f * 16`. The representable range
+        // is `[-16f, 16f - 1]`, so `little == -16f` is a legal value
+        // real encoders emit. code = -16, r = 1, f = 2,
+        // complement = 0 → little = -32 = -16f; prev = 0 is inside
+        // [min, max] so recon = -32.
         let mut pred = Mpeg1Predictor::new();
         let ctx = Mpeg1FrameMvContext {
             f_code: 2,
             full_pel: false,
         };
         let element = mv(Mpeg1MotionDirection::Forward, -16, Some(1), 0, None);
-        let err = reconstruct(&element, ctx, &mut pred, Mpeg1MotionDirection::Forward).unwrap_err();
-        assert!(matches!(err, Error::InvalidBitstream(_)));
+        let rc = reconstruct(&element, ctx, &mut pred, Mpeg1MotionDirection::Forward).unwrap();
+        assert_eq!(rc.recon_right, -32);
+        assert_eq!(pred.recon_right_prev, -32);
     }
 
     #[test]
