@@ -361,6 +361,86 @@ pub fn display_indices_from_temporal_references(temporal_references: &[u16]) -> 
     indices
 }
 
+/// Compute the continuous display index of each frame in a
+/// **coded-order** sequence from its `temporal_reference` **and**
+/// `picture_coding_type`, tracking GOP boundaries by the anchor
+/// pattern rather than the bare `tr == 0` reset heuristic of
+/// [`display_indices_from_temporal_references`].
+///
+/// Within one GOP the anchors (I / P) appear in coded order with
+/// **strictly increasing** `temporal_reference` (each anchor is coded
+/// before the B-frames that precede it in display order, and after
+/// every earlier anchor of the GOP). A new GOP therefore begins
+/// exactly at an anchor whose `temporal_reference` is **not greater**
+/// than the previous anchor's — the §6.3.9 / §2.4.3.3 per-GOP reset
+/// makes the new GOP's first coded frame (its I, whose `tr` counts
+/// the leading B-frames) land at or below the old GOP's running
+/// anchor position. This classifies the GOP's leading I correctly
+/// where the trefs-only heuristic cannot: coded order
+/// `… P(tr 11) | I(tr 2) B(tr 0) B(tr 1) …` — the I belongs to the
+/// **new** GOP even though its `tr` is neither `0` nor smaller than
+/// every earlier index.
+///
+/// Returns the display index of each coded frame, in coded order.
+pub fn display_indices_from_coded_pictures(pictures: &[(u16, PictureCodingType)]) -> Vec<u64> {
+    let mut indices = Vec::with_capacity(pictures.len());
+    let mut gop_base: u64 = 0;
+    let mut gop_max: Option<u64> = None;
+    // The previous anchor's temporal_reference within the current GOP.
+    let mut prev_anchor_tr: Option<u16> = None;
+
+    for &(tr, kind) in pictures {
+        let is_anchor = matches!(
+            kind,
+            PictureCodingType::Intra | PictureCodingType::Predictive
+        );
+        if is_anchor {
+            if let Some(prev) = prev_anchor_tr {
+                if tr <= prev {
+                    // §6.3.9 GOP reset: advance the base past the
+                    // previous GOP's highest display index.
+                    gop_base = gop_max.map_or(0, |m| m + 1);
+                }
+            }
+            prev_anchor_tr = Some(tr);
+        }
+        let index = gop_base + u64::from(tr);
+        gop_max = Some(gop_max.map_or(index, |m| m.max(index)));
+        indices.push(index);
+    }
+    indices
+}
+
+/// [`verify_display_order`] with the coded pictures' coding types —
+/// uses the anchor-pattern GOP detection of
+/// [`display_indices_from_coded_pictures`], which classifies a GOP
+/// whose leading I-frame has `temporal_reference > 0` correctly.
+///
+/// `coded_order` lists each coded frame's `(temporal_reference,
+/// picture_coding_type)` in coded order; `display_order_trefs` the
+/// `temporal_reference` of each frame in the display order under
+/// test.
+///
+/// # Errors
+/// * [`Error::InvalidBitstream`] under the same conditions as
+///   [`verify_display_order`].
+pub fn verify_display_order_with_types(
+    coded_order: &[(u16, PictureCodingType)],
+    display_order_trefs: &[u16],
+) -> Result<()> {
+    if coded_order.len() != display_order_trefs.len() {
+        return Err(Error::InvalidBitstream(
+            "verify_display_order_with_types: coded / display frame counts differ (§6.1.1.11)",
+        ));
+    }
+    let coded_indices = display_indices_from_coded_pictures(coded_order);
+    verify_display_order_against_indices(
+        coded_order.iter().map(|&(tr, _)| tr),
+        &coded_indices,
+        display_order_trefs,
+    )
+}
+
 /// Verify that a **display-order** sequence of frames is consistent with
 /// the §6.1.1.11 reorder: the continuous display indices derived from
 /// each frame's `temporal_reference`
@@ -388,15 +468,26 @@ pub fn verify_display_order(coded_order_trefs: &[u16], display_order_trefs: &[u1
         ));
     }
     let coded_indices = display_indices_from_temporal_references(coded_order_trefs);
-    // A `temporal_reference` value can repeat across GOPs but never within
-    // one GOP, and the derived display indices are globally unique. Walk
-    // the display order; each frame's index must exceed the previous one.
-    // Match each display frame to the smallest unconsumed coded frame
-    // carrying the same `temporal_reference`, so cross-GOP duplicates pair
-    // up in increasing-index order.
+    verify_display_order_against_indices(
+        coded_order_trefs.iter().copied(),
+        &coded_indices,
+        display_order_trefs,
+    )
+}
+
+/// Shared body of [`verify_display_order`] /
+/// [`verify_display_order_with_types`]: match each display frame to
+/// the smallest unconsumed coded frame carrying the same
+/// `temporal_reference` (a `temporal_reference` value can repeat
+/// across GOPs but never within one, and the derived display indices
+/// are globally unique), then require the matched indices to be
+/// strictly increasing.
+fn verify_display_order_against_indices(
+    coded_order_trefs: impl Iterator<Item = u16>,
+    coded_indices: &[u64],
+    display_order_trefs: &[u16],
+) -> Result<()> {
     let mut available: Vec<(u16, u64)> = coded_order_trefs
-        .iter()
-        .copied()
         .zip(coded_indices.iter().copied())
         .collect();
 

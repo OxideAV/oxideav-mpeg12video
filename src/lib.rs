@@ -602,8 +602,9 @@ pub use stream_writer::{
     SEQUENCE_END_CODE,
 };
 pub use video_sequence::{
-    decode_video_sequence, display_indices_from_temporal_references, verify_display_order,
-    DecodedFrame,
+    decode_video_sequence, display_indices_from_coded_pictures,
+    display_indices_from_temporal_references, verify_display_order,
+    verify_display_order_with_types, DecodedFrame,
 };
 
 /// Crate-local error type. Each variant is raised at most by the
