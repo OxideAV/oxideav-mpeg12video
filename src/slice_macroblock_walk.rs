@@ -1041,6 +1041,20 @@ pub fn walk_slice_at(
         // rule above (which has increment == 1, so 0 skipped).
         let skipped_macroblock_count = u32::from(increment.value) - 1;
 
+        // §7.2.1 (page 71): the per-component DC predictors are reset
+        // "whenever a macroblock is skipped", in addition to the
+        // slice-start and non-intra-macroblock resets. The skip run
+        // precedes *this* coded macroblock, so the reset must land
+        // before this macroblock's blocks decode — an intra macroblock
+        // that follows a skip run codes its `dct_dc_differential`
+        // against the Table 7-2 reset value, not against the previous
+        // intra macroblock's final predictor.
+        if skipped_macroblock_count > 0 {
+            if let Some(ref mut predictors) = dc_predictors {
+                predictors.reset();
+            }
+        }
+
         // §6.2.5.1: macroblock_modes() opens with macroblock_type
         // (Tables B-2 / B-3 / B-4 keyed on picture_coding_type).
         let macroblock_type = MacroblockType::parse(&mut br, ctx.picture_coding_type)?;
