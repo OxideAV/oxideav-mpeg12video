@@ -310,7 +310,10 @@ fn non_multiple_of_16_dimensions_inter_roundtrip() {
     let frames = decode_video_sequence(&stream).expect("decode");
     assert_eq!(frames.len(), 2);
     let out = &frames[1].frame;
-    assert_eq!((out.y.width(), out.y.height()), (40, 24));
+    // The visible extent is 40×24; the plane storage covers the full
+    // 3×2 macroblock grid (48×32).
+    assert_eq!((out.width, out.height), (40, 24));
+    assert_eq!((out.y.width(), out.y.height()), (48, 32));
     assert!(out.y.get(0, 0).is_some());
     assert!(out.y.get(39, 23).is_some());
 }

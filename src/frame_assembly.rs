@@ -84,6 +84,25 @@ impl Plane {
         &self.samples
     }
 
+    /// Copy the top-left `rect_width × rect_height` rectangle out of
+    /// the plane as a tightly-packed row-major buffer (stride ==
+    /// `rect_width`). The rectangle is clipped to the plane extent.
+    ///
+    /// Display consumers use this to crop the macroblock-aligned
+    /// reconstruction storage down to the visible picture dimensions
+    /// ([`FrameBuffer::width`] / [`FrameBuffer::height`] /
+    /// [`FrameBuffer::visible_chroma_dims`]).
+    pub fn packed_rect(&self, rect_width: usize, rect_height: usize) -> Vec<u8> {
+        let w = rect_width.min(self.width);
+        let h = rect_height.min(self.height);
+        let mut out = Vec::with_capacity(w * h);
+        for row in 0..h {
+            let start = row * self.width;
+            out.extend_from_slice(&self.samples[start..start + w]);
+        }
+        out
+    }
+
     /// Sample at `(x, y)`. Out-of-bounds coordinates return `None`.
     pub fn get(&self, x: usize, y: usize) -> Option<u8> {
         if x >= self.width || y >= self.height {
@@ -118,18 +137,26 @@ impl Plane {
 
 /// A reconstructed picture: the three colour-component planes.
 ///
-/// The Y plane is `mb_width*16 × mb_height*16` clipped to the coded
-/// `horizontal_size × vertical_size`. The chroma plane dimensions are
-/// derived from the [`ChromaFormat`] subsampling (§6.1.1):
+/// The Y plane storage is the full macroblock grid —
+/// `mb_width*16 × mb_height*16` — because every macroblock (including
+/// the bottom / right edge ones that overhang the visible
+/// `horizontal_size × vertical_size`) is reconstructed in full and its
+/// overhang samples belong to the coded picture: §7.6.4 motion vectors
+/// in later pictures may legally reference them, so they must be
+/// retained, not discarded. The `width` / `height` fields carry the
+/// **visible** (display) dimensions; callers producing display output
+/// crop the planes to that rectangle (`Plane::packed_rect`). The
+/// chroma plane dimensions are derived from the [`ChromaFormat`]
+/// subsampling (§6.1.1) applied to the *aligned* luma storage:
 ///
 /// * 4:2:0 — chroma is half width, half height.
 /// * 4:2:2 — chroma is half width, full height.
 /// * 4:4:4 — chroma is full width, full height.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameBuffer {
-    /// Coded picture width (`horizontal_size`).
+    /// Visible picture width (`horizontal_size`).
     pub width: usize,
-    /// Coded picture height (`vertical_size`).
+    /// Visible picture height (`vertical_size`).
     pub height: usize,
     /// Chroma sampling.
     pub chroma_format: ChromaFormat,
@@ -157,22 +184,38 @@ pub fn chroma_shift(chroma_format: ChromaFormat) -> (u32, u32) {
 }
 
 impl FrameBuffer {
-    /// Allocate a frame buffer sized to the coded picture dimensions.
+    /// Allocate a frame buffer for a coded picture with the given
+    /// **visible** dimensions.
     ///
-    /// The luma plane is exactly `width × height`; the chroma planes
-    /// are subsampled per [`chroma_shift`]. All samples start at `0`.
+    /// The luma plane storage is `width` / `height` rounded up to the
+    /// macroblock grid (multiples of 16); the chroma planes are
+    /// subsampled from the aligned luma storage per [`chroma_shift`].
+    /// All samples start at `0`.
     pub fn new(width: usize, height: usize, chroma_format: ChromaFormat) -> Self {
+        let luma_w = width.div_ceil(16) * 16;
+        let luma_h = height.div_ceil(16) * 16;
         let (sx, sy) = chroma_shift(chroma_format);
-        let cw = (width + ((1usize << sx) - 1)) >> sx;
-        let ch = (height + ((1usize << sy) - 1)) >> sy;
+        let cw = luma_w >> sx;
+        let ch = luma_h >> sy;
         Self {
             width,
             height,
             chroma_format,
-            y: Plane::new(width, height),
+            y: Plane::new(luma_w, luma_h),
             cb: Plane::new(cw, ch),
             cr: Plane::new(cw, ch),
         }
+    }
+
+    /// The **visible** chroma plane dimensions — the [`chroma_shift`]
+    /// subsampling applied to the visible `width × height` (rounding
+    /// up, §6.1.1). The stored chroma planes may be larger (they cover
+    /// the full macroblock grid); display output crops to this extent.
+    pub fn visible_chroma_dims(&self) -> (usize, usize) {
+        let (sx, sy) = chroma_shift(self.chroma_format);
+        let cw = (self.width + ((1usize << sx) - 1)) >> sx;
+        let ch = (self.height + ((1usize << sy) - 1)) >> sy;
+        (cw, ch)
     }
 
     /// Mutable access to the plane for a colour component.
@@ -610,12 +653,12 @@ pub fn assemble_frame_from_fields(
             "assemble_frame_from_fields(): top/bottom field chroma_format mismatch (§6.1.1.4.1)",
         ));
     }
-    if top.y.width() != bottom.y.width() {
+    if top.width != bottom.width {
         return Err(crate::Error::InvalidBitstream(
             "assemble_frame_from_fields(): top/bottom field width mismatch (§6.1.1.4.1)",
         ));
     }
-    if top.y.height() != bottom.y.height() {
+    if top.height != bottom.height {
         return Err(crate::Error::InvalidBitstream(
             "assemble_frame_from_fields(): top/bottom field height mismatch (§6.1.1.4.1)",
         ));
@@ -875,7 +918,8 @@ mod tests {
         let frame = assemble_frame_from_fields(&top, &bottom).unwrap();
         assert_eq!(frame.width, 4);
         assert_eq!(frame.height, 8);
-        assert_eq!(frame.y.height(), 8);
+        // Storage is macroblock-aligned; the visible height is 8.
+        assert_eq!(frame.y.height(), 16);
 
         // Even frame rows carry the top field rows in order.
         for fr in 0..4 {
@@ -904,7 +948,10 @@ mod tests {
             }
         }
         let frame = assemble_frame_from_fields(&top, &bottom).unwrap();
-        assert_eq!((frame.cb.width(), frame.cb.height()), (4, 8));
+        // Storage is macroblock-aligned (16×16 luma → 8×8 chroma); the
+        // visible chroma extent is 4×8.
+        assert_eq!((frame.cb.width(), frame.cb.height()), (8, 8));
+        assert_eq!(frame.visible_chroma_dims(), (4, 8));
         for r in 0..4 {
             assert_eq!(frame.cb.get(0, 2 * r), Some(10 + r as u8));
             assert_eq!(frame.cb.get(0, 2 * r + 1), Some(50 + r as u8));

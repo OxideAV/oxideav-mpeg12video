@@ -66,10 +66,21 @@ pub struct SpatialPredictionPicture {
 
 /// Convert a reconstructed [`FrameBuffer`] component plane (8-bit
 /// samples) into the resampling [`ResamplePlane`] (i32 samples) the
-/// §7.7.3 stages operate on.
-fn lower_layer_plane(plane: &crate::frame_assembly::Plane) -> Result<ResamplePlane> {
-    let samples: Vec<i32> = plane.samples().iter().map(|&s| s as i32).collect();
-    ResamplePlane::new(plane.width() as u32, plane.height() as u32, samples)
+/// §7.7.3 stages operate on. The plane is cropped to the **visible**
+/// `width × height` rectangle — the reconstruction storage may be
+/// macroblock-aligned (larger), but the §7.7.3 lower-layer picture the
+/// resampling operates on is the visible picture.
+fn lower_layer_plane(
+    plane: &crate::frame_assembly::Plane,
+    width: usize,
+    height: usize,
+) -> Result<ResamplePlane> {
+    let samples: Vec<i32> = plane
+        .packed_rect(width, height)
+        .iter()
+        .map(|&s| s as i32)
+        .collect();
+    ResamplePlane::new(width as u32, height as u32, samples)
 }
 
 /// Derive the luminance [`ResampleParams`] for the §7.7.3 resampling from
@@ -200,7 +211,7 @@ pub fn spatial_prediction_picture(
     let luma_params = derive_luma_params(seq, ll_h_offset, ll_v_offset)?;
     let y = upsample_spatial_prediction(
         case,
-        &lower_layer_plane(&lower_frame.y)?,
+        &lower_layer_plane(&lower_frame.y, lower_frame.width, lower_frame.height)?,
         &luma_params,
         enhance_width,
         enhance_height,
@@ -217,9 +228,13 @@ pub fn spatial_prediction_picture(
     let chroma_h = (enhance_height + ((1 << cy) - 1)) >> cy;
     let chroma_params =
         derive_chroma_params(seq, ll_h_offset, ll_v_offset, lower_format, enhance_format)?;
+    // The lower layer's visible chroma extent (the storage may be
+    // macroblock-aligned; the §7.7.3 lower-layer picture is the
+    // visible one).
+    let (lcw, lch) = lower_frame.visible_chroma_dims();
     let cb = upsample_spatial_prediction(
         case,
-        &lower_layer_plane(&lower_frame.cb)?,
+        &lower_layer_plane(&lower_frame.cb, lcw, lch)?,
         &chroma_params,
         chroma_w,
         chroma_h,
@@ -228,7 +243,7 @@ pub fn spatial_prediction_picture(
     )?;
     let cr = upsample_spatial_prediction(
         case,
-        &lower_layer_plane(&lower_frame.cr)?,
+        &lower_layer_plane(&lower_frame.cr, lcw, lch)?,
         &chroma_params,
         chroma_w,
         chroma_h,
@@ -267,7 +282,9 @@ mod tests {
 
     /// Fill a lower-layer frame's planes with a ramp so we can verify the
     /// identity (1:1, no subsampling, matching sizes) resample reproduces
-    /// the input across all three components.
+    /// the input across all three components. Only the **visible**
+    /// rectangle is filled — the storage is macroblock-aligned, and the
+    /// §7.7.3 lower-layer picture the driver reads is the visible crop.
     fn ramp_frame(format: ChromaFormat) -> FrameBuffer {
         let mut frame = FrameBuffer::new(4, 4, format);
         for y in 0..4 {
@@ -275,8 +292,7 @@ mod tests {
                 frame.y.put_sample(x, y, (y * 4 + x) as u8 + 1);
             }
         }
-        let cw = frame.cb.width();
-        let ch = frame.cb.height();
+        let (cw, ch) = frame.visible_chroma_dims();
         for y in 0..ch {
             for x in 0..cw {
                 frame.cb.put_sample(x, y, (y * cw + x) as u8 + 100);

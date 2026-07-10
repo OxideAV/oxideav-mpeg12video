@@ -983,7 +983,9 @@ mod tests {
         let frame = full_frame_row_coded(4, 8);
         let top = extract_field(&frame, PictureStructure::TopField);
         let bottom = extract_field(&frame, PictureStructure::BottomField);
-        assert_eq!((top.y.width(), top.y.height()), (4, 4));
+        // Visible field extent is 4×4 (the plane storage is
+        // macroblock-aligned and larger).
+        assert_eq!((top.width, top.height), (4, 4));
         for r in 0..4u8 {
             assert_eq!(top.y.get(0, r as usize), Some(2 * r));
             assert_eq!(bottom.y.get(0, r as usize), Some(2 * r + 1));
@@ -1003,7 +1005,9 @@ mod tests {
         let synthetic =
             reference_frame_for_second_p_field(&first_field, PictureStructure::TopField, &prev)
                 .unwrap();
-        assert_eq!((synthetic.y.width(), synthetic.y.height()), (4, 8));
+        // Visible frame extent is 4×8 (the plane storage is
+        // macroblock-aligned and larger).
+        assert_eq!((synthetic.width, synthetic.height), (4, 8));
         for r in 0..4u8 {
             // Even (top reference field) = current first field (99).
             assert_eq!(synthetic.y.get(0, (2 * r) as usize), Some(99));

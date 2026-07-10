@@ -198,21 +198,24 @@ impl Decoder for Mpeg12Decoder {
 /// [`VideoFrame`].
 ///
 /// Each component becomes one tightly-packed [`VideoPlane`]
-/// (`stride == plane width`). Plane order is Y, Cb, Cr — the natural
-/// order for every YUV [`oxideav_core::PixelFormat`]. The chroma plane
-/// dimensions already reflect the §6.1.1 subsampling encoded in the
-/// [`FrameBuffer`].
+/// (`stride == visible plane width`). Plane order is Y, Cb, Cr — the
+/// natural order for every YUV [`oxideav_core::PixelFormat`]. The
+/// reconstruction storage covers the full macroblock grid (the §7.6
+/// reference area); the display output crops each plane to the visible
+/// `width × height` (luma) / [`FrameBuffer::visible_chroma_dims`]
+/// (chroma) rectangle.
 pub fn frame_buffer_to_video_frame(frame: &FrameBuffer) -> VideoFrame {
-    let plane = |width: usize, samples: &[u8]| VideoPlane {
-        stride: width,
-        data: samples.to_vec(),
+    let (cw, ch) = frame.visible_chroma_dims();
+    let plane = |plane: &crate::frame_assembly::Plane, w: usize, h: usize| VideoPlane {
+        stride: w,
+        data: plane.packed_rect(w, h),
     };
     VideoFrame {
         pts: None,
         planes: vec![
-            plane(frame.y.width(), frame.y.samples()),
-            plane(frame.cb.width(), frame.cb.samples()),
-            plane(frame.cr.width(), frame.cr.samples()),
+            plane(&frame.y, frame.width, frame.height),
+            plane(&frame.cb, cw, ch),
+            plane(&frame.cr, cw, ch),
         ],
     }
 }

@@ -122,10 +122,10 @@ fn integration_intra_macroblock_422_walks_eight_blocks_in_figure_6_11_order() {
     for _ in 0..4 {
         write_size_zero_intra_block(&mut bw, Mpeg2ColourComponent::Y);
     }
+    // Figure 6-11: the chroma blocks interleave — 4 = Cb, 5 = Cr,
+    // 6 = Cb, 7 = Cr — and the DC-size table follows the component.
     for _ in 0..2 {
         write_size_zero_intra_block(&mut bw, Mpeg2ColourComponent::Cb);
-    }
-    for _ in 0..2 {
         write_size_zero_intra_block(&mut bw, Mpeg2ColourComponent::Cr);
     }
     let buf = pad(bw);
@@ -154,11 +154,11 @@ fn integration_intra_macroblock_422_walks_eight_blocks_in_figure_6_11_order() {
             Mpeg2ColourComponent::Y,
             Mpeg2ColourComponent::Y,
             Mpeg2ColourComponent::Cb,
+            Mpeg2ColourComponent::Cr,
             Mpeg2ColourComponent::Cb,
             Mpeg2ColourComponent::Cr,
-            Mpeg2ColourComponent::Cr,
         ],
-        "Figure 6-11 puts both Cb blocks before both Cr blocks",
+        "Figure 6-11 interleaves the chroma blocks: Cb 4, Cr 5, Cb 6, Cr 7",
     );
 }
 
@@ -169,10 +169,10 @@ fn integration_intra_macroblock_444_walks_twelve_blocks_in_figure_6_12_order() {
     for _ in 0..4 {
         write_size_zero_intra_block(&mut bw, Mpeg2ColourComponent::Y);
     }
+    // Figure 6-12: the chroma blocks interleave — Cb on the even
+    // indices (4, 6, 8, 10), Cr on the odd (5, 7, 9, 11).
     for _ in 0..4 {
         write_size_zero_intra_block(&mut bw, Mpeg2ColourComponent::Cb);
-    }
-    for _ in 0..4 {
         write_size_zero_intra_block(&mut bw, Mpeg2ColourComponent::Cr);
     }
     let buf = pad(bw);
@@ -203,12 +203,12 @@ fn integration_intra_macroblock_444_walks_twelve_blocks_in_figure_6_12_order() {
             Mpeg2ColourComponent::Y,
             Mpeg2ColourComponent::Y,
             Mpeg2ColourComponent::Cb,
-            Mpeg2ColourComponent::Cb,
-            Mpeg2ColourComponent::Cb,
+            Mpeg2ColourComponent::Cr,
             Mpeg2ColourComponent::Cb,
             Mpeg2ColourComponent::Cr,
+            Mpeg2ColourComponent::Cb,
             Mpeg2ColourComponent::Cr,
-            Mpeg2ColourComponent::Cr,
+            Mpeg2ColourComponent::Cb,
             Mpeg2ColourComponent::Cr,
         ],
     );

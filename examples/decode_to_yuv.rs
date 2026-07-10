@@ -42,9 +42,11 @@ fn main() {
 
     for decoded in &frames {
         let fb = &decoded.frame;
-        out.write_all(fb.y.samples()).unwrap();
-        out.write_all(fb.cb.samples()).unwrap();
-        out.write_all(fb.cr.samples()).unwrap();
+        let (cw, ch) = fb.visible_chroma_dims();
+        out.write_all(&fb.y.packed_rect(fb.width, fb.height))
+            .unwrap();
+        out.write_all(&fb.cb.packed_rect(cw, ch)).unwrap();
+        out.write_all(&fb.cr.packed_rect(cw, ch)).unwrap();
     }
     out.flush().unwrap();
 
