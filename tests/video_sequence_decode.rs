@@ -452,14 +452,13 @@ fn write_field_picture_coding_extension(bw: &mut BitWriter, structure: u32, f_fw
 }
 
 /// Write a single intra macroblock for a **field** picture. Identical to
-/// [`write_intra_macroblock`] except that, because a field picture has
-/// `frame_pred_frame_dct == 0`, the §6.3.17.1 `dct_type` flag is present
-/// for an intra macroblock and must be written (here `0` = frame DCT,
-/// which for a one-block-tall field is the natural organisation).
+/// [`write_intra_macroblock`]: §6.2.5.1 gates `dct_type` on
+/// `picture_structure == "Frame picture"`, so a field picture's intra
+/// macroblock carries **no** `dct_type` bit (each block is
+/// frame-organised within its own field, §6.1.3).
 fn write_intra_macroblock_field(bw: &mut BitWriter) {
     bw.write_bit(true); // macroblock_address_increment = 1
     bw.write_bit(true); // macroblock_type "Intra" (Table B-2 `1`)
-    bw.write_bit(false); // dct_type = 0 (frame DCT; read because field pic)
     for _ in 0..4 {
         bw.write_u32(0b100, 3); // dct_dc_size_luminance = 0
         bw.write_u32(EOB, 2);

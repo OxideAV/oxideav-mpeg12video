@@ -170,6 +170,16 @@ fn mpeg2_non_mb_multiple_dimensions_reference_conformant() {
 }
 
 #[test]
+fn field_picture_pairs_dual_prime_16x8_reference_conformant() {
+    // Hand-built field-picture stream (see the fixture README):
+    // I/P/B field pairs exercising simple field prediction with both
+    // field selects (incl. §7.6.2.1 same-frame second-field
+    // references), §7.6.3.6 dual prime, §7.6.7.3 16x8 MC, and an
+    // interpolated B-field pair.
+    run(&fixture!("fieldpics-48x64.m2v", 48, 64, chroma420, 5));
+}
+
+#[test]
 fn display_order_matches_temporal_references() {
     // Cross-check the §6.1.1.11 structural reorder against the
     // temporal_reference-derived display order on the two IBBP

@@ -871,7 +871,25 @@ fn reconstruct_field_pair(
 
     let field = match header.picture_coding_type {
         PictureCodingType::Intra => {
-            let (field, _placed) = decode_intra_picture(picture_region, geometry)?;
+            // An I **field** picture must be walked with the field
+            // picture_structure: §6.2.5.1 gates `dct_type` on
+            // `picture_structure == "Frame picture"`, so a field
+            // picture's intra macroblocks carry no dct_type bit —
+            // routing through the frame-structure intra driver would
+            // consume one spurious bit per macroblock and shear the
+            // whole slice parse. `decode_field_picture` places intra
+            // macroblocks itself; an I field forms no predictions, so
+            // no references are supplied.
+            let params = inter_params(header, ext, geometry);
+            let (field, _placed) = decode_field_picture(
+                picture_region,
+                params,
+                structure,
+                ReferenceFrames {
+                    forward: None,
+                    backward: None,
+                },
+            )?;
             field
         }
         PictureCodingType::Predictive => {
