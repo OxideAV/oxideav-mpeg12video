@@ -64,8 +64,8 @@ use crate::inter_reconstruction::{
     reconstruct_field_based_macroblock, reconstruct_field_picture_16x8_macroblock,
     reconstruct_field_picture_dual_prime_macroblock, reconstruct_field_picture_macroblock,
     reconstruct_frame_dual_prime_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
-    FieldPicture16x8Motion, FieldPictureDualPrimeMotion, FieldPictureMotion, FrameDualPrimeMotion,
-    FrameMotion, InterError, MotionVectorPel, ReferenceFrames, ResidualBlock,
+    FieldPicture16x8Motion, FieldPictureDualPrimeMotion, FieldPictureMotion, FieldVector,
+    FrameDualPrimeMotion, FrameMotion, InterError, MotionVectorPel, ReferenceFrames, ResidualBlock,
 };
 use crate::macroblock_modes::PredictionType;
 use crate::picture_header::{PictureCodingType, PictureStructure};
@@ -209,6 +209,7 @@ pub fn decode_inter_picture(
                     mb_width as usize,
                     params.picture_coding_type,
                     previous_inter_direction,
+                    &motion_record.pmv_before,
                 )?;
             }
 
@@ -231,11 +232,16 @@ pub fn decode_inter_picture(
 }
 
 /// The §7.6.6 inherited prediction direction carried across skipped
-/// B-picture macroblocks.
+/// B-picture macroblocks. Only the forward/backward **presence** is
+/// inherited from the previous coded macroblock (§7.6.6.4 *"the
+/// direction of the prediction forward/backward/bi-directional shall
+/// be the same as the previous macroblock"*); the motion vectors are
+/// taken directly from the §7.6.3 motion vector predictors at the
+/// skip position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InterDirection {
-    forward: Option<MotionVectorPel>,
-    backward: Option<MotionVectorPel>,
+    forward: bool,
+    backward: bool,
 }
 
 /// Reconstruct one coded macroblock — intra via
@@ -306,7 +312,7 @@ fn reconstruct_one_macroblock(
     let motion = frame_motion_from_reconstructed(reconstructed);
     match prediction_type {
         PredictionType::FieldBased => {
-            let field_motion = field_based_motion_from_reconstructed(reconstructed);
+            let field_motion = field_based_motion_from_reconstructed(record, reconstructed);
             reconstruct_field_based_macroblock(
                 frame,
                 references,
@@ -341,12 +347,13 @@ fn reconstruct_one_macroblock(
         }
     }
 
-    // §7.6.6.4 inheritance carries the whole-block (first-vector)
-    // direction; a following B-skip reconstructs frame-based regardless
-    // of this macroblock's own field/frame mode.
+    // §7.6.6.4 inheritance carries only the prediction **direction**
+    // (forward/backward/bi-directional); a following B-skip
+    // reconstructs frame-based with the PMV-bank vectors regardless of
+    // this macroblock's own field/frame mode.
     *previous_inter_direction = Some(InterDirection {
-        forward: motion.forward,
-        backward: motion.backward,
+        forward: record.macroblock_type.macroblock_motion_forward,
+        backward: record.macroblock_type.macroblock_motion_backward,
     });
     Ok(1)
 }
@@ -356,9 +363,11 @@ fn reconstruct_one_macroblock(
 /// * **P-picture (§7.6.6.2)** — prediction as Frame-based with a
 ///   `(0, 0)` forward motion vector (PMVs were reset by the §7.6.3.4
 ///   side-effect in the motion walk).
-/// * **B-picture (§7.6.6.4)** — prediction inheriting the previous
-///   coded macroblock's direction and motion vectors (carried in
-///   `previous_inter_direction`).
+/// * **B-picture (§7.6.6.4)** — prediction as Frame-based with the
+///   previous coded macroblock's **direction** and the motion vectors
+///   *"taken directly from the appropriate motion vector predictors"*
+///   (`pmv_at_skip`, the predictor bank as it stands at the skip
+///   position — the run leaves the predictors unaffected).
 fn reconstruct_skipped_macroblock(
     frame: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -366,6 +375,7 @@ fn reconstruct_skipped_macroblock(
     mb_width: usize,
     picture_coding_type: PictureCodingType,
     previous_inter_direction: Option<InterDirection>,
+    pmv_at_skip: &crate::pmv::Pmv,
 ) -> Result<usize> {
     let mb_col = address % mb_width;
     let mb_row = address / mb_width;
@@ -373,14 +383,19 @@ fn reconstruct_skipped_macroblock(
     let motion = match picture_coding_type {
         PictureCodingType::Predictive => FrameMotion::forward(MotionVectorPel::new(0, 0)),
         PictureCodingType::Bidirectional => {
-            // §7.6.6.4: inherit the previous MB's direction + vectors.
+            // §7.6.6.4: the direction comes from the previous coded
+            // macroblock; the vectors come from the first predictor
+            // pair PMV[0][s][:].
             let prev = previous_inter_direction.unwrap_or(InterDirection {
-                forward: Some(MotionVectorPel::new(0, 0)),
-                backward: None,
+                forward: true,
+                backward: false,
             });
+            let vector = |s: usize| {
+                MotionVectorPel::new(pmv_at_skip.values[0][s][0], pmv_at_skip.values[0][s][1])
+            };
             FrameMotion {
-                forward: prev.forward,
-                backward: prev.backward,
+                forward: prev.forward.then(|| vector(0)),
+                backward: prev.backward.then(|| vector(1)),
             }
         }
         PictureCodingType::Intra => {
@@ -419,24 +434,50 @@ fn frame_motion_from_reconstructed(reconstructed: &ReconstructedMotionVectors) -
 /// **frame-picture field-based** macroblock (Table 7-14 `Field-based`)
 /// into a [`FieldBasedMotion`]. For a field-based macroblock the §7.6.3
 /// walk reconstructs two vectors per present direction — the first
-/// pairs with the top reference field, the second with the bottom field
-/// (the §7.6.5 NOTE ordering). When only one vector is present (a
-/// degenerate descriptor) it is reused for both fields so the driver
-/// stays total.
+/// predicts the macroblock's top-field (even) frame lines, the second
+/// its bottom-field (odd) lines (the §7.6.5 bitstream order). Each
+/// vector reads the reference **field** its own §6.3.17.2
+/// `motion_vertical_field_select` flag names (§7.6.4: `0` → top
+/// reference field, `1` → bottom), taken off the wire record's
+/// `motion_vectors_forward` / `..._backward` entries; an absent flag
+/// falls back to the destination field's own parity so the driver
+/// stays total. When only one vector is present (a degenerate
+/// descriptor) it is reused for both fields.
 fn field_based_motion_from_reconstructed(
+    record: &MacroblockRecord,
     reconstructed: &ReconstructedMotionVectors,
 ) -> FieldBasedMotion {
-    let pair = |vecs: &[crate::slice_macroblock_walk::ReconstructedVector]| {
-        let to_pel = |rv: &crate::slice_macroblock_walk::ReconstructedVector| {
-            MotionVectorPel::new(rv.horizontal.vector_prime, rv.vertical.vector_prime)
+    let to_pel = |rv: &crate::slice_macroblock_walk::ReconstructedVector| {
+        MotionVectorPel::new(rv.horizontal.vector_prime, rv.vertical.vector_prime)
+    };
+    let parity = |flag: Option<bool>, dest_default: FieldParity| match flag {
+        Some(true) => FieldParity::Bottom,
+        Some(false) => FieldParity::Top,
+        None => dest_default,
+    };
+    let one_direction = |vecs: Option<&[crate::slice_macroblock_walk::ReconstructedVector]>,
+                         wire: Option<&crate::motion_vector::MotionVectors>|
+     -> Option<(FieldVector, FieldVector)> {
+        let vecs = vecs?;
+        let select = |i: usize| {
+            wire.and_then(|mvs| mvs.entries.get(i))
+                .and_then(|e| e.vertical_field_select)
         };
-        let top = vecs.first().map(to_pel)?;
-        let bottom = vecs.get(1).map(to_pel).unwrap_or(top);
+        let top_rv = vecs.first()?;
+        let bottom_rv = vecs.get(1).unwrap_or(top_rv);
+        let top = FieldVector::new(to_pel(top_rv), parity(select(0), FieldParity::Top));
+        let bottom = FieldVector::new(to_pel(bottom_rv), parity(select(1), FieldParity::Bottom));
         Some((top, bottom))
     };
     FieldBasedMotion {
-        forward: reconstructed.forward.as_deref().and_then(pair),
-        backward: reconstructed.backward.as_deref().and_then(pair),
+        forward: one_direction(
+            reconstructed.forward.as_deref(),
+            record.motion_vectors_forward.as_ref(),
+        ),
+        backward: one_direction(
+            reconstructed.backward.as_deref(),
+            record.motion_vectors_backward.as_ref(),
+        ),
     }
 }
 
@@ -968,6 +1009,64 @@ mod tests {
         assert_eq!(m.backward, Some(MotionVectorPel::new(-2, -2)));
     }
 
+    /// Build a minimal non-intra frame-picture [`MacroblockRecord`]
+    /// carrying the given `motion_vectors(0)` field-select flags, for
+    /// exercising [`field_based_motion_from_reconstructed`].
+    fn record_with_forward_selects(selects: &[Option<bool>]) -> MacroblockRecord {
+        use crate::motion_vector::{
+            MotionVector, MotionVectorEntry, MotionVectors, MotionVectorsKind,
+        };
+        let zero_mv = MotionVector {
+            motion_code_horiz: 0,
+            motion_residual_horiz: None,
+            dmvector_horiz: None,
+            motion_code_vert: 0,
+            motion_residual_vert: None,
+            dmvector_vert: None,
+            bit_position_after: 0,
+        };
+        let entries = selects
+            .iter()
+            .map(|&vertical_field_select| MotionVectorEntry {
+                vertical_field_select,
+                motion_vector: zero_mv,
+            })
+            .collect();
+        MacroblockRecord {
+            macroblock_address: 0,
+            address_increment: 1,
+            address_escape_count: 0,
+            address_stuffing_count: 0,
+            macroblock_type: crate::macroblock_type::MacroblockType {
+                macroblock_quant: false,
+                macroblock_motion_forward: true,
+                macroblock_motion_backward: false,
+                macroblock_pattern: false,
+                macroblock_intra: false,
+                spatial_temporal_weight_code_flag: false,
+                spatial_temporal_weight_class: None,
+                bit_position_after: 0,
+            },
+            motion_type: None,
+            dct_type: None,
+            quantiser_scale_code: 1,
+            macroblock_quant_present: false,
+            past_intra_address: -2,
+            body_bit_position: 0,
+            skipped_macroblock_count: 0,
+            motion_vectors_forward: Some(MotionVectors {
+                kind: MotionVectorsKind::Forward,
+                entries,
+                bit_position_after: 0,
+            }),
+            motion_vectors_backward: None,
+            concealment_marker_bit: None,
+            coded_block_pattern: None,
+            pattern_code: [false; 12],
+            decoded_blocks: None,
+        }
+    }
+
     #[test]
     fn field_based_motion_pairs_top_and_bottom_vectors() {
         let recon = ReconstructedMotionVectors {
@@ -983,10 +1082,17 @@ mod tests {
             ]),
             backward: None,
         };
-        let m = field_based_motion_from_reconstructed(&recon);
+        // §7.6.4: each vector reads the reference field its own
+        // motion_vertical_field_select names — here the top-field
+        // vector reads the BOTTOM reference field and vice versa.
+        let record = record_with_forward_selects(&[Some(true), Some(false)]);
+        let m = field_based_motion_from_reconstructed(&record, &recon);
         assert_eq!(
             m.forward,
-            Some((MotionVectorPel::new(4, 2), MotionVectorPel::new(-4, -2)))
+            Some((
+                FieldVector::new(MotionVectorPel::new(4, 2), FieldParity::Bottom),
+                FieldVector::new(MotionVectorPel::new(-4, -2), FieldParity::Top),
+            ))
         );
         assert_eq!(m.backward, None);
     }
@@ -1000,9 +1106,18 @@ mod tests {
             }]),
             backward: None,
         };
-        let m = field_based_motion_from_reconstructed(&recon);
+        // Absent field-select flags fall back to each destination
+        // field's own parity.
+        let record = record_with_forward_selects(&[None]);
+        let m = field_based_motion_from_reconstructed(&record, &recon);
         let v = MotionVectorPel::new(8, 0);
-        assert_eq!(m.forward, Some((v, v)));
+        assert_eq!(
+            m.forward,
+            Some((
+                FieldVector::new(v, FieldParity::Top),
+                FieldVector::new(v, FieldParity::Bottom),
+            ))
+        );
     }
 
     #[test]
@@ -1023,11 +1138,48 @@ mod tests {
             1,
             PictureCodingType::Predictive,
             None,
+            &crate::pmv::Pmv::default(),
         )
         .unwrap();
         assert_eq!(n, 1);
         // Skipped P macroblock copies the reference verbatim.
         assert_eq!(frame.y.get(0, 0), Some(99));
         assert_eq!(frame.y.get(15, 15), Some(99));
+    }
+
+    #[test]
+    fn skipped_b_picture_takes_vectors_from_the_predictors() {
+        // §7.6.6.4: a B-picture skip reconstructs frame-based with the
+        // previous macroblock's direction and the vectors read
+        // *directly from the motion vector predictors*. Reference rows
+        // are row-coded; PMV[0][0] = (0, +4 half-samples) = +2 full
+        // rows, so the skip must copy reference row y+2 into row y.
+        let cf = ChromaFormat::Yuv420;
+        let mut reference = FrameBuffer::new(16, 32, cf);
+        for y in 0..32 {
+            for x in 0..16 {
+                reference.y.put_sample(x, y, y as u8);
+            }
+        }
+        let mut frame = FrameBuffer::new(16, 32, cf);
+        let refs = ReferenceFrames::forward_only(&reference);
+        let mut pmv = crate::pmv::Pmv::default();
+        pmv.values[0][0] = [0, 4];
+        let n = reconstruct_skipped_macroblock(
+            &mut frame,
+            refs,
+            0,
+            1,
+            PictureCodingType::Bidirectional,
+            Some(InterDirection {
+                forward: true,
+                backward: false,
+            }),
+            &pmv,
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(frame.y.get(0, 0), Some(2));
+        assert_eq!(frame.y.get(15, 13), Some(15));
     }
 }

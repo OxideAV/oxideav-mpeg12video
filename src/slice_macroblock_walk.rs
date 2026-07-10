@@ -1509,6 +1509,15 @@ pub struct SliceMotionRecord {
     /// macroblock (Tables 7-10 / 7-11), or `None` for the MPEG-1
     /// (ISO/IEC 11172-2) path where §7.6.3.3 does not apply.
     pub update_outcome: Option<PmvUpdateOutcome>,
+    /// The running predictor bank **as it stood when this macroblock's
+    /// processing began** — after the previous coded macroblock's
+    /// §7.6.3.3 update, before this entry's §7.6.6 skip run applied its
+    /// side-effect and before this macroblock's own reconstruction.
+    /// This is the predictor state a §7.6.6.4 B-picture skipped
+    /// macroblock in the preceding run reads its motion vectors from
+    /// (*"the motion vectors are taken directly from the appropriate
+    /// motion vector predictors"*).
+    pub pmv_before: Pmv,
 }
 
 /// Per-slice result of [`reconstruct_slice_motion_vectors`]: the
@@ -1597,6 +1606,9 @@ pub fn reconstruct_slice_motion_vectors(
     for record in &walk.macroblocks {
         let skipped_before = record.skipped_macroblock_count;
         let mut skipped_reset_pmv = false;
+        // Snapshot the predictor bank before any per-MB side-effect —
+        // the state a §7.6.6.4 skip run preceding this coded MB reads.
+        let pmv_before = pmv;
 
         // §7.6.6: process the run of skipped macroblocks that precede
         // this coded one. Their §7.6.3.4 PMV side-effect is applied
@@ -1670,6 +1682,7 @@ pub fn reconstruct_slice_motion_vectors(
             skipped_reset_pmv,
             reconstructed,
             update_outcome,
+            pmv_before,
         });
     }
 

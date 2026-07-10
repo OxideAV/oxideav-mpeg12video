@@ -429,30 +429,60 @@ pub fn predict_frame_macroblock_planes(
     }
 }
 
+/// One field motion vector together with the reference field it reads.
+///
+/// §7.6.4: *"In the case of field-based prediction and 16x8 MC an
+/// additional bit, motion_vertical_field_select, is encoded to indicate
+/// which field to use. If motion_vertical_field_select is zero then the
+/// prediction is taken from the top reference field. If
+/// motion_vertical_field_select is one then the prediction is taken from
+/// the bottom reference field."* The vector's horizontal component is in
+/// half-sample luminance units; the vertical component is in
+/// **field**-sample half units (the §7.6.3 reconstruction already
+/// produces field vectors in those units).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldVector {
+    /// The luminance motion vector.
+    pub vector: MotionVectorPel,
+    /// The reference field the §7.6.4 reader samples
+    /// (`motion_vertical_field_select`: `0` → `Top`, `1` → `Bottom`).
+    pub reference_field: FieldParity,
+}
+
+impl FieldVector {
+    /// Bundle a vector with its `motion_vertical_field_select`d
+    /// reference field.
+    pub fn new(vector: MotionVectorPel, reference_field: FieldParity) -> Self {
+        Self {
+            vector,
+            reference_field,
+        }
+    }
+}
+
 /// The per-field, per-direction luminance motion vectors for one
 /// **frame-picture field-based** macroblock (Table 7-14 `Field-based`
-/// rows), in half-sample luminance units with the **vertical**
-/// component in field-sample units (the §7.6.3 reconstruction already
-/// produces a field vector in those units for a field-based macroblock).
+/// rows).
 ///
-/// Each present direction carries a vector for the top reference field
-/// (predicting the macroblock's top-field — even — frame lines) and a
-/// vector for the bottom reference field (predicting the bottom-field —
-/// odd — frame lines), matching the §7.6.5 NOTE that the first vector
-/// pairs with the top field and the second with the bottom field.
+/// Each present direction carries a [`FieldVector`] predicting the
+/// macroblock's top-field (even) frame lines and one predicting its
+/// bottom-field (odd) frame lines — the first / second vector of the
+/// §7.6.5 bitstream order. Each vector reads the reference field its
+/// own §6.3.17.2 `motion_vertical_field_select` flag names (§7.6.4);
+/// the destination field does **not** imply the source field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FieldBasedMotion {
     /// Forward `(top_field_vector, bottom_field_vector)` — present when
     /// the macroblock forms a forward prediction.
-    pub forward: Option<(MotionVectorPel, MotionVectorPel)>,
+    pub forward: Option<(FieldVector, FieldVector)>,
     /// Backward `(top_field_vector, bottom_field_vector)` — present only
     /// in B-pictures forming a backward prediction.
-    pub backward: Option<(MotionVectorPel, MotionVectorPel)>,
+    pub backward: Option<(FieldVector, FieldVector)>,
 }
 
 impl FieldBasedMotion {
     /// A forward-only field-based motion.
-    pub fn forward(top: MotionVectorPel, bottom: MotionVectorPel) -> Self {
+    pub fn forward(top: FieldVector, bottom: FieldVector) -> Self {
         Self {
             forward: Some((top, bottom)),
             backward: None,
@@ -460,7 +490,7 @@ impl FieldBasedMotion {
     }
 
     /// A backward-only field-based motion (B macroblock).
-    pub fn backward(top: MotionVectorPel, bottom: MotionVectorPel) -> Self {
+    pub fn backward(top: FieldVector, bottom: FieldVector) -> Self {
         Self {
             forward: None,
             backward: Some((top, bottom)),
@@ -470,10 +500,10 @@ impl FieldBasedMotion {
     /// A bidirectional field-based motion (B macroblock, both
     /// directions).
     pub fn bidirectional(
-        forward_top: MotionVectorPel,
-        forward_bottom: MotionVectorPel,
-        backward_top: MotionVectorPel,
-        backward_bottom: MotionVectorPel,
+        forward_top: FieldVector,
+        forward_bottom: FieldVector,
+        backward_top: FieldVector,
+        backward_bottom: FieldVector,
     ) -> Self {
         Self {
             forward: Some((forward_top, forward_bottom)),
@@ -517,8 +547,8 @@ fn predict_field_component_one_direction(
     base_y: i32,
     width: usize,
     height: usize,
-    top_mv: MotionVectorPel,
-    bottom_mv: MotionVectorPel,
+    top: FieldVector,
+    bottom: FieldVector,
 ) -> Vec<u8> {
     let (data, pw, ph) = component_plane(reference, component);
     let Some(plane) = ReferencePlane::new(data, pw, ph) else {
@@ -531,10 +561,15 @@ fn predict_field_component_one_direction(
     // The macroblock's first top-field frame row is base_y; its field
     // line index is base_y / 2 (base_y is even for a frame-picture
     // macroblock origin, which is a multiple of 16 / chroma height).
+    // The co-located field line index is the same in either reference
+    // field (the two fields share the field-line coordinate system).
     let field_top_line = base_y / 2;
     let mut out = vec![0u8; width * height];
-    for (parity, mv) in [(FieldParity::Top, top_mv), (FieldParity::Bottom, bottom_mv)] {
-        let Some(field) = FieldReference::new(plane, parity.index()) else {
+    for (dest_parity, fv) in [(FieldParity::Top, top), (FieldParity::Bottom, bottom)] {
+        // §7.6.4: the *source* field is the one this vector's
+        // motion_vertical_field_select names — not the destination
+        // field's own parity.
+        let Some(field) = FieldReference::new(plane, fv.reference_field.index()) else {
             continue;
         };
         let block = predict_field_block(
@@ -542,13 +577,14 @@ fn predict_field_component_one_direction(
             base_x,
             field_top_line,
             size,
-            mv.horizontal,
-            mv.vertical,
+            fv.vector.horizontal,
+            fv.vector.vertical,
         );
         // Interleave the field block back into frame rows: field line r
-        // of this parity maps to frame row 2*r + parity, relative to the
-        // macroblock origin that even = top, odd = bottom.
-        let row_off = parity.index();
+        // of the destination parity maps to frame row 2*r + parity,
+        // relative to the macroblock origin that even = top, odd =
+        // bottom.
+        let row_off = dest_parity.index();
         for r in 0..half {
             let frame_row = 2 * r + row_off;
             let src = &block[r * width..r * width + width];
@@ -588,8 +624,8 @@ pub fn predict_field_based_macroblock_planes(
     let chroma_y = (mb_row * ch) as i32;
 
     let one_direction = |reference: &FrameBuffer,
-                         top_mv: MotionVectorPel,
-                         bottom_mv: MotionVectorPel|
+                         top: FieldVector,
+                         bottom: FieldVector|
      -> InterResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         if reference.width != dest.width
             || reference.height != dest.height
@@ -600,12 +636,23 @@ pub fn predict_field_based_macroblock_planes(
         // §7.6.3.7 chroma scaling is applied to each field vector
         // independently (the horizontal halving / vertical halving of
         // the luminance field vector; the vertical component stays in
-        // field-sample units of the chroma field).
-        let top_chroma = scale_chroma(top_mv.horizontal, top_mv.vertical, chroma_format);
-        let bottom_chroma = scale_chroma(bottom_mv.horizontal, bottom_mv.vertical, chroma_format);
-        let top_cmv = MotionVectorPel::new(top_chroma.chroma_horiz, top_chroma.chroma_vert);
-        let bottom_cmv =
-            MotionVectorPel::new(bottom_chroma.chroma_horiz, bottom_chroma.chroma_vert);
+        // field-sample units of the chroma field). The chroma
+        // prediction reads the same reference field the luminance
+        // vector selected.
+        let top_chroma = scale_chroma(top.vector.horizontal, top.vector.vertical, chroma_format);
+        let bottom_chroma = scale_chroma(
+            bottom.vector.horizontal,
+            bottom.vector.vertical,
+            chroma_format,
+        );
+        let top_cmv = FieldVector::new(
+            MotionVectorPel::new(top_chroma.chroma_horiz, top_chroma.chroma_vert),
+            top.reference_field,
+        );
+        let bottom_cmv = FieldVector::new(
+            MotionVectorPel::new(bottom_chroma.chroma_horiz, bottom_chroma.chroma_vert),
+            bottom.reference_field,
+        );
 
         let luma = predict_field_component_one_direction(
             reference,
@@ -614,8 +661,8 @@ pub fn predict_field_based_macroblock_planes(
             luma_y,
             16,
             16,
-            top_mv,
-            bottom_mv,
+            top,
+            bottom,
         );
         let cb = predict_field_component_one_direction(
             reference,
@@ -640,19 +687,26 @@ pub fn predict_field_based_macroblock_planes(
         Ok((luma, cb, cr))
     };
 
+    // Fallback pair for an absent direction: zero vectors reading each
+    // destination field's own parity (same-parity `(0, 0)` prediction).
+    let zero_pair = (
+        FieldVector::new(MotionVectorPel::new(0, 0), FieldParity::Top),
+        FieldVector::new(MotionVectorPel::new(0, 0), FieldParity::Bottom),
+    );
+
     match motion.direction() {
         PredictionDirection::Forward | PredictionDirection::Skipped => {
             let reference = references
                 .forward
                 .ok_or(InterError::MissingForwardReference)?;
-            let (top, bottom) = motion.forward.unwrap_or_default();
+            let (top, bottom) = motion.forward.unwrap_or(zero_pair);
             one_direction(reference, top, bottom)
         }
         PredictionDirection::Backward => {
             let reference = references
                 .backward
                 .ok_or(InterError::MissingBackwardReference)?;
-            let (top, bottom) = motion.backward.unwrap_or_default();
+            let (top, bottom) = motion.backward.unwrap_or(zero_pair);
             one_direction(reference, top, bottom)
         }
         PredictionDirection::Bidirectional => {
@@ -662,8 +716,8 @@ pub fn predict_field_based_macroblock_planes(
             let bwd_ref = references
                 .backward
                 .ok_or(InterError::MissingBackwardReference)?;
-            let (ft, fb) = motion.forward.unwrap_or_default();
-            let (bt, bb) = motion.backward.unwrap_or_default();
+            let (ft, fb) = motion.forward.unwrap_or(zero_pair);
+            let (bt, bb) = motion.backward.unwrap_or(zero_pair);
             let (fy, fcb, fcr) = one_direction(fwd_ref, ft, fb)?;
             let (by, bcb, bcr) = one_direction(bwd_ref, bt, bb)?;
             let y = average_predictions(&fy, &by).unwrap_or(fy);
@@ -2266,7 +2320,10 @@ mod tests {
         let dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv444);
         let refs = ReferenceFrames::forward_only(&reference);
         let zero = MotionVectorPel::new(0, 0);
-        let motion = FieldBasedMotion::forward(zero, zero);
+        let motion = FieldBasedMotion::forward(
+            FieldVector::new(zero, FieldParity::Top),
+            FieldVector::new(zero, FieldParity::Bottom),
+        );
         let (luma, _, _) =
             predict_field_based_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
         for y in 0..16 {
@@ -2288,7 +2345,10 @@ mod tests {
         // vertical = 2 half-samples -> int_vec 1 field line, no half-pel.
         let top_mv = MotionVectorPel::new(0, 2);
         let bottom_mv = MotionVectorPel::new(0, 0);
-        let motion = FieldBasedMotion::forward(top_mv, bottom_mv);
+        let motion = FieldBasedMotion::forward(
+            FieldVector::new(top_mv, FieldParity::Top),
+            FieldVector::new(bottom_mv, FieldParity::Bottom),
+        );
         let (luma, _, _) =
             predict_field_based_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
         // Even dest rows (top field line k) read top field line k+1 =
@@ -2322,7 +2382,10 @@ mod tests {
         let mut dest = FrameBuffer::new(16, 16, ChromaFormat::Yuv444);
         let refs = ReferenceFrames::forward_only(&reference);
         let zero = MotionVectorPel::new(0, 0);
-        let motion = FieldBasedMotion::forward(zero, zero);
+        let motion = FieldBasedMotion::forward(
+            FieldVector::new(zero, FieldParity::Top),
+            FieldVector::new(zero, FieldParity::Bottom),
+        );
         let f = [[7i16; 8]; 8];
         let residuals = [ResidualBlock {
             block_index: 0,
@@ -2372,7 +2435,9 @@ mod tests {
         let dest = FrameBuffer::new(16, 16, cf);
         let refs = ReferenceFrames::bidirectional(&fwd, &bwd);
         let zero = MotionVectorPel::new(0, 0);
-        let motion = FieldBasedMotion::bidirectional(zero, zero, zero, zero);
+        let zt = FieldVector::new(zero, FieldParity::Top);
+        let zb = FieldVector::new(zero, FieldParity::Bottom);
+        let motion = FieldBasedMotion::bidirectional(zt, zb, zt, zb);
         let (luma, _, _) =
             predict_field_based_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
         // (100 + 200) // 2 = 150 everywhere.
@@ -2387,7 +2452,10 @@ mod tests {
             backward: None,
         };
         let zero = MotionVectorPel::new(0, 0);
-        let motion = FieldBasedMotion::forward(zero, zero);
+        let motion = FieldBasedMotion::forward(
+            FieldVector::new(zero, FieldParity::Top),
+            FieldVector::new(zero, FieldParity::Bottom),
+        );
         assert_eq!(
             predict_field_based_macroblock_planes(&dest, refs, 0, 0, motion),
             Err(InterError::MissingForwardReference)
@@ -2415,7 +2483,10 @@ mod tests {
         let dest = FrameBuffer::new(16, 16, cf);
         let refs = ReferenceFrames::forward_only(&reference);
         let zero = MotionVectorPel::new(0, 0);
-        let motion = FieldBasedMotion::forward(zero, zero);
+        let motion = FieldBasedMotion::forward(
+            FieldVector::new(zero, FieldParity::Top),
+            FieldVector::new(zero, FieldParity::Bottom),
+        );
         let (_, cb, _) = predict_field_based_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
         assert_eq!(cb.len(), 64);
         for y in 0..8 {
