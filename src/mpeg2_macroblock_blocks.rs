@@ -107,10 +107,13 @@ pub const fn block_count(chroma: ChromaFormat) -> usize {
 /// Figure 6-10 / Figure 6-11 / Figure 6-12.
 ///
 /// * `i ∈ 0..=3` → [`ColourComponent::Y`] for every chroma format.
-/// * `i ∈ 4..=block_count(chroma)` → Cb or Cr per the figures:
-///   * **4:2:0** — index 4 = Cb, index 5 = Cr.
-///   * **4:2:2** — indices 4..=5 = Cb, indices 6..=7 = Cr.
-///   * **4:4:4** — indices 4..=7 = Cb, indices 8..=11 = Cr.
+/// * `i ∈ 4..block_count(chroma)` → Cb or Cr per the figures. The
+///   chroma block indices **interleave** the two components — even
+///   index = Cb, odd index = Cr:
+///   * **4:2:0** (Figure 6-10) — index 4 = Cb, index 5 = Cr.
+///   * **4:2:2** (Figure 6-11) — indices 4, 6 = Cb; indices 5, 7 = Cr.
+///   * **4:4:4** (Figure 6-12) — indices 4, 6, 8, 10 = Cb;
+///     indices 5, 7, 9, 11 = Cr.
 ///
 /// Returns `None` for `i >= block_count(chroma)` (the trailing
 /// `pattern_code[]` slots that don't exist in the current chroma
@@ -122,14 +125,10 @@ pub fn block_component(i: usize, chroma: ChromaFormat) -> Option<ColourComponent
     if i < 4 {
         return Some(ColourComponent::Y);
     }
-    let chroma_pair_count = match chroma {
-        ChromaFormat::Yuv420 => 1, // 1 Cb + 1 Cr
-        ChromaFormat::Yuv422 => 2, // 2 Cb + 2 Cr
-        ChromaFormat::Yuv444 => 4, // 4 Cb + 4 Cr
-    };
-    let cb_first = 4;
-    let cr_first = cb_first + chroma_pair_count;
-    if i < cr_first {
+    // Figures 6-10 / 6-11 / 6-12: the chroma block numbering
+    // alternates Cb (even index) / Cr (odd index) in every chroma
+    // format.
+    if i % 2 == 0 {
         Some(ColourComponent::Cb)
     } else {
         Some(ColourComponent::Cr)
@@ -504,15 +503,18 @@ mod tests {
     }
 
     #[test]
-    fn block_component_422_assigns_cb_to_4_5_and_cr_to_6_7() {
-        for i in 4..=5 {
+    fn block_component_422_interleaves_cb_4_6_and_cr_5_7() {
+        // Figure 6-11: the 4:2:2 chroma numbering interleaves the
+        // components — Cb is blocks 4 (top) and 6 (bottom), Cr is
+        // blocks 5 (top) and 7 (bottom).
+        for i in [4, 6] {
             assert_eq!(
                 block_component(i, ChromaFormat::Yuv422),
                 Some(ColourComponent::Cb),
                 "i={i}",
             );
         }
-        for i in 6..=7 {
+        for i in [5, 7] {
             assert_eq!(
                 block_component(i, ChromaFormat::Yuv422),
                 Some(ColourComponent::Cr),
@@ -522,15 +524,18 @@ mod tests {
     }
 
     #[test]
-    fn block_component_444_assigns_cb_to_4_7_and_cr_to_8_11() {
-        for i in 4..=7 {
+    fn block_component_444_interleaves_cb_even_and_cr_odd() {
+        // Figure 6-12: the 4:4:4 chroma numbering interleaves the
+        // components — Cb is blocks 4, 6, 8, 10; Cr is blocks
+        // 5, 7, 9, 11.
+        for i in [4, 6, 8, 10] {
             assert_eq!(
                 block_component(i, ChromaFormat::Yuv444),
                 Some(ColourComponent::Cb),
                 "i={i}",
             );
         }
-        for i in 8..=11 {
+        for i in [5, 7, 9, 11] {
             assert_eq!(
                 block_component(i, ChromaFormat::Yuv444),
                 Some(ColourComponent::Cr),

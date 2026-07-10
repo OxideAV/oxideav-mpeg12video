@@ -257,7 +257,7 @@ pub fn block_placement(
     }
 
     // Chroma. Index within the component's own block run.
-    let chroma_index = chroma_block_index(i, chroma_format, component);
+    let chroma_index = chroma_block_index(i, component);
     let (sx, sy) = chroma_shift(chroma_format);
     let chroma_mb_w = 16usize >> sx; // chroma samples per MB, horizontally
     let chroma_mb_h = 16usize >> sy; // chroma samples per MB, vertically
@@ -276,13 +276,17 @@ pub fn block_placement(
     }
 
     // 4:2:2 / 4:4:4: chroma_mb_h == 16, so the component has 2 (4:2:2)
-    // or 4 (4:4:4) blocks tiling the chroma region exactly like luma.
-    // chroma_mb_w is 8 (4:2:2) -> single column -> chroma_index in
-    // {0 (top), 1 (bottom)}; or 16 (4:4:4) -> 2×2 tiling with the same
-    // 0=TL,1=TR,2=BL,3=BR §6.1.1.8 ordering as luma.
-    let blocks_wide = chroma_mb_w / 8;
-    let left = (chroma_index % blocks_wide) == 0;
-    let top = chroma_index < blocks_wide;
+    // or 4 (4:4:4) blocks tiling the chroma region. Unlike the luma
+    // numbering (row-major 0=TL, 1=TR, 2=BL, 3=BR per Figure 6-10),
+    // the chroma numbering runs **column-major** through each
+    // component: Figure 6-11 stacks the 4:2:2 Cb blocks 4 (top) over
+    // 6 (bottom), and Figure 6-12 tiles the 4:4:4 Cb blocks 4 (TL),
+    // 6 (BL), 8 (TR), 10 (BR) — successive same-component indices walk
+    // down each column before moving right. `chroma_index` counts the
+    // block within its own component (0, 1, 2, 3 in that coded order).
+    let blocks_tall = chroma_mb_h / 8; // 2 for 4:2:2 and 4:4:4
+    let top = (chroma_index % blocks_tall) == 0;
+    let left = chroma_index < blocks_tall;
     let base_x = chroma_x0 + if left { 0 } else { 8 };
     Some(luma_or_chroma_placement(
         component, base_x, chroma_y0, top, field_dct,
@@ -322,18 +326,17 @@ fn luma_or_chroma_placement(
     }
 }
 
-/// Index of block `i` within its own colour component's run of blocks
-/// (Cb / Cr), per the §6.1.1.8 ordering. For luma this is just `i`.
-fn chroma_block_index(i: usize, chroma_format: ChromaFormat, component: ColourComponent) -> usize {
-    let pair = match chroma_format {
-        ChromaFormat::Yuv420 => 1,
-        ChromaFormat::Yuv422 => 2,
-        ChromaFormat::Yuv444 => 4,
-    };
+/// Index of block `i` within its own colour component's sequence of
+/// blocks (Cb / Cr), per the Figure 6-10 / 6-11 / 6-12 numbering. For
+/// luma this is just `i`; for chroma the indices ≥ 4 alternate
+/// Cb (even) / Cr (odd), so the within-component index is
+/// `(i - 4) / 2` for both components (4:2:2 Cb: 4 → 0, 6 → 1;
+/// 4:4:4 Cb: 4, 6, 8, 10 → 0, 1, 2, 3; likewise Cr on the odd
+/// indices).
+fn chroma_block_index(i: usize, component: ColourComponent) -> usize {
     match component {
         ColourComponent::Y => i,
-        ColourComponent::Cb => i - 4,
-        ColourComponent::Cr => i - 4 - pair,
+        ColourComponent::Cb | ColourComponent::Cr => (i - 4) / 2,
     }
 }
 
@@ -730,42 +733,48 @@ mod tests {
     #[test]
     fn chroma_block_placement_422() {
         let cf = ChromaFormat::Yuv422;
-        // 4:2:2: blocks 4,5 = Cb (top,bottom), 6,7 = Cr. chroma is
-        // 8 wide × 16 tall per MB. MB col 1 row 0 -> chroma origin
-        // (8, 0).
+        // Figure 6-11: block 4 = Cb top, 6 = Cb bottom, 5 = Cr top,
+        // 7 = Cr bottom. chroma is 8 wide × 16 tall per MB. MB col 1
+        // row 0 -> chroma origin (8, 0).
         let cb_top = block_placement(4, cf, 1, 0, false).unwrap();
         assert_eq!(
             (cb_top.component, cb_top.base_x, cb_top.base_y),
             (ColourComponent::Cb, 8, 0)
         );
-        let cb_bot = block_placement(5, cf, 1, 0, false).unwrap();
+        let cb_bot = block_placement(6, cf, 1, 0, false).unwrap();
         assert_eq!(
             (cb_bot.component, cb_bot.base_x, cb_bot.base_y),
             (ColourComponent::Cb, 8, 8)
         );
-        let cr_top = block_placement(6, cf, 1, 0, false).unwrap();
+        let cr_top = block_placement(5, cf, 1, 0, false).unwrap();
         assert_eq!((cr_top.component, cr_top.base_y), (ColourComponent::Cr, 0));
         let cr_bot = block_placement(7, cf, 1, 0, false).unwrap();
-        assert_eq!(cr_bot.base_y, 8);
+        assert_eq!((cr_bot.component, cr_bot.base_y), (ColourComponent::Cr, 8));
     }
 
     #[test]
-    fn chroma_block_placement_444_2x2_tiling() {
+    fn chroma_block_placement_444_column_major_tiling() {
         let cf = ChromaFormat::Yuv444;
-        // 4:4:4: blocks 4..8 = Cb (TL,TR,BL,BR), 8..12 = Cr. chroma is
-        // 16×16 per MB.
+        // Figure 6-12: Cb = blocks 4 (TL), 6 (BL), 8 (TR), 10 (BR);
+        // Cr = blocks 5, 7, 9, 11 in the same column-major walk.
+        // chroma is 16×16 per MB.
         let cb_tl = block_placement(4, cf, 0, 0, false).unwrap();
         assert_eq!((cb_tl.base_x, cb_tl.base_y), (0, 0));
-        let cb_tr = block_placement(5, cf, 0, 0, false).unwrap();
-        assert_eq!((cb_tr.base_x, cb_tr.base_y), (8, 0));
         let cb_bl = block_placement(6, cf, 0, 0, false).unwrap();
         assert_eq!((cb_bl.base_x, cb_bl.base_y), (0, 8));
-        let cb_br = block_placement(7, cf, 0, 0, false).unwrap();
+        let cb_tr = block_placement(8, cf, 0, 0, false).unwrap();
+        assert_eq!((cb_tr.base_x, cb_tr.base_y), (8, 0));
+        let cb_br = block_placement(10, cf, 0, 0, false).unwrap();
         assert_eq!((cb_br.base_x, cb_br.base_y), (8, 8));
-        let cr_tl = block_placement(8, cf, 0, 0, false).unwrap();
+        let cr_tl = block_placement(5, cf, 0, 0, false).unwrap();
         assert_eq!(
             (cr_tl.component, cr_tl.base_x, cr_tl.base_y),
             (ColourComponent::Cr, 0, 0)
+        );
+        let cr_br = block_placement(11, cf, 0, 0, false).unwrap();
+        assert_eq!(
+            (cr_br.component, cr_br.base_x, cr_br.base_y),
+            (ColourComponent::Cr, 8, 8)
         );
     }
 
