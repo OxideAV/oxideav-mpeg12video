@@ -8,6 +8,89 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 410: **Whole-sequence reference-conformance corpus**
+  (`tests/fixtures/conformance/` + `tests/reference_conformance.rs`) —
+  nine elementary streams (three MPEG-1: IBBP, high-motion wide-f_code,
+  VCD-rate CBR SIF; six MPEG-2: IBBP adaptive-quant, interlaced
+  field-prediction, intra_vlc/non-linear-quant/10-bit-DC, 4:2:2
+  profile, non-macroblock-multiple 100x62, and a hand-built
+  field-picture stream) paired with black-box reference decodes.
+  Every stream decodes whole-sequence reference-conformant: exact
+  frame count/dimensions, |delta| <= 3 per sample (Annex A IDCT
+  rounding freedom; empirically <= 2 everywhere but one sample), < 5%
+  differing samples per frame. Fixture notes record every generation
+  command and SHA-256.
+- round 410: **MPEG-1 (ISO/IEC 11172-2) whole-stream decode** —
+  `decode_video_sequence` now classifies the sequence layer (no
+  `sequence_extension` -> 11172-2) and decodes MPEG-1 I/P/B pictures
+  end-to-end: new `mpeg1_block_decoder` (§2.4.3.7 coefficient walk +
+  §2.4.4.1/.2 dequantisation + Annex A IDCT), an MPEG-1 block branch
+  in the slice walker carrying the `dct_dc_*_past`/`past_intra_address`
+  chain, and `mpeg1_picture` picture drivers implementing the
+  §2.4.4.2/.3 `recon_*_prev` predictor lifecycle, §2.4.4.4 skips and
+  `full_pel_*_vector` scaling, with sequence-header quantiser matrices
+  threaded (zigzag -> raster).
+- round 410: **Hand-built field-picture oracle fixture + generator**
+  (`examples/gen_field_conformance.rs`) — I/P/B field pairs with both
+  `motion_vertical_field_select` parities (incl. §7.6.2.1 same-frame
+  second-field references), §7.6.3.6 dual prime, §7.6.7.3 16x8 MC and
+  an interpolated B-field pair; the black-box reference decode agrees
+  with ours within ±1 everywhere.
+- round 410: **`decode_to_yuv` example** — dump a stream's
+  display-order frames as packed planar YCbCr for byte-comparison
+  against any reference decoder's rawvideo output.
+- round 410: **Types-aware display-order verification**
+  (`display_indices_from_coded_pictures` /
+  `verify_display_order_with_types`) — GOP boundaries detected by the
+  anchor pattern (a new GOP begins at an anchor whose
+  `temporal_reference` is <= the previous anchor's), classifying a GOP
+  whose leading I-frame has `temporal_reference > 0` correctly where
+  the trefs-only heuristic mis-bases it.
+
+### Fixed
+
+- round 410: **§7.2.1 DC predictors now reset on skipped macroblocks**
+  — an intra macroblock following a skip run after another intra
+  macroblock decoded its `dct_dc_differential` against a stale
+  predictor (spurious "QFS[0] outside the §7.2.1 range" on real
+  adaptive-quantisation streams).
+- round 410: **4:2:2 / 4:4:4 chroma block numbering** — Figures
+  6-11/6-12 interleave the chroma blocks (Cb even indices, Cr odd) and
+  walk each component column-major; `block_component` had two
+  contiguous runs and `block_placement` tiled 4:4:4 row-major, so every
+  4:2:2/4:4:4 macroblock swapped half its chroma blocks between
+  components.
+- round 410: **Macroblock-aligned reconstruction storage** —
+  reconstructed frames were clipped to the visible dimensions,
+  discarding bottom/right edge-macroblock overhang samples that later
+  §7.6.4 motion vectors may legally reference. `FrameBuffer` planes now
+  cover the full macroblock grid; display consumers crop via
+  `Plane::packed_rect` / `FrameBuffer::visible_chroma_dims`.
+- round 410: **Slice at end-of-stream with a short non-zero tail keeps
+  decoding** (§6.2.4/§5.2.3) — a stream ending right after its last
+  slice with no `sequence_end_code` left the final macroblocks encoded
+  in fewer than 23 trailing bits; the walker declared end-of-slice and
+  the bottom macroblock row reconstructed as zeros. Truncated stop
+  peeks are now evaluated with zero extension.
+- round 410: **Frame-picture field-based prediction honours
+  `motion_vertical_field_select`** (§7.6.4) — each vector now reads the
+  reference field its own flag names (the destination field's parity
+  was used before), with chroma following its luminance vector's
+  selected field.
+- round 410: **§7.6.6.4 B-frame-picture skips take their vectors from
+  the motion vector predictors** — the previous macroblock contributes
+  only the prediction direction; the vectors come from `PMV[0][s]` at
+  the skip position (which differs after a field-based macroblock).
+- round 410: **§2.4.4.2 wrap-seam guard made asymmetric** — the spec
+  forbids only `little == +16f`; `-16f` is a legal vector value real
+  CBR streams emit (motion_code -16 with a zero complement).
+- round 410: **I field pictures walk with the field structure** —
+  §6.2.5.1 gates `dct_type` on `picture_structure == "Frame picture"`;
+  routing an I field through the frame-structure intra driver consumed
+  a spurious bit per intra macroblock and sheared the slice parse.
+
+### Added (earlier rounds)
+
 - round 398: **Decoder robustness harness** (`tests/decoder_robustness.rs`)
   — proves the runtime `Decoder` never panics on malformed input: every
   header-region byte truncation plus a coarse whole-stream truncation

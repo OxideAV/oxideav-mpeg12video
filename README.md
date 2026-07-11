@@ -79,16 +79,20 @@ The decode pipeline is implemented end-to-end at the module level:
   (§6.3.17.4 `pattern_code[]`), and writes the result into the
   `FrameBuffer` honouring the §6.1.3 frame/field DCT line organisation.
   Skipped macroblocks (§7.6.6) reconstruct as a P-picture `(0,0)`
-  forward copy or a B-picture inherited-direction prediction. The
+  forward copy or a B-picture prediction inheriting the previous
+  macroblock's **direction** with the vectors taken directly from the
+  §7.6.3 motion-vector predictors (§7.6.6.4). The
   MPEG-1 (ISO/IEC 11172-2) `recon_right`/`recon_down` half-sample
   vectors bridge into the same MC core via `MotionVectorPel::from_mpeg1`
   / `FrameMotion::from_mpeg1`. Frame-picture **frame-based** and
   **field-based** prediction are both driven end-to-end: the field-based
   path (Table 7-14 `Field-based` rows) predicts the macroblock's even
-  (top-field) frame lines from the top reference field with the
-  top-field vector and its odd lines from the bottom field with the
-  bottom-field vector, via the §7.6.4 `FieldReference` half-height field
-  view (`predict_field_block`; field line `k` → frame row `2k + parity`,
+  (top-field) frame lines with the first vector and its odd lines with
+  the second, each reading the reference **field its own §6.3.17.2
+  `motion_vertical_field_select` flag names** (§7.6.4: `0` → top, `1` →
+  bottom — the destination parity does not imply the source field), via
+  the §7.6.4 `FieldReference` half-height field view
+  (`predict_field_block`; field line `k` → frame row `2k + parity`,
   vertical pad-to-edge confined to the field), combining the directions
   per §7.6.7.2 and reusing the frame-based residual-add / §6.1.3
   write-out path (`reconstruct_field_based_macroblock`). These cover
@@ -201,6 +205,30 @@ The decode pipeline is implemented end-to-end at the module level:
 Each stage is covered by synthetic unit tests plus integration fixtures
 verifying the parsers against known-good encoded streams.
 
+## Reference conformance
+
+`tests/fixtures/conformance/` stages a **whole-sequence conformance
+corpus**: nine elementary streams — MPEG-1 IBBP GOPs, high-motion
+wide-`f_code`, and VCD-rate CBR SIF; MPEG-2 IBBP with adaptive
+quantisation, interlaced field prediction, `intra_vlc_format` +
+non-linear quant + 10-bit DC, 4:2:2 profile, non-macroblock-multiple
+100×62, and a hand-built field-picture stream (I/P/B field pairs with
+both `motion_vertical_field_select` parities, §7.6.3.6 **dual prime**,
+§7.6.7.3 **16×8 MC**) — each paired with a black-box reference decode.
+`tests/reference_conformance.rs` decodes every stream end-to-end
+through `decode_video_sequence` and holds it to: exact frame count and
+dimensions, per-sample |Δ| ≤ 3 (the Annex A IDCT is only specified to
+IEEE 1180 statistical accuracy, so conforming decoders may differ by
+±1 per transform; empirically the corpus decodes at |Δ| ≤ 2 everywhere
+but a single sample), and < 5 % differing samples per frame.
+**MPEG-1 (ISO/IEC 11172-2) streams decode whole-sequence too**: the
+driver classifies the sequence layer (no `sequence_extension()` →
+11172-2) and routes pictures through the §2.4.4 MPEG-1 block/motion
+pipeline (`mpeg1_block_decoder` + `mpeg1_picture`), including the
+`dct_dc_*_past`/`past_intra_address` DC chain, the §2.4.4.2/.3
+`recon_*_prev` predictor lifecycle, §2.4.4.4 skips, `full_pel_*_vector`
+scaling and sequence-header quantiser matrices.
+
 ## Runtime decoder
 
 `register` / `register_codecs` install `oxideav_core::Decoder`
@@ -291,7 +319,6 @@ rate control, and encoder runtime-registry wiring remain future work
 
 ## Not yet supported
 
-- Runtime registration (`register` is a no-op).
 - A top-level **`video_sequence()` decode loop** now exists
   (`decode_video_sequence(stream) -> Vec<DecodedFrame>`): it parses the
   sequence layer once for the geometry, walks every `picture_start_code`,
