@@ -67,6 +67,17 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   of 32. New corpus fixture `mpeg2-ilaced48hm-96x48.m2v`
   (high-motion interlaced, 4-row grid on a 48-line picture) decodes
   reference-conformant (max |delta| 2).
+- round 413: **Encoder external conformance + pinned self-encoded
+  corpus** (`tests/fixtures/selfenc/` + `tests/selfenc_conformance.rs`
+  + `examples/gen_selfenc_corpus.rs`) — four deterministic
+  self-encoded streams (all-intra 64x48, all-intra non-mb-multiple
+  100x62, I+3P motion-compensated chain with intra fallback, I/B/P
+  group) each decoded by the black-box reference decoder (strict
+  error-detection mode clean) with the committed `.ref.yuv` agreeing
+  with our own decode at max |delta| 2 / <= 2.1% samples. The test
+  pins the encoder bit-exactly (regenerate-and-compare) and holds the
+  decode to the corpus |delta| <= 3 / < 5% contract plus a bounded
+  round-trip luma MAE against the synthetic inputs.
 - round 410: **Whole-sequence reference-conformance corpus**
   (`tests/fixtures/conformance/` + `tests/reference_conformance.rs`) —
   nine elementary streams (three MPEG-1: IBBP, high-motion wide-f_code,
@@ -108,6 +119,18 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- round 413: **Motion search emitted §7.6.3.8-illegal vectors at
+  right/bottom edge macroblocks** — `estimate_forward_mv` scored
+  candidates through the padding `predict_block`, so a vector whose
+  §7.6.4 sample span crossed the coded-picture boundary could win at
+  edge macroblocks (translating content pushed the true motion off
+  the edge). The reference decoder flagged every such macroblock
+  ("motion vector out of boundary") and refused the prediction —
+  first P frame ~50% wrong in the black-box decode while our own
+  padding decoder mirrored the encoder and hid it. The search now
+  visits only vectors whose full §7.6.4 read span (including the
+  half-sample interpolation neighbour) stays inside the reference
+  plane.
 - round 410: **§7.2.1 DC predictors now reset on skipped macroblocks**
   — an intra macroblock following a skip run after another intra
   macroblock decoded its `dct_dc_differential` against a stale

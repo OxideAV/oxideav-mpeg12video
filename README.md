@@ -320,6 +320,23 @@ back through `decode_video_sequence`:
   reconstructs with luma MAE < 4, an unpredictable region triggers the
   intra fallback, and an I-B-P group decodes in display order.
 
+The encoder is now **externally conformance-validated**: a pinned
+self-encoded corpus (`tests/fixtures/selfenc/` — all-intra 64×48 and
+non-macroblock-multiple 100×62, an I+3P motion-compensated chain with
+intra fallback, and an I/B/P group) decodes in a black-box reference
+decoder (strict error-detection mode clean) with its committed
+reference decode agreeing with ours at max |Δ| 2 (pure Annex A IDCT
+rounding). `tests/selfenc_conformance.rs` pins the encoder
+**bit-exactly** (regenerate-and-compare against the committed
+streams) so any bit-moving encoder change must consciously refresh
+the corpus and re-run the black-box validation. Getting there fixed a
+real encoder bug: the motion search could pick §7.6.3.8-illegal
+vectors at right/bottom edge macroblocks (scored through the padding
+predictor, mirrored by our own padding decoder); it now visits only
+vectors whose whole §7.6.4 read span stays inside the coded picture.
+The encoders declare `progressive_sequence = 1` (+ §6.3.10
+`progressive_frame`), matching the `Ceil(h/16)` grid they code.
+
 Field-picture / field-based inter encoding (`frame_pred_frame_dct = 0`),
 rate control, and encoder runtime-registry wiring remain future work
 (the **decoder** is now registry-wired — see **Runtime decoder** above).

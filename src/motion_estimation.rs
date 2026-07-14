@@ -109,6 +109,28 @@ pub fn estimate_forward_mv(
     let plane = ReferencePlane::new(data, reference.y.width(), reference.y.height())
         .expect("reference luma plane is width*height");
 
+    // §7.6.3.8: reconstructed motion vectors shall not refer to
+    // samples outside the boundary of the coded picture. The §7.6.4
+    // prediction of a half-sample vector `h` reads integer columns
+    // `base + (h DIV 2) ..= base + 15 + (h DIV 2) + (h & 1)` (DIV
+    // rounds toward minus infinity; an odd component interpolates one
+    // extra sample), so a candidate is only legal when that whole
+    // span lies inside the reference plane — the coded macroblock
+    // grid. The zero-vector incumbent is always legal (the macroblock
+    // itself is inside the picture).
+    let legal = |hx: i32, hy: i32| -> bool {
+        let base_x = (mb_col * 16) as i32;
+        let base_y = (mb_row * 16) as i32;
+        let ix = hx.div_euclid(2);
+        let iy = hy.div_euclid(2);
+        let ex = i32::from(hx.rem_euclid(2) != 0);
+        let ey = i32::from(hy.rem_euclid(2) != 0);
+        base_x + ix >= 0
+            && base_y + iy >= 0
+            && base_x + ix + 15 + ex < reference.y.width() as i32
+            && base_y + iy + 15 + ey < reference.y.height() as i32
+    };
+
     // Tie-break helper: when two vectors give the same SAD, prefer the
     // one that is cheaper to code (smaller magnitude, hence a shorter
     // §6.2.5.2.1 motion_code). The bias is a single SAD unit per unit of
@@ -130,6 +152,9 @@ pub fn estimate_forward_mv(
             // Integer displacement (dx, dy) → half-sample (2*dx, 2*dy).
             let hx = dx * 2;
             let hy = dy * 2;
+            if !legal(hx, hy) {
+                continue;
+            }
             let sad = luma_sad(current, plane, mb_col, mb_row, hx, hy, best_score);
             let score = sad.saturating_add(vec_cost(hx, hy));
             if score < best_score {
@@ -156,6 +181,9 @@ pub fn estimate_forward_mv(
     ] {
         let hx = int_hx + ox;
         let hy = int_hy + oy;
+        if !legal(hx, hy) {
+            continue;
+        }
         let sad = luma_sad(current, plane, mb_col, mb_row, hx, hy, best_score);
         let score = sad.saturating_add(vec_cost(hx, hy));
         if score < best_score {

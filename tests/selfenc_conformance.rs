@@ -1,0 +1,214 @@
+//! Self-encoded conformance corpus (`tests/fixtures/selfenc/`): the
+//! encoder's output pinned bit-exactly, and its decodability by an
+//! external black-box reference decoder pinned via the committed
+//! `.ref.yuv` decodes. See the fixture README for the generation
+//! record.
+//!
+//! Three assertions per stream:
+//!
+//! 1. **Bit-stability** — regenerating the stream from the same
+//!    deterministic synthetic input reproduces the committed bytes
+//!    exactly, so any encoder change that moves bits must refresh the
+//!    fixture *and* re-run the black-box validation.
+//! 2. **External conformance** — our decode of the committed stream
+//!    matches the committed black-box reference decode within the
+//!    corpus contract (|Δ| ≤ 3 per sample — Annex A IDCT rounding
+//!    freedom — and < 5 % of samples differing; measured max |Δ| = 2).
+//! 3. **Round-trip fidelity** — the decode approximates the original
+//!    synthetic input (bounded luma MAE), so the corpus can't drift
+//!    into "conformant garbage".
+
+use oxideav_mpeg12video::sequence_extension::ChromaFormat;
+use oxideav_mpeg12video::{
+    decode_video_sequence, encode_i_p_b, encode_i_p_chain, encode_intra_picture, DecodedFrame,
+    FrameBuffer, IntraPictureParams,
+};
+
+const MAX_ABS_DELTA: i32 = 3;
+const MAX_DIFF_PER_MILLE: u64 = 50;
+
+/// Deterministic synthetic content — must stay in lock-step with
+/// `examples/gen_selfenc_corpus.rs` (the generator that produced the
+/// committed fixtures).
+fn frame_at(width: usize, height: usize, dx: usize, dy: usize, stamp: bool) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + dx;
+            let sy = y + dy;
+            let g = 24 + ((sx * 3 + sy * 5) % 192);
+            let c = if (sx / 4 + sy / 4) % 2 == 0 { 16 } else { 0 };
+            f.y.put_sample(x, y, (g + c).min(235) as u8);
+        }
+    }
+    if stamp {
+        for y in 8..20.min(height) {
+            for x in 8..20.min(width) {
+                f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+            }
+        }
+    }
+    for y in 0..height.div_ceil(2) {
+        for x in 0..width.div_ceil(2) {
+            f.cb.put_sample(x, y, (96 + (x + dx / 2 + y) % 64) as u8);
+            f.cr.put_sample(x, y, (160u8).saturating_sub(((x + y + dy / 2) % 64) as u8));
+        }
+    }
+    f
+}
+
+fn params(width: usize, height: usize) -> IntraPictureParams {
+    IntraPictureParams {
+        width,
+        height,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: true,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: true,
+    }
+}
+
+fn fixture(name: &str) -> (Vec<u8>, Vec<u8>) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/selfenc/");
+    let stream = std::fs::read(format!("{dir}{name}")).expect("stream fixture present");
+    let reference = std::fs::read(format!("{dir}{name}.ref.yuv")).expect("reference present");
+    (stream, reference)
+}
+
+/// Pack a decoded frame's visible rectangle as planar 4:2:0 bytes —
+/// the layout the black-box reference decode uses.
+fn packed(frame: &DecodedFrame) -> Vec<u8> {
+    let fb = &frame.frame;
+    let (cw, ch) = fb.visible_chroma_dims();
+    let mut out = fb.y.packed_rect(fb.width, fb.height);
+    out.extend_from_slice(&fb.cb.packed_rect(cw, ch));
+    out.extend_from_slice(&fb.cr.packed_rect(cw, ch));
+    out
+}
+
+/// Assertions 2 + 3: decode `stream`, compare against the committed
+/// black-box reference decode, and bound the luma MAE against the
+/// original input frames (in display order).
+fn assert_reference_conformant(
+    name: &str,
+    stream: &[u8],
+    reference: &[u8],
+    display_inputs: &[&FrameBuffer],
+) {
+    let frames = decode_video_sequence(stream).expect("self-encoded stream decodes");
+    assert_eq!(frames.len(), display_inputs.len(), "{name}: frame count");
+
+    let frame_bytes = reference.len() / display_inputs.len();
+    for (index, frame) in frames.iter().enumerate() {
+        let ours = packed(frame);
+        assert_eq!(ours.len(), frame_bytes, "{name}: frame {index} size");
+        let ref_frame = &reference[index * frame_bytes..(index + 1) * frame_bytes];
+
+        let mut diff_count = 0u64;
+        for (pos, (&a, &b)) in ours.iter().zip(ref_frame.iter()).enumerate() {
+            let delta = (i32::from(a) - i32::from(b)).abs();
+            if delta != 0 {
+                diff_count += 1;
+                assert!(
+                    delta <= MAX_ABS_DELTA,
+                    "{name}: frame {index} byte {pos}: |{a} - {b}| = {delta} exceeds the IDCT bound"
+                );
+            }
+        }
+        let per_mille = diff_count * 1000 / frame_bytes as u64;
+        assert!(
+            per_mille <= MAX_DIFF_PER_MILLE,
+            "{name}: frame {index}: {per_mille}‰ samples differ — structural divergence"
+        );
+
+        // Round-trip fidelity: bounded mean absolute luma error
+        // against the synthetic input this frame encodes.
+        let input = display_inputs[index];
+        let mut total = 0u64;
+        let mut count = 0u64;
+        for y in 0..input.height {
+            for x in 0..input.width {
+                let a = i64::from(input.y.get(x, y).unwrap());
+                let b = i64::from(frame.frame.y.get(x, y).unwrap());
+                total += a.abs_diff(b);
+                count += 1;
+            }
+        }
+        let mae = total as f64 / count as f64;
+        assert!(
+            mae < 8.0,
+            "{name}: frame {index} luma MAE {mae:.2} — round-trip fidelity lost"
+        );
+    }
+}
+
+#[test]
+fn selfenc_intra_64x48_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-intra-64x48.m2v");
+    let input = frame_at(64, 48, 0, 0, false);
+    let regenerated = encode_intra_picture(&input, params(64, 48), 0, 6).expect("intra re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    assert_reference_conformant("selfenc-intra-64x48", &stream, &reference, &[&input]);
+}
+
+#[test]
+fn selfenc_intra_100x62_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-intra-100x62.m2v");
+    let input = frame_at(100, 62, 0, 0, false);
+    let regenerated = encode_intra_picture(&input, params(100, 62), 0, 5).expect("intra re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    assert_reference_conformant("selfenc-intra-100x62", &stream, &reference, &[&input]);
+}
+
+#[test]
+fn selfenc_ip_chain_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-ipchain-64x48.m2v");
+    let anchor = frame_at(64, 48, 0, 0, false);
+    let targets = [
+        frame_at(64, 48, 2, 1, false),
+        frame_at(64, 48, 4, 2, true),
+        frame_at(64, 48, 6, 3, true),
+    ];
+    let regenerated =
+        encode_i_p_chain(&anchor, &targets, params(64, 48), 6, 3).expect("chain re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    assert_reference_conformant(
+        "selfenc-ipchain-64x48",
+        &stream,
+        &reference,
+        &[&anchor, &targets[0], &targets[1], &targets[2]],
+    );
+}
+
+#[test]
+fn selfenc_ipb_group_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-ipb-64x48.m2v");
+    let i_frame = frame_at(64, 48, 0, 0, false);
+    let b_frame = frame_at(64, 48, 2, 1, false);
+    let p_frame = frame_at(64, 48, 4, 2, false);
+    let regenerated = encode_i_p_b(&i_frame, &b_frame, &p_frame, params(64, 48), 6, 3, 3)
+        .expect("i-p-b re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    // Display order: I, B, P.
+    assert_reference_conformant(
+        "selfenc-ipb-64x48",
+        &stream,
+        &reference,
+        &[&i_frame, &b_frame, &p_frame],
+    );
+}
