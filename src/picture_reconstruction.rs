@@ -398,11 +398,13 @@ fn reconstruct_skipped_macroblock(
                 backward: prev.backward.then(|| vector(1)),
             }
         }
-        PictureCodingType::Intra => {
+        PictureCodingType::Intra | PictureCodingType::DcIntra => {
             // §7.6.6: no skipped macroblocks in a non-scalable
-            // I-picture. The motion walk already rejected this, so this
-            // arm is unreachable in a well-formed stream; treat it as a
-            // zero-MV forward to stay total.
+            // I-picture (and D-pictures are 11172-2-only, all-intra,
+            // with no skips per §2.4.4.4 of 11172-2). The motion walk
+            // already rejected this, so this arm is unreachable in a
+            // well-formed stream; treat it as a zero-MV forward to
+            // stay total.
             FrameMotion::forward(MotionVectorPel::new(0, 0))
         }
     };

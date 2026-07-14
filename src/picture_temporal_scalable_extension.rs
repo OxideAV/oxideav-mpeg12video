@@ -157,6 +157,13 @@ impl PictureTemporalScalableExtension {
                     ));
                 }
             }
+            // Temporal scalability is 13818-2-only; D-pictures are
+            // 11172-2-only (Table 6-12) — no valid pairing exists.
+            PictureCodingType::DcIntra => {
+                return Err(Error::InvalidBitstream(
+                    "reference_select_code: D-pictures do not occur in ISO/IEC 13818-2 temporal scalability (Table 6-12)",
+                ));
+            }
         }
         Ok(())
     }
@@ -227,6 +234,11 @@ impl PictureTemporalScalableExtension {
                     };
                 Ok(PictureReferences::Bidirectional { forward, backward })
             }
+            // Temporal scalability is 13818-2-only; D-pictures are
+            // 11172-2-only (Table 6-12) — no valid pairing exists.
+            PictureCodingType::DcIntra => Err(Error::InvalidBitstream(
+                "reference_select_code: D-pictures do not occur in ISO/IEC 13818-2 temporal scalability (Table 6-12)",
+            )),
         }
     }
 }

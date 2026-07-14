@@ -139,6 +139,9 @@ pub fn write_picture_header(
         PictureCodingType::Intra => 0b001,
         PictureCodingType::Predictive => 0b010,
         PictureCodingType::Bidirectional => 0b011,
+        // dc intra-coded (D), ISO/IEC 11172-2 §2.4.3.4 — carries no
+        // f_code fields (the P/B conditionals below skip it).
+        PictureCodingType::DcIntra => 0b100,
     };
     bw.write_u32(ct_code, 3);
     bw.write_u32(0xFFFF, 16); // vbv_delay

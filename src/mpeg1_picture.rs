@@ -426,6 +426,136 @@ fn reconstruct_mpeg1_macroblock(
     Ok(1)
 }
 
+/// Decode a whole MPEG-1 **D** picture (dc intra-coded,
+/// `picture_coding_type == 4`, §2.4.3.4) into a [`FrameBuffer`].
+///
+/// Per §2.4.2.7 / §2.4.2.8 a D-picture's macroblock layer is maximally
+/// lean: every macroblock is the single Table B.2d `macroblock_type`
+/// codeword `'1'` (intra, no quant / motion / pattern), each of its
+/// six 4:2:0 blocks carries **only** the `dct_dc_size_*` +
+/// `dct_dc_differential` prelude (the AC walk and `end_of_block` are
+/// gated by `if (picture_coding_type != 4)`), and the macroblock is
+/// terminated by the 1-bit `end_of_macroblock` marker (value `'1'`).
+/// The §2.4.4.1 `dct_dc_*_past` predictor chain applies unchanged.
+///
+/// §2.4.4.4 requires every macroblock of an all-intra picture to be
+/// coded, so a `macroblock_address_increment != 1` is rejected.
+///
+/// # Errors
+/// Propagates slice-header / VLC / dequantiser errors;
+/// [`Error::InvalidBitstream`] on a `macroblock_type` other than the
+/// Table B.2d `'1'`, a zero `end_of_macroblock` bit, or a skipped
+/// macroblock.
+pub fn decode_mpeg1_d_picture(
+    picture: &[u8],
+    params: &Mpeg1PictureParams,
+) -> Result<(FrameBuffer, usize)> {
+    use crate::dequantize::{finalise_intra_macroblock, IntraDcPredictors};
+    use crate::frame_assembly::{block_placement, place_intra_block};
+    use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
+    use oxideav_core::bits::BitReader;
+
+    let mut frame = FrameBuffer::new(params.width, params.height, ChromaFormat::Yuv420);
+    let mb_width = params.mb_width();
+    let slice_ctx = SliceContext::non_scalable(params.height as u32);
+
+    let mut placed = 0usize;
+    let mut offset = 0usize;
+    while let Some(rel) = find_slice_start_code(&picture[offset..]) {
+        let start = offset + rel;
+        let body = &picture[start..];
+        let end = find_next_start_code(&body[4..])
+            .map(|p| p + 4)
+            .unwrap_or(body.len());
+        let slice_buf = &body[..end];
+
+        let header = SliceHeader::parse(slice_buf, slice_ctx)?;
+        let mb_row = u32::from(header.slice_vertical_position) - 1;
+
+        let mut br = BitReader::new(slice_buf);
+        let to_skip =
+            u32::try_from(header.body_bit_position).map_err(|_| crate::Error::ShortHeader)?;
+        br.skip(to_skip).map_err(|_| crate::Error::ShortHeader)?;
+
+        // §2.4.4.1: predictors reset at slice start.
+        let mut predictors = IntraDcPredictors::at_slice_start();
+        // Address of the macroblock about to decode; the first
+        // macroblock of the slice sits at the head of `mb_row`.
+        let mut address = mb_row as usize * mb_width;
+        let mut is_first = true;
+
+        // §2.4.2.6 do-while: decode macroblocks while the next 23
+        // bits (zero-extended at a truncated tail, §5.2.3) are not
+        // the all-zero stop pattern.
+        loop {
+            let stop = match br.peek_u32(23) {
+                Ok(0) => true,
+                Ok(_) => false,
+                Err(_) => {
+                    let remaining = br.bits_remaining().min(22) as u32;
+                    remaining == 0 || matches!(br.peek_u32(remaining), Ok(0))
+                }
+            };
+            if stop {
+                break;
+            }
+
+            // §2.4.2.7: stuffing/escape chains + the increment VLC.
+            let increment = MbAddressIncrement::parse(&mut br, MbAddressIncrementContext::mpeg1())?;
+            if increment.value != 1 {
+                return Err(Error::InvalidBitstream(
+                    "D-picture macroblock_address_increment != 1: every macroblock of an all-intra picture shall be coded (§2.4.4.4)",
+                ));
+            }
+            if !is_first {
+                address += 1;
+            }
+            is_first = false;
+
+            // Table B.2d: the single macroblock_type codeword '1'.
+            let mb_type_bit = br.read_bit().map_err(|_| crate::Error::ShortHeader)?;
+            if !mb_type_bit {
+                return Err(Error::InvalidBitstream(
+                    "D-picture macroblock_type: only the Table B.2d codeword '1' exists",
+                ));
+            }
+
+            // §2.4.2.8: six DC-only blocks (macroblock_intra == 1 sets
+            // every pattern_code[i], §2.4.3.6).
+            let mb_col = address % mb_width;
+            let mb_row_now = address / mb_width;
+            for i in 0..6u8 {
+                let block = crate::mpeg1_block_decoder::decode_d_block(
+                    &mut br,
+                    i,
+                    header.quantiser_scale_code,
+                    &params.intra_quant,
+                    &mut predictors,
+                    address as i32,
+                )?;
+                if let Some(placement) =
+                    block_placement(i as usize, ChromaFormat::Yuv420, mb_col, mb_row_now, false)
+                {
+                    place_intra_block(&mut frame, placement, &block.f_pel);
+                }
+            }
+            finalise_intra_macroblock(&mut predictors, address as i32);
+
+            // §2.4.2.7: end_of_macroblock — "a bit which is set to 1"
+            // (§2.4.3.6).
+            let eom = br.read_bit().map_err(|_| crate::Error::ShortHeader)?;
+            if !eom {
+                return Err(Error::InvalidBitstream(
+                    "D-picture end_of_macroblock: bit shall be '1' (§2.4.3.6)",
+                ));
+            }
+            placed += 1;
+        }
+        offset = start + end;
+    }
+    Ok((frame, placed))
+}
+
 /// Find the byte offset of the next `slice_start_code`
 /// (`0x00000101..=0x000001AF`) in `buf`.
 fn find_slice_start_code(buf: &[u8]) -> Option<usize> {

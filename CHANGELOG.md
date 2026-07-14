@@ -8,6 +8,23 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 413: **ISO/IEC 11172-2 D-picture decode** (dc intra-coded,
+  `picture_coding_type == 4`, §2.4.3.4) — `PictureCodingType::DcIntra`
+  (bare header parse accepts it, no f_code fields; the MPEG-2 chained
+  parser rejects it per Table 6-12 "shall not be used"),
+  `mpeg1_block_decoder::decode_d_block` (§2.4.2.8 DC-prelude-only
+  block: no AC walk, no `end_of_block`),
+  `mpeg1_picture::decode_mpeg1_d_picture` (Table B.2d 1-bit
+  `macroblock_type`, six DC-only blocks, `end_of_macroblock` '1' bit,
+  §2.4.4.1 `dct_dc_*_past` chain, §2.4.4.4 no-skips rule), and
+  `decode_video_sequence` routing (D-pictures display in coded order,
+  never referenced — §2.4.1 D-only sequences). Table B.2d added to
+  the `macroblock_type` table family. Pinned hand-built fixture
+  `tests/fixtures/conformance/mpeg1-dpics-48x32.m1v`
+  (`examples/gen_d_conformance.rs`, SHA-256 in the corpus README)
+  decoded sample-exactly against closed-form §2.4.4.1 arithmetic —
+  no external reference exists: the black-box decoder refuses
+  type-4 pictures (zero frames out).
 - round 410: **Whole-sequence reference-conformance corpus**
   (`tests/fixtures/conformance/` + `tests/reference_conformance.rs`) —
   nine elementary streams (three MPEG-1: IBBP, high-motion wide-f_code,

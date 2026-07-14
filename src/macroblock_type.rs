@@ -45,10 +45,13 @@
 //! depend on `picture_coding_extension()` state (`frame_pred_frame_dct`,
 //! `picture_structure`) that is best threaded through in a later round.
 //!
-//! D-pictures (MPEG-1 `picture_coding_type == 4`) have no
-//! `macroblock_type` VLC of this form and are rejected by the
-//! [`crate::PictureCodingType`] parser already; this module therefore
-//! only accepts `I`, `P`, and `B`.
+//! D-pictures (ISO/IEC 11172-2 `picture_coding_type == 4`) carry the
+//! single-row Table B.2d of 11172-2: the one codeword `'1'` selecting
+//! a plain intra macroblock (no quant, no motion, no pattern). The
+//! non-scalable family serves it for
+//! [`crate::PictureCodingType::DcIntra`]; the 13818-2 scalable
+//! families reject the pairing (D-pictures do not occur in MPEG-2
+//! streams, Table 6-12).
 //!
 //! Spec citations refer to the 1995 base text of ISO/IEC 13818-2
 //! (Recommendation ITU-T H.262 (1995 E)) §6.2.5.1, §6.3.17.1, Table
@@ -211,6 +214,18 @@ impl Row {
         }
     }
 }
+
+/// ISO/IEC 11172-2 Table B.2d — `macroblock_type` in dc intra-coded
+/// pictures (D-pictures).
+///
+/// ```text
+/// VLC  quant fwd bwd pat intra  Description
+/// 1     0     0   0   0   1     Intra
+/// ```
+const TABLE_B2D_D: &[Row] = &[
+    //          code bits quant  fwd    bwd    pat    intra
+    Row::plain(0b1, 1, false, false, false, false, true),
+];
 
 /// Table B-2 — `macroblock_type` in I-pictures.
 ///
@@ -618,22 +633,34 @@ impl MacroblockTypeTable {
 }
 
 /// Select the `macroblock_type` row table for a `(table family,
-/// picture coding type)` pair per Table 6-10.
-fn table_for(table: MacroblockTypeTable, picture_coding_type: PictureCodingType) -> &'static [Row] {
-    match table {
+/// picture coding type)` pair per Table 6-10 (plus the ISO/IEC
+/// 11172-2 Table B.2d single-row set for dc intra-coded pictures).
+fn table_for(
+    table: MacroblockTypeTable,
+    picture_coding_type: PictureCodingType,
+) -> Result<&'static [Row]> {
+    Ok(match table {
         MacroblockTypeTable::NonScalable => match picture_coding_type {
             PictureCodingType::Intra => TABLE_B2_I,
             PictureCodingType::Predictive => TABLE_B3_P,
             PictureCodingType::Bidirectional => TABLE_B4_B,
+            PictureCodingType::DcIntra => TABLE_B2D_D,
         },
         MacroblockTypeTable::SpatialScalable => match picture_coding_type {
             PictureCodingType::Intra => TABLE_B5_I_SPATIAL,
             PictureCodingType::Predictive => TABLE_B6_P_SPATIAL,
             PictureCodingType::Bidirectional => TABLE_B7_B_SPATIAL,
+            // D-pictures exist only in ISO/IEC 11172-2, which has no
+            // scalability — no Table 6-10 row selects this pairing.
+            PictureCodingType::DcIntra => {
+                return Err(Error::InvalidBitstream(
+                    "macroblock_type: D-pictures do not occur in scalable ISO/IEC 13818-2 streams (Table 6-12)",
+                ))
+            }
         },
         // Table B-8 is picture-type-independent.
         MacroblockTypeTable::SnrScalable => TABLE_B8_SNR,
-    }
+    })
 }
 
 /// Widths to probe for a given table family, longest-first, so a
@@ -705,7 +732,7 @@ impl MacroblockType {
         picture_coding_type: PictureCodingType,
         table: MacroblockTypeTable,
     ) -> Result<Self> {
-        let rows = table_for(table, picture_coding_type);
+        let rows = table_for(table, picture_coding_type)?;
         let row = match_row(br, rows, widths_for(table))?;
         Ok(Self {
             macroblock_quant: row.quant,

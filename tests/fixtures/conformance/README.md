@@ -42,6 +42,7 @@ yuv420p` (yuv422p for the 4:2:2 fixture) decodes of the streams.
 | `mpeg2-422-96x64.m2v` | `testsrc2=size=96x64:rate=25:duration=0.6` → `-c:v mpeg2video -qscale:v 3 -g 6 -bf 1 -pix_fmt yuv422p` |
 | `mpeg2-100x62.m2v` | `testsrc2=size=100x62:rate=25:duration=0.6` → `-c:v mpeg2video -qscale:v 3 -g 6 -bf 2` |
 | `fieldpics-48x64.m2v` | hand-built: `cargo run --example gen_field_conformance -- fieldpics-48x64.m2v` (this crate's bitstream writers); reference decode via `ffmpeg -threads 1 -i … -f rawvideo -pix_fmt yuv420p` |
+| `mpeg1-dpics-48x32.m1v` | hand-built: `cargo run --example gen_d_conformance -- mpeg1-dpics-48x32.m1v`; **no `.ref.yuv`** — the black-box decoder refuses `picture_coding_type == 4` pictures outright ("Missing picture start code" per picture, zero frames out), so no external reference decode exists for D-pictures; the oracle is the generator's closed-form ISO/IEC 11172-2 §2.4.4.1 arithmetic, asserted sample-exactly by `tests/d_picture_decode.rs` |
 
 ## What each fixture exercises
 
@@ -75,6 +76,14 @@ yuv420p` (yuv422p for the 4:2:2 fixture) decodes of the streams.
   (Annex A IDCT rounding). NOTE: the reference binary's strict mode
   (`-err_detect explode`) flags these packets while still producing
   the matching frames; its default decode is the committed reference.
+* **mpeg1-dpics** — hand-built ISO/IEC 11172-2 **D-pictures** (dc
+  intra-coded, `picture_coding_type == 4`, §2.4.3.4): the Table B.2d
+  1-bit `macroblock_type`, six DC-only blocks per macroblock (no AC
+  walk, no `end_of_block`, §2.4.2.8), the `end_of_macroblock` `'1'`
+  bit (§2.4.2.7), and the §2.4.4.1 `dct_dc_*_past` predictor chain
+  across a per-macroblock DC staircase, four pictures deep. Decoded
+  sample-exactly against closed-form arithmetic (a DC-only block
+  IDCTs to `dct_recon[0][0] / 8` exactly).
 
 ## SHA-256
 
@@ -97,4 +106,5 @@ a0e7b5dc40706752b90288bcf3e74bc1ab516b55874727352e1134cc8b298282  mpeg2-ilaced-9
 e25233d69c46a23855ab58065f51769c9ac056cdffa6363aaed3b7b2a8483937  mpeg2-ivlc-96x64.m2v.ref.yuv
 a747b48e3784924f13d58048267bff8c2ab74248bb977323ca997d72eb49b04d  fieldpics-48x64.m2v
 ce03d2e41a31d435c5063e8765452ef603a4ce9d35a9c439cf2edf1ccb91f762  fieldpics-48x64.m2v.ref.yuv
+a231bd9060ebd121cd10f97f418e1737067dd910fe723169dad8408d41374c33  mpeg1-dpics-48x32.m1v
 ```

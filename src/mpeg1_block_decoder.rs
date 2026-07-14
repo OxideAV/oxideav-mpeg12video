@@ -144,6 +144,59 @@ pub fn decode_intra_block(
     })
 }
 
+/// Decode one block of a **D-picture** macroblock (ISO/IEC 11172-2
+/// `picture_coding_type == 4`): per §2.4.2.8 the block layer of a
+/// dc intra-coded picture carries **only** the `dct_dc_size_*` +
+/// `dct_dc_differential` prelude — the `dct_coeff_next` loop and the
+/// `end_of_block` code are gated by `if (picture_coding_type != 4)`,
+/// so neither is present in the bitstream.
+///
+/// The reconstruction is otherwise the §2.4.4.1 intra path over a
+/// `dct_zz[]` whose 63 AC entries are zero: the `dct_dc_*_past`
+/// predictor chain applies unchanged, and the Annex A IDCT of the
+/// DC-only block yields a flat 8×8 plane.
+///
+/// # Errors
+/// Propagates the §2.4.3.7 DC-prelude and §2.4.4.1 dequantiser errors.
+pub fn decode_d_block(
+    br: &mut BitReader<'_>,
+    block_index: u8,
+    quantizer_scale: u8,
+    intra_quant: &[[u8; 8]; 8],
+    predictors: &mut IntraDcPredictors,
+    macroblock_address: i32,
+) -> Result<DecodedBlock> {
+    let kind = intra_block_kind(block_index)?;
+    let dc_component = if block_index < 4 {
+        DcComponent::Luminance
+    } else {
+        DcComponent::Chrominance
+    };
+
+    let mut dct_zz = [0i32; 64];
+    let dc = DcCoefficient::parse(br, dc_component)?;
+    dct_zz[0] = dc.dct_zz_0;
+    // §2.4.2.8: no dct_coeff_next walk, no end_of_block in D-pictures.
+
+    let dct_recon = dequantize_intra_block(
+        &dct_zz,
+        quantizer_scale,
+        intra_quant,
+        kind,
+        predictors,
+        macroblock_address,
+    )?;
+    let f_pel = idct_8x8_from_i32(&dct_recon);
+
+    Ok(DecodedBlock {
+        qfs: dct_zz,
+        qf: inverse_scan(&dct_zz),
+        f_quant: dct_recon,
+        f_pel,
+        end_of_block_bit_position: br.bit_position(),
+    })
+}
+
 /// Decode one **non-intra** MPEG-1 block: the §2.4.3.7
 /// `dct_coeff_first` + `dct_coeff_next` walk and the §2.4.4.2
 /// dequantisation against `non_intra_quant`, then the Annex A IDCT.

@@ -91,7 +91,8 @@ use crate::frame_assembly::{
 };
 use crate::inter_reconstruction::ReferenceFrames;
 use crate::mpeg1_picture::{
-    decode_mpeg1_inter_picture, decode_mpeg1_intra_picture, Mpeg1InterParams, Mpeg1PictureParams,
+    decode_mpeg1_d_picture, decode_mpeg1_inter_picture, decode_mpeg1_intra_picture,
+    Mpeg1InterParams, Mpeg1PictureParams,
 };
 use crate::picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
@@ -276,6 +277,13 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
                 // never become a reference. They emit before the held-back
                 // anchor.
                 reorder.push_b(coded.clone(), &mut output);
+            }
+            PictureCodingType::DcIntra => {
+                // 11172-2 §2.4.1: a D-picture sequence contains no
+                // other picture types, so there is no reorder and no
+                // reference rotation — D-pictures display in coded
+                // order and never serve as a prediction reference.
+                output.push(coded);
             }
             PictureCodingType::Intra | PictureCodingType::Predictive => {
                 // An I/P frame displaces the previously held-back anchor
@@ -663,6 +671,13 @@ fn reconstruct_picture(
             let (frame, _placed) = decode_intra_picture(picture_region, geometry)?;
             frame
         }
+        // Unreachable: `parse_with_extension` rejects the Table 6-12
+        // '100' code before this dispatcher runs.
+        PictureCodingType::DcIntra => {
+            return Err(Error::InvalidBitstream(
+                "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
+            ))
+        }
         PictureCodingType::Predictive => {
             // §7.6: a P-frame predicts from the latest decoded I/P anchor.
             let forward = backward_anchor.ok_or(Error::InvalidBitstream(
@@ -716,6 +731,12 @@ fn reconstruct_mpeg1_picture(
     let frame = match header.picture_coding_type {
         PictureCodingType::Intra => {
             let (frame, _placed) = decode_mpeg1_intra_picture(picture_region, params)?;
+            frame
+        }
+        PictureCodingType::DcIntra => {
+            // §2.4.3.4 dc intra-coded picture: DC-only intra blocks,
+            // Table B.2d macroblock type, end_of_macroblock markers.
+            let (frame, _placed) = decode_mpeg1_d_picture(picture_region, params)?;
             frame
         }
         PictureCodingType::Predictive => {
@@ -870,6 +891,14 @@ fn reconstruct_field_pair(
         };
 
     let field = match header.picture_coding_type {
+        // Field pictures are 13818-2-only; D-pictures are 11172-2-only
+        // (Table 6-12) — `parse_with_extension` rejects the pairing
+        // before this dispatcher runs.
+        PictureCodingType::DcIntra => {
+            return Err(Error::InvalidBitstream(
+                "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
+            ))
+        }
         PictureCodingType::Intra => {
             // An I **field** picture must be walked with the field
             // picture_structure: §6.2.5.1 gates `dct_type` on

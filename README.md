@@ -227,7 +227,14 @@ driver classifies the sequence layer (no `sequence_extension()` →
 pipeline (`mpeg1_block_decoder` + `mpeg1_picture`), including the
 `dct_dc_*_past`/`past_intra_address` DC chain, the §2.4.4.2/.3
 `recon_*_prev` predictor lifecycle, §2.4.4.4 skips, `full_pel_*_vector`
-scaling and sequence-header quantiser matrices.
+scaling and sequence-header quantiser matrices. **D-pictures**
+(dc intra-coded, `picture_coding_type == 4`, §2.4.3.4) decode too:
+the Table B.2d 1-bit `macroblock_type`, six DC-only blocks per
+macroblock (no AC walk / `end_of_block`, §2.4.2.8), the
+`end_of_macroblock` marker, and coded-order display (§2.4.1 D-only
+sequences) — pinned by the hand-built `mpeg1-dpics-48x32.m1v` fixture
+decoded sample-exactly against closed-form §2.4.4.1 arithmetic (no
+black-box reference decoder in reach accepts type-4 pictures).
 
 ## Runtime decoder
 

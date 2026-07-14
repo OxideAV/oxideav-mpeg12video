@@ -304,6 +304,15 @@ pub fn describe_skipped_macroblock(ctx: SkippedMacroblockContext) -> Result<Skip
                 "skipped macroblock in scalable I-picture: prediction formation defined by the scalability extensions, not §7.6.6 (not yet supported)",
             ))
         }
+        PictureCodingType::DcIntra => {
+            // 11172-2 §2.4.4.4: all macroblocks of an all-intra
+            // picture shall be coded — a D-picture has no skipped
+            // macroblocks (and §7.6.6 does not apply to 11172-2
+            // D-pictures at all).
+            Err(Error::InvalidBitstream(
+                "skipped macroblock in D-picture: all macroblocks of a dc intra-coded picture shall be coded (11172-2 §2.4.4.4)",
+            ))
+        }
     }
 }
 

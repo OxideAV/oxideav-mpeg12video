@@ -62,6 +62,15 @@ pub enum PictureCodingType {
     Predictive,
     /// `011` — bidirectionally predictive-coded picture (B).
     Bidirectional,
+    /// `100` — dc intra-coded picture (D), ISO/IEC 11172-2 only
+    /// (§2.4.3.4). Of the DCT coefficients only the dc ones are
+    /// present, and a D-picture sequence shall contain no other
+    /// picture types (§2.4.1). ISO/IEC 13818-2 Table 6-12 marks the
+    /// code *"shall not be used"*, so the MPEG-2 header+extension
+    /// parser ([`Mpeg2PictureHeader::parse_with_extension`]) rejects
+    /// it; the bare [`Mpeg2PictureHeader::parse`] accepts it for the
+    /// 11172-2 decode path.
+    DcIntra,
 }
 
 impl PictureCodingType {
@@ -73,9 +82,9 @@ impl PictureCodingType {
             0b001 => Ok(Self::Intra),
             0b010 => Ok(Self::Predictive),
             0b011 => Ok(Self::Bidirectional),
-            0b100 => Err(Error::InvalidBitstream(
-                "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
-            )),
+            // dc intra-coded (D) — legal in ISO/IEC 11172-2 only; the
+            // MPEG-2 gate lives in `parse_with_extension` (Table 6-12).
+            0b100 => Ok(Self::DcIntra),
             0b101..=0b111 => Err(Error::InvalidBitstream(
                 "picture_coding_type: reserved value (Table 6-12)",
             )),
@@ -236,6 +245,15 @@ impl Mpeg2PictureHeader {
     /// the extension parser directly once we land them.
     pub fn parse_with_extension(buf: &[u8]) -> Result<(Self, PictureCodingExtension)> {
         let header = Self::parse(buf)?;
+        // Table 6-12: picture_coding_type '100' (dc intra-coded)
+        // "shall not be used" in an ISO/IEC 13818-2 stream — only the
+        // 11172-2 path (bare `parse`, no picture_coding_extension)
+        // may see it.
+        if header.picture_coding_type == PictureCodingType::DcIntra {
+            return Err(Error::InvalidBitstream(
+                "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
+            ));
+        }
         // Re-walk the buffer with a fresh BitReader to discover the
         // exact byte length consumed; the public parser does not
         // return the cursor and the trailing extra-info loop makes
@@ -620,8 +638,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_d_picture_coding_type() {
-        // 0b100 is MPEG-1 D-picture; "shall not be used" in MPEG-2.
+    fn d_picture_coding_type_parses_bare_but_not_with_extension() {
+        // 0b100 is the ISO/IEC 11172-2 dc intra-coded (D) picture: the
+        // bare header parse accepts it (no f_code fields follow, per
+        // the §2.4.2.5 type-2/3 gates), while the MPEG-2 chained
+        // parser rejects it ("shall not be used", Table 6-12).
         let mut bw = BitWriter::new();
         bw.write_u32(PICTURE_START_CODE, 32);
         bw.write_u32(0, 10);
@@ -629,8 +650,17 @@ mod tests {
         bw.write_u32(0, 16);
         bw.write_bit(false);
         bw.align_to_byte();
+        // A following extension start-code prefix so the chained
+        // parser reaches its own Table 6-12 gate.
+        bw.write_u32(0x0000_01B5, 32);
         let bytes = bw.finish();
-        let err = Mpeg2PictureHeader::parse(&bytes).unwrap_err();
+
+        let hdr = Mpeg2PictureHeader::parse(&bytes).expect("11172-2 path accepts D");
+        assert_eq!(hdr.picture_coding_type, PictureCodingType::DcIntra);
+        assert_eq!(hdr.fwd_f_code, None);
+        assert_eq!(hdr.bwd_f_code, None);
+
+        let err = Mpeg2PictureHeader::parse_with_extension(&bytes).unwrap_err();
         assert!(matches!(err, Error::InvalidBitstream(_)));
     }
 
