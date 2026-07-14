@@ -346,12 +346,19 @@ rate control, and encoder runtime-registry wiring remain future work
   top→even lines / §3.13 bottom→odd lines), with the §7.6.2.1
   second-field-of-a-P-frame reference rule honoured via a synthetic
   reference frame pairing the current first field with the previous
-  frame's opposite-parity field. Downloadable `quant_matrix_extension()`
-  matrices / the scalable layers
-  are skipped by the start-code scan (threaded by a later round). The
+  frame's opposite-parity field. **Downloadable quantiser matrices are
+  threaded end-to-end** (§6.3.11): the sequence header's
+  `load_*_quantiser_matrix` payloads and every
+  `quant_matrix_extension()` update a running matrix state (reset to
+  the §6.3.7 defaults at each `sequence_header_code`) that the slice
+  walker's §7.4.2.3 reconstruction consumes — proven
+  reference-conformant on a custom-matrix black-box fixture and
+  exactly (splice/persist/reset) on self-encoded streams. The
+  scalable layers are skipped by the start-code scan. The
   per-picture module APIs remain available directly
   (`decode_intra_picture` for I-pictures, `decode_inter_picture` for
-  frame-picture P/B, `decode_field_picture` for field-picture P/B),
+  frame-picture P/B, `decode_field_picture` for field-picture P/B,
+  each with a `_with_matrices` variant taking the §6.3.11 state),
   with the caller supplying the decoded reference frame(s). All §7.6
   motion-compensation prediction modes are now driven end-to-end: the
   frame-picture frame-based **and** field-based P/B reconstruction, the

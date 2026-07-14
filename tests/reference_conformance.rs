@@ -170,6 +170,15 @@ fn mpeg2_non_mb_multiple_dimensions_reference_conformant() {
 }
 
 #[test]
+fn mpeg2_downloaded_quant_matrices_reference_conformant() {
+    // Custom intra + non-intra quantiser matrices downloaded by the
+    // stream (§6.3.11): the decode is only reference-conformant if
+    // the §7.4.2.3 reconstruction uses the downloaded matrices, not
+    // the §6.3.7 defaults.
+    run(&fixture!("mpeg2-qmat-96x64.m2v", 96, 64, chroma420, 20));
+}
+
+#[test]
 fn field_picture_pairs_dual_prime_16x8_reference_conformant() {
     // Hand-built field-picture stream (see the fixture README):
     // I/P/B field pairs exercising simple field prediction with both

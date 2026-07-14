@@ -142,6 +142,28 @@ pub fn decode_inter_picture(
     params: PicturePredictionParams,
     references: ReferenceFrames<'_>,
 ) -> Result<(FrameBuffer, usize)> {
+    decode_inter_picture_with_matrices(
+        picture,
+        params,
+        references,
+        &crate::quant_matrix_extension::QuantiserMatrixState::default(),
+    )
+}
+
+/// [`decode_inter_picture`] with an explicit §7.4.2.1 weighting-matrix
+/// state — the §6.3.11 matrices as downloaded by the active
+/// `sequence_header()` / `quant_matrix_extension()`s. The plain
+/// [`decode_inter_picture`] is the [`Default`] (§6.3.7 default
+/// matrices) shorthand.
+///
+/// # Errors
+/// As [`decode_inter_picture`].
+pub fn decode_inter_picture_with_matrices(
+    picture: &[u8],
+    params: PicturePredictionParams,
+    references: ReferenceFrames<'_>,
+    matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
+) -> Result<(FrameBuffer, usize)> {
     use crate::slice_header::{SliceContext, SliceHeader};
 
     let geom = params.geometry;
@@ -186,7 +208,8 @@ pub fn decode_inter_picture(
             geom.alternate_scan,
             geom.intra_dc_precision,
             geom.q_scale_type,
-        );
+        )
+        .with_quantiser_matrices(*matrices);
 
         let walk = walk_slice_at(slice_buf, header.body_bit_position, ctx)?;
         let motion = reconstruct_slice_motion_vectors(&walk, &ctx)?;
@@ -704,6 +727,30 @@ pub fn decode_field_picture(
     structure: PictureStructure,
     references: ReferenceFrames<'_>,
 ) -> Result<(FrameBuffer, usize)> {
+    decode_field_picture_with_matrices(
+        picture,
+        params,
+        structure,
+        references,
+        &crate::quant_matrix_extension::QuantiserMatrixState::default(),
+    )
+}
+
+/// [`decode_field_picture`] with an explicit §7.4.2.1 weighting-matrix
+/// state — the §6.3.11 matrices as downloaded by the active
+/// `sequence_header()` / `quant_matrix_extension()`s. The plain
+/// [`decode_field_picture`] is the [`Default`] (§6.3.7 default
+/// matrices) shorthand.
+///
+/// # Errors
+/// As [`decode_field_picture`].
+pub fn decode_field_picture_with_matrices(
+    picture: &[u8],
+    params: PicturePredictionParams,
+    structure: PictureStructure,
+    references: ReferenceFrames<'_>,
+    matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
+) -> Result<(FrameBuffer, usize)> {
     use crate::slice_header::{SliceContext, SliceHeader};
 
     let geom = params.geometry;
@@ -745,7 +792,8 @@ pub fn decode_field_picture(
             geom.alternate_scan,
             geom.intra_dc_precision,
             geom.q_scale_type,
-        );
+        )
+        .with_quantiser_matrices(*matrices);
 
         let walk = walk_slice_at(slice_buf, header.body_bit_position, ctx)?;
         let motion = reconstruct_slice_motion_vectors(&walk, &ctx)?;

@@ -441,8 +441,8 @@ pub use forward_dct::{fdct_8x8, fdct_candidate_f64, fdct_reference_f64};
 pub use forward_quant::{forward_quantise_block, forward_quantise_intra_dc, MAX_CODED_LEVEL};
 pub use frame_assembly::{
     assemble_frame_from_fields, block_placement, chroma_shift, decode_intra_picture,
-    place_intra_block, place_intra_macroblock, BlockPlacement, FrameBuffer, IntraPictureParams,
-    Plane,
+    decode_intra_picture_with_matrices, place_intra_block, place_intra_macroblock, BlockPlacement,
+    FrameBuffer, IntraPictureParams, Plane,
 };
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
 pub use idct::{
@@ -538,7 +538,8 @@ pub use picture_header::{
     PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
 };
 pub use picture_reconstruction::{
-    decode_field_picture, decode_inter_picture, PicturePredictionParams,
+    decode_field_picture, decode_field_picture_with_matrices, decode_inter_picture,
+    decode_inter_picture_with_matrices, PicturePredictionParams,
 };
 pub use picture_spatial_scalable_extension::{
     PictureSpatialScalableExtension, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,

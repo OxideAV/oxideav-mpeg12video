@@ -538,6 +538,26 @@ pub fn decode_intra_picture(
     picture: &[u8],
     params: IntraPictureParams,
 ) -> crate::Result<(FrameBuffer, usize)> {
+    decode_intra_picture_with_matrices(
+        picture,
+        params,
+        &crate::quant_matrix_extension::QuantiserMatrixState::default(),
+    )
+}
+
+/// [`decode_intra_picture`] with an explicit §7.4.2.1 weighting-matrix
+/// state — the §6.3.11 matrices as downloaded by the active
+/// `sequence_header()` / `quant_matrix_extension()`s. The plain
+/// [`decode_intra_picture`] is the [`Default`] (§6.3.7 default
+/// matrices) shorthand.
+///
+/// # Errors
+/// As [`decode_intra_picture`].
+pub fn decode_intra_picture_with_matrices(
+    picture: &[u8],
+    params: IntraPictureParams,
+    matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
+) -> crate::Result<(FrameBuffer, usize)> {
     use crate::picture_header::PictureStructure;
     use crate::slice_header::{SliceContext, SliceHeader};
     use crate::slice_macroblock_walk::SliceWalkContext;
@@ -579,7 +599,8 @@ pub fn decode_intra_picture(
             params.alternate_scan,
             params.intra_dc_precision,
             params.q_scale_type,
-        );
+        )
+        .with_quantiser_matrices(*matrices);
 
         let walk = crate::walk_slice_at(slice_buf, header.body_bit_position, ctx)?;
         for record in &walk.macroblocks {

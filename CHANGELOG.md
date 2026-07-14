@@ -25,6 +25,27 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   decoded sample-exactly against closed-form §2.4.4.1 arithmetic —
   no external reference exists: the black-box decoder refuses
   type-4 pictures (zero frames out).
+- round 413: **§6.3.11 downloadable quantiser matrices threaded
+  through the whole-stream decoder** — `decode_video_sequence` now
+  carries a running `QuantiserMatrixState`: reset to the §6.3.7
+  defaults at every `sequence_header_code`, overwritten by the
+  sequence header's own `load_*_quantiser_matrix` payloads (routed
+  through `QuantMatrixExtension::apply` so the §6.3.11
+  both-luma-and-chroma composition is shared), and updated by every
+  `quant_matrix_extension()` found between a picture's
+  `picture_coding_extension()` and its first slice. New
+  `decode_intra_picture_with_matrices` /
+  `decode_inter_picture_with_matrices` /
+  `decode_field_picture_with_matrices` driver variants chain the
+  state into the slice walker (the plain names remain as
+  default-matrix shorthands). Conformance: new black-box fixture
+  `mpeg2-qmat-96x64.m2v` (custom intra + non-intra matrices loaded
+  via the sequence header) decodes reference-conformant (max |delta|
+  2, 1.8% samples); `tests/quant_matrix_threading.rs` proves the
+  extension path exactly with self-encoded spliced streams —
+  default-matrix download is a byte-identical no-op, a doubled-AC
+  matrix changes the reconstruction, the download persists to the
+  next picture, and a repeat sequence header resets to defaults.
 - round 410: **Whole-sequence reference-conformance corpus**
   (`tests/fixtures/conformance/` + `tests/reference_conformance.rs`) —
   nine elementary streams (three MPEG-1: IBBP, high-motion wide-f_code,

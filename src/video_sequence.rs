@@ -87,7 +87,7 @@
 //! requires the MPEG-2 extensions for the geometry and f_codes.
 
 use crate::frame_assembly::{
-    assemble_frame_from_fields, decode_intra_picture, FrameBuffer, IntraPictureParams,
+    assemble_frame_from_fields, decode_intra_picture_with_matrices, FrameBuffer, IntraPictureParams,
 };
 use crate::inter_reconstruction::ReferenceFrames;
 use crate::mpeg1_picture::{
@@ -99,8 +99,9 @@ use crate::picture_header::{
     PICTURE_START_CODE,
 };
 use crate::picture_reconstruction::{
-    decode_field_picture, decode_inter_picture, PicturePredictionParams,
+    decode_field_picture_with_matrices, decode_inter_picture_with_matrices, PicturePredictionParams,
 };
+use crate::quant_matrix_extension::{QuantMatrixExtension, QuantiserMatrixState};
 use crate::sequence_extension::Mpeg2Sequence;
 use crate::sequence_header::SEQUENCE_HEADER_CODE;
 use crate::{Error, Result};
@@ -153,6 +154,13 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
     // may legally restate the parameters).
     let mut geometry = parse_leading_sequence(stream)?;
 
+    // §6.3.11 weighting matrices: reset to the §6.3.7 defaults at
+    // every sequence_header_code, then overwritten by the header's
+    // own load flags and by any `quant_matrix_extension()` between
+    // pictures. MPEG-1 carries its matrices inside
+    // `Mpeg1PictureParams` instead (§2.4.2.3, no extension exists).
+    let mut matrices = geometry.initial_matrices();
+
     let mut reorder = ReorderBuffer::new();
     let mut output: Vec<DecodedFrame> = Vec::new();
 
@@ -183,6 +191,10 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
         // way).
         if is_start_code(&stream[code_start..], SEQUENCE_HEADER_CODE) {
             geometry = sequence_geometry_at(&stream[code_start..])?;
+            // §6.3.11: "When a sequence_header_code is decoded all
+            // matrices shall be reset to their default values" — then
+            // the header's own load flags apply.
+            matrices = geometry.initial_matrices();
             // Advance past this sequence header's start code; the next scan
             // finds the sequence_extension / picture that follows.
             offset = code_start + 4;
@@ -228,8 +240,20 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
                     backward_anchor.as_ref(),
                 )?
             }
-            SequenceGeometry::Mpeg2(mpeg2_geometry) => {
+            SequenceGeometry::Mpeg2(mpeg2_geometry, _) => {
                 let (header, ext) = Mpeg2PictureHeader::parse_with_extension(picture_region)?;
+
+                // §6.2.3.7 extension_and_user_data(2): any
+                // `quant_matrix_extension()` between the
+                // picture_coding_extension and the first slice updates
+                // the running §6.3.11 matrices (which then persist for
+                // the following pictures until the next
+                // sequence_header_code reset).
+                apply_quant_matrix_extensions(
+                    picture_region,
+                    mpeg2_geometry.chroma_format,
+                    &mut matrices,
+                )?;
 
                 // §6.1.1.4.1 field-picture pair: decode the field, hold the
                 // first of a pair until its partner arrives, then interleave
@@ -244,6 +268,7 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
                         forward_anchor.as_ref(),
                         backward_anchor.as_ref(),
                         &mut pending_field,
+                        &matrices,
                     )? {
                         // First field of a pair: held back, no frame yet.
                         None => {
@@ -265,6 +290,7 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
                         mpeg2_geometry,
                         forward_anchor.as_ref(),
                         backward_anchor.as_ref(),
+                        &matrices,
                     )?
                 }
             }
@@ -584,10 +610,26 @@ fn parse_leading_sequence(stream: &[u8]) -> Result<SequenceGeometry> {
 /// follow).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SequenceGeometry {
-    /// ISO/IEC 13818-2 geometry + per-picture DCT context seed.
-    Mpeg2(IntraPictureParams),
+    /// ISO/IEC 13818-2 geometry + per-picture DCT context seed, plus
+    /// the §6.3.11 weighting-matrix state as established by this
+    /// sequence header (defaults reset + the header's own
+    /// `load_*_quantiser_matrix` payloads).
+    Mpeg2(IntraPictureParams, QuantiserMatrixState),
     /// ISO/IEC 11172-2 geometry + sequence-header quantiser matrices.
     Mpeg1(Mpeg1PictureParams),
+}
+
+impl SequenceGeometry {
+    /// The §6.3.11 matrix state right after this sequence header:
+    /// defaults, overwritten by the header's own load flags. MPEG-1
+    /// carries its matrices inside [`Mpeg1PictureParams`] instead,
+    /// so its slot here stays at the (unused) defaults.
+    fn initial_matrices(&self) -> QuantiserMatrixState {
+        match self {
+            SequenceGeometry::Mpeg2(_, matrices) => *matrices,
+            SequenceGeometry::Mpeg1(_) => QuantiserMatrixState::default(),
+        }
+    }
 }
 
 /// Parse the sequence layer at `buf` (which begins with the
@@ -599,7 +641,29 @@ enum SequenceGeometry {
 /// come from the header alone (§2.4.2.3).
 fn sequence_geometry_at(buf: &[u8]) -> Result<SequenceGeometry> {
     match Mpeg2Sequence::from_buf(buf) {
-        Ok(seq) => Ok(SequenceGeometry::Mpeg2(sequence_geometry(&seq))),
+        Ok(seq) => {
+            // §6.3.11: the sequence header resets every matrix to its
+            // §6.3.7 default, then its own load flags download
+            // replacements. A header-loaded matrix applies to both the
+            // luminance and (at 4:2:2 / 4:4:4) chrominance slots —
+            // exactly the composition `QuantMatrixExtension::apply`
+            // implements for the same two payload kinds, so the header
+            // loads are routed through it.
+            let mut matrices = QuantiserMatrixState::default();
+            let header_loads =
+                crate::quant_matrix_extension::QuantMatrixExtension {
+                    intra: seq.header.intra_quant.map(|zz| {
+                        crate::quant_matrix_extension::QuantiserMatrixPayload { bytes: zz }
+                    }),
+                    non_intra: seq.header.non_intra_quant.map(|zz| {
+                        crate::quant_matrix_extension::QuantiserMatrixPayload { bytes: zz }
+                    }),
+                    chroma_intra: None,
+                    chroma_non_intra: None,
+                };
+            header_loads.apply(&mut matrices, seq.extension.chroma_format);
+            Ok(SequenceGeometry::Mpeg2(sequence_geometry(&seq), matrices))
+        }
         Err(_) => {
             // No sequence_extension: ISO/IEC 11172-2. Parse the bare
             // header (geometry + optional downloadable matrices, both
@@ -644,6 +708,48 @@ fn sequence_geometry(sequence: &Mpeg2Sequence) -> IntraPictureParams {
     }
 }
 
+/// Scan the picture region (picture header → first slice) for
+/// `quant_matrix_extension()`s and apply each to the running §6.3.11
+/// matrix state.
+///
+/// Per §6.2.3.7 `extension_and_user_data(2)` any number of extensions
+/// may sit between the `picture_coding_extension()` and the first
+/// `slice_start_code`; only those whose 4-bit
+/// `extension_start_code_identifier` is the Table 6-2 Quant Matrix
+/// Extension ID (`0011`) are parsed — others (display, copyright,
+/// scalable…) are left to their own parsers.
+fn apply_quant_matrix_extensions(
+    picture_region: &[u8],
+    chroma_format: crate::sequence_extension::ChromaFormat,
+    matrices: &mut QuantiserMatrixState,
+) -> Result<()> {
+    let mut pos = 0usize;
+    while pos + 4 < picture_region.len() {
+        let w = &picture_region[pos..];
+        if w[0] == 0x00 && w[1] == 0x00 && w[2] == 0x01 {
+            let code = w[3];
+            // First slice start code ends the extension region
+            // (§6.2.3.6 picture_data()).
+            if (0x01..=0xAF).contains(&code) {
+                break;
+            }
+            if code == 0xB5 && pos + 4 < picture_region.len() {
+                // 4-bit extension_start_code_identifier in the high
+                // nibble of the byte after the start code (Table 6-2;
+                // Quant Matrix Extension ID = 0011).
+                if picture_region[pos + 4] >> 4 == 0b0011 {
+                    let ext = QuantMatrixExtension::parse(&picture_region[pos..], chroma_format)?;
+                    ext.apply(matrices, chroma_format);
+                }
+            }
+            pos += 4;
+        } else {
+            pos += 1;
+        }
+    }
+    Ok(())
+}
+
 /// Reconstruct one picture, dispatching on `picture_coding_type` and
 /// applying the per-picture DCT-context flags from
 /// `picture_coding_extension()`.
@@ -654,6 +760,7 @@ fn reconstruct_picture(
     base_geometry: IntraPictureParams,
     forward_anchor: Option<&FrameBuffer>,
     backward_anchor: Option<&FrameBuffer>,
+    matrices: &QuantiserMatrixState,
 ) -> Result<DecodedFrame> {
     // Overlay the per-picture §6.2.3.1 DCT-context flags onto the
     // sequence geometry.
@@ -668,7 +775,8 @@ fn reconstruct_picture(
 
     let frame = match header.picture_coding_type {
         PictureCodingType::Intra => {
-            let (frame, _placed) = decode_intra_picture(picture_region, geometry)?;
+            let (frame, _placed) =
+                decode_intra_picture_with_matrices(picture_region, geometry, matrices)?;
             frame
         }
         // Unreachable: `parse_with_extension` rejects the Table 6-12
@@ -684,10 +792,11 @@ fn reconstruct_picture(
                 "§6.1.1.11: P-picture before any I/P anchor exists (no forward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (frame, _placed) = decode_inter_picture(
+            let (frame, _placed) = decode_inter_picture_with_matrices(
                 picture_region,
                 params,
                 ReferenceFrames::forward_only(forward),
+                matrices,
             )?;
             frame
         }
@@ -701,10 +810,11 @@ fn reconstruct_picture(
                 "§6.1.1.11: B-picture before two I/P anchors exist (no backward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (frame, _placed) = decode_inter_picture(
+            let (frame, _placed) = decode_inter_picture_with_matrices(
                 picture_region,
                 params,
                 ReferenceFrames::bidirectional(forward, backward),
+                matrices,
             )?;
             frame
         }
@@ -850,6 +960,9 @@ struct PendingField {
 ///   field in the opposite slot ([`reference_frame_for_second_p_field`]).
 ///   A second I-field needs no reference; a second B-field uses the two
 ///   anchor frames like the first.
+// Every argument is §7.6.2 state the field-pair reconstruction needs
+// (the two anchors, the held first field, and the §6.3.11 matrices).
+#[allow(clippy::too_many_arguments)]
 fn reconstruct_field_pair(
     picture_region: &[u8],
     header: &Mpeg2PictureHeader,
@@ -858,6 +971,7 @@ fn reconstruct_field_pair(
     forward_anchor: Option<&FrameBuffer>,
     backward_anchor: Option<&FrameBuffer>,
     pending_field: &mut Option<PendingField>,
+    matrices: &QuantiserMatrixState,
 ) -> Result<Option<DecodedFrame>> {
     let structure = ext.picture_structure;
     let is_second_field = pending_field
@@ -910,7 +1024,7 @@ fn reconstruct_field_pair(
             // macroblocks itself; an I field forms no predictions, so
             // no references are supplied.
             let params = inter_params(header, ext, geometry);
-            let (field, _placed) = decode_field_picture(
+            let (field, _placed) = decode_field_picture_with_matrices(
                 picture_region,
                 params,
                 structure,
@@ -918,6 +1032,7 @@ fn reconstruct_field_pair(
                     forward: None,
                     backward: None,
                 },
+                matrices,
             )?;
             field
         }
@@ -930,11 +1045,12 @@ fn reconstruct_field_pair(
                     "§7.6.2.1: P field before any reference frame exists",
                 ))?
             };
-            let (field, _placed) = decode_field_picture(
+            let (field, _placed) = decode_field_picture_with_matrices(
                 picture_region,
                 params,
                 structure,
                 ReferenceFrames::forward_only(reference),
+                matrices,
             )?;
             field
         }
@@ -946,11 +1062,12 @@ fn reconstruct_field_pair(
                 "§7.6.2.1: B field before two reference frames exist (no backward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (field, _placed) = decode_field_picture(
+            let (field, _placed) = decode_field_picture_with_matrices(
                 picture_region,
                 params,
                 structure,
                 ReferenceFrames::bidirectional(forward, backward),
+                matrices,
             )?;
             field
         }
