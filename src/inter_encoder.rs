@@ -438,6 +438,112 @@ pub fn encode_i_p_b(
     Ok(stream)
 }
 
+/// Encode a whole **display-order** frame sequence as one coded
+/// elementary stream with the classic `I (B…) P (B…) P …` group
+/// structure: anchors every `b_between + 1` display positions (the
+/// final anchor is always the last display frame — B-pictures cannot
+/// trail the sequence, §6.1.1.11), each anchor coded **before** the
+/// B-pictures that precede it in display order, and
+/// `temporal_reference` carrying each picture's display index.
+///
+/// `b_between == 0` degenerates to an I-P-P… chain
+/// ([`encode_i_p_chain`]); `frames.len() == 1` to an all-intra
+/// picture.
+///
+/// As with the other assemblers, every anchor the encoder predicts
+/// from is the **decoder's** exact reconstruction: the I anchor is
+/// encoded then decoded back, and [`encode_p_picture`] returns the
+/// reconstruction it wrote, so the whole round-trip is faithful and
+/// prediction drift cannot accumulate.
+///
+/// # Errors
+/// Propagates encode / decode errors; returns
+/// [`Error::InvalidBitstream`] for an empty `frames`.
+///
+/// [`encode_p_picture`]: crate::p_picture_encoder::encode_p_picture
+pub fn encode_display_order_sequence(
+    frames: &[crate::frame_assembly::FrameBuffer],
+    b_between: usize,
+    params: IntraPictureParams,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+) -> Result<Vec<u8>> {
+    let Some(i_frame) = frames.first() else {
+        return Err(Error::InvalidBitstream(
+            "encode_display_order_sequence: no frames to encode",
+        ));
+    };
+
+    // I anchor: encode + decode back for the exact reference.
+    let i_stream =
+        crate::intra_encoder::encode_intra_picture(i_frame, params, 0, quantiser_scale_code)?;
+    let mut forward_ref = crate::decode_video_sequence(&i_stream)?
+        .first()
+        .map(|d| d.frame.clone())
+        .ok_or(Error::InvalidBitstream(
+            "encode_display_order_sequence: I anchor decode produced no frame",
+        ))?;
+
+    let mut bw = BitWriter::new();
+    write_sequence_header(
+        &mut bw,
+        &SequenceHeaderParams {
+            horizontal_size: params.width as u16,
+            vertical_size: params.height as u16,
+            ..Default::default()
+        },
+    );
+    // §6.3.5/§6.3.3: progressive grid declaration (see intra_encoder).
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
+    let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
+        "encode_display_order_sequence: I picture start code missing",
+    ))?;
+    bw.write_bytes(&i_stream[pic_start..i_stream.len() - 4]);
+
+    // Groups: anchor every `b_between + 1` display frames, clamped so
+    // the final anchor is the last frame.
+    let step = b_between + 1;
+    let mut prev_anchor = 0usize;
+    while prev_anchor + 1 < frames.len() {
+        let next_anchor = (prev_anchor + step).min(frames.len() - 1);
+
+        // The anchor P is coded first (§6.1.1.11 coded order)…
+        let backward_ref = crate::p_picture_encoder::encode_p_picture(
+            &mut bw,
+            &frames[next_anchor],
+            &forward_ref,
+            params,
+            next_anchor as u16,
+            quantiser_scale_code,
+            forward_f_code,
+        )?;
+
+        // …then the B-pictures between the two anchors, in display
+        // order, each predicting from both.
+        for b in (prev_anchor + 1)..next_anchor {
+            crate::b_picture_encoder::encode_b_picture(
+                &mut bw,
+                &frames[b],
+                &forward_ref,
+                &backward_ref,
+                params,
+                b as u16,
+                quantiser_scale_code,
+                forward_f_code,
+                backward_f_code,
+            )?;
+        }
+
+        forward_ref = backward_ref;
+        prev_anchor = next_anchor;
+    }
+
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+    Ok(stream)
+}
+
 /// Find the first 4-byte big-endian `code` start-code in `buf`.
 fn find_start(buf: &[u8], code: u32) -> Option<usize> {
     buf.windows(4).position(|w| {

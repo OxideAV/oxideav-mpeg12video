@@ -451,8 +451,8 @@ pub use idct::{
     F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
 };
 pub use inter_encoder::{
-    encode_i_p_b, encode_i_p_chain, encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block,
-    encode_p_copy_picture,
+    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p,
+    encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
 };
 pub use inter_reconstruction::{
     predict_field_based_macroblock_planes, predict_field_picture_16x8_macroblock_planes,

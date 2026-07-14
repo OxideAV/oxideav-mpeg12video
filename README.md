@@ -312,8 +312,11 @@ back through `decode_video_sequence`:
   luma SAD, Table B-4 mode, with forward MVs before backward and a
   per-direction PMV slot.
 - **Stream assemblers** — `encode_i_then_p` (I→P), `encode_i_p_chain`
-  (I→P→P→… reference rotation), and `encode_i_p_b` (I→P→B coded order,
-  display I-B-P). Each decodes the intermediate anchors so the encoder
+  (I→P→P→… reference rotation), `encode_i_p_b` (I→P→B coded order,
+  display I-B-P), and `encode_display_order_sequence` (a whole
+  display-order frame list assembled as `I (B…) P (B…) P …` with
+  §6.1.1.11 coded-order emission and per-display-index
+  `temporal_reference`). Each decodes the intermediate anchors so the encoder
   predicts from the decoder's exact reconstruction, making the whole
   round-trip faithful. `tests/encode_inter_roundtrip.rs` proves a
   motion-compensated copy is a bit-exact fixed point, a clean translation

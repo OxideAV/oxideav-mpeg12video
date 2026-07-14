@@ -67,6 +67,15 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   of 32. New corpus fixture `mpeg2-ilaced48hm-96x48.m2v`
   (high-motion interlaced, 4-row grid on a 48-line picture) decodes
   reference-conformant (max |delta| 2).
+- round 413: **`encode_display_order_sequence`** — whole
+  display-order sequence assembler with the classic `I (B..) P (B..)
+  P ..` group structure: anchors every `b_between + 1` display
+  positions (final anchor clamped to the last frame — B-pictures
+  cannot trail the sequence), §6.1.1.11 coded-order emission,
+  per-display-index `temporal_reference`, and every anchor predicted
+  from the decoder's exact reconstruction. Fifth corpus stream
+  `selfenc-ibbp-64x48.m2v` (I B B P B B P, 7 frames) decodes in the
+  black-box reference decoder at max |delta| 1 on every frame.
 - round 413: **Encoder external conformance + pinned self-encoded
   corpus** (`tests/fixtures/selfenc/` + `tests/selfenc_conformance.rs`
   + `examples/gen_selfenc_corpus.rs`) — four deterministic

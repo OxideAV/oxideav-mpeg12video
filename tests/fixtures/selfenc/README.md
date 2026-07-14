@@ -25,6 +25,7 @@ they pin two facts:
 | `selfenc-intra-64x48.m2v` | `encode_intra_picture` | all-intra frame picture: §7.2.1 DC + §7.2.2 AC entropy coding, §7.4 forward quantisation, sequence/picture/slice layer writers |
 | `selfenc-intra-100x62.m2v` | `encode_intra_picture` | non-macroblock-multiple dimensions (right/bottom edge macroblocks overhang the visible picture) |
 | `selfenc-ipchain-64x48.m2v` | `encode_i_p_chain` | I + 3 motion-compensated P pictures: full-search ME (§7.6.3.8-legal vectors only), Table B-3 `MC Coded` / `MC Not Coded`, PMV differential coding, reference rotation on the decoder's exact reconstruction, intra-macroblock fallback (frames 2–3 carry an unpredictable high-contrast stamp) |
+| `selfenc-ibbp-64x48.m2v` | `encode_display_order_sequence` | whole display-order sequence I B B P B B P (7 frames, 2 B-pictures between anchors): §6.1.1.11 coded-order assembly, per-display-index `temporal_reference`, anchor rotation across two P groups |
 | `selfenc-ipb-64x48.m2v` | `encode_i_p_b` | I/B/P group in coded order I,P,B (display I,B,P): forward/backward/interpolated B prediction, per-direction PMV slots |
 
 All streams: 4:2:0, `progressive_sequence = 1` (§6.3.3 `Ceil(h/16)`
@@ -47,6 +48,8 @@ inside the coded picture, and the trace is clean.
 ## SHA-256
 
 ```
+1cbab03cac938f844beb3f44c94bfbafd92b81f4488357380768c11f7646dacf  selfenc-ibbp-64x48.m2v
+a73304570cf5d6bdfb51ce98b510e8cdd6aa8a5966bdc5527912fdfc409b714b  selfenc-ibbp-64x48.m2v.ref.yuv
 26b59ac6f2bb945ea00b8da23681a48edea9a29941b4215d788f853afb36c052  selfenc-intra-100x62.m2v
 dcc4d8bcae15b9c34a7b7eb1e53268952c2c9cb9a0672e0d73ff483290de9079  selfenc-intra-100x62.m2v.ref.yuv
 98e3c4d2ac26100d433440dba07c884bdd83d4caa5a2f1cdbc195c029c1039ae  selfenc-intra-64x48.m2v

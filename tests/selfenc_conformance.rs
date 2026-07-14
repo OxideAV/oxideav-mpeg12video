@@ -20,8 +20,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_i_p_b, encode_i_p_chain, encode_intra_picture, DecodedFrame,
-    FrameBuffer, IntraPictureParams,
+    decode_video_sequence, encode_display_order_sequence, encode_i_p_b, encode_i_p_chain,
+    encode_intra_picture, DecodedFrame, FrameBuffer, IntraPictureParams,
 };
 
 const MAX_ABS_DELTA: i32 = 3;
@@ -190,6 +190,20 @@ fn selfenc_ip_chain_is_pinned_and_reference_conformant() {
         &reference,
         &[&anchor, &targets[0], &targets[1], &targets[2]],
     );
+}
+
+#[test]
+fn selfenc_ibbp_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-ibbp-64x48.m2v");
+    let display: Vec<FrameBuffer> = (0..7).map(|k| frame_at(64, 48, 2 * k, k, k == 3)).collect();
+    let regenerated = encode_display_order_sequence(&display, 2, params(64, 48), 6, 3, 3)
+        .expect("ibbp re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-ibbp-64x48", &stream, &reference, &inputs);
 }
 
 #[test]

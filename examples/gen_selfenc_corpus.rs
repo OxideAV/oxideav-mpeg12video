@@ -12,7 +12,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    encode_i_p_b, encode_i_p_chain, encode_intra_picture, FrameBuffer, IntraPictureParams,
+    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_intra_picture,
+    FrameBuffer, IntraPictureParams,
 };
 
 /// Deterministic busy frame: diagonal luma gradient + 4×4 checker,
@@ -94,6 +95,14 @@ fn main() {
     let chain =
         encode_i_p_chain(&anchor, &targets, params(64, 48), 6, 3).expect("i-p-chain encode");
     write("selfenc-ipchain-64x48.m2v", &chain);
+
+    // 5. Whole display-order I B B P B B P sequence (7 frames,
+    //    2 B-pictures between anchors), diagonal pan with the stamp
+    //    appearing on the middle anchor.
+    let display: Vec<FrameBuffer> = (0..7).map(|k| frame_at(64, 48, 2 * k, k, k == 3)).collect();
+    let ibbp =
+        encode_display_order_sequence(&display, 2, params(64, 48), 6, 3, 3).expect("ibbp encode");
+    write("selfenc-ibbp-64x48.m2v", &ibbp);
 
     // 4. I / B / P group (coded order I, P, B; display I, B, P).
     let ipb = encode_i_p_b(
