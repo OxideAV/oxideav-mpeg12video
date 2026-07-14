@@ -51,8 +51,8 @@ inside the coded picture, and the trace is clean.
 dcc4d8bcae15b9c34a7b7eb1e53268952c2c9cb9a0672e0d73ff483290de9079  selfenc-intra-100x62.m2v.ref.yuv
 98e3c4d2ac26100d433440dba07c884bdd83d4caa5a2f1cdbc195c029c1039ae  selfenc-intra-64x48.m2v
 a2d0e500ff46de2018139533a3e3303787bd6f4bb583b2fc9cf9db11659470a8  selfenc-intra-64x48.m2v.ref.yuv
-903092e9e4b490d593e55e8c8dae109c43c59d5a4d1a44c61a12f49ebf89e5cb  selfenc-ipb-64x48.m2v
+863953e946bec0b5dfe5dcdbbbe9ab5ab2ab58afa64c401a17b26a101fa42500  selfenc-ipb-64x48.m2v
 8bdf3a4ab5e7d18c1c76894ac59b8c44e291ec2ab2483db6fcf3157b62560d51  selfenc-ipb-64x48.m2v.ref.yuv
-332ff32d553667a85ef0145d4a792a82c4e7e967080655f8e1ca824b10139068  selfenc-ipchain-64x48.m2v
+97c04629edc150195bee32df8f26acbcdde0e4fb01b1cad6e2859effa70950e8  selfenc-ipchain-64x48.m2v
 e6b5468feda0d1d5e2db5e359ec420a433cfc99cbd98fe366b7869c3acebc279  selfenc-ipchain-64x48.m2v.ref.yuv
 ```

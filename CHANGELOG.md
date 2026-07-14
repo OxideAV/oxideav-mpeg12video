@@ -119,6 +119,14 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- round 413: **P/B picture headers now carry the §6.3.10 legacy
+  `forward_f_code` / `backward_f_code` value '111'** — the MPEG-1
+  compatibility fields in `picture_header()` "shall have the value
+  seven (all ones)" in an ISO/IEC 13818-2 stream (the real f_codes
+  live in the picture_coding_extension); the P/B encoders were
+  writing the actual f_code there. Self-encoded corpus refreshed
+  (reference decodes unchanged — conforming decoders ignore the
+  legacy fields).
 - round 413: **Motion search emitted §7.6.3.8-illegal vectors at
   right/bottom edge macroblocks** — `estimate_forward_mv` scored
   candidates through the padding `predict_block`, so a vector whose

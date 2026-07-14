@@ -107,12 +107,16 @@ pub fn encode_b_picture(
     let fwd_range = max_search_range(forward_f_code).min(16);
     let bwd_range = max_search_range(backward_f_code).min(16);
 
+    // §6.3.10: the MPEG-1 legacy forward/backward_f_code fields in the
+    // picture header "shall have the value seven (all ones)" in an
+    // ISO/IEC 13818-2 stream — the real per-direction f_codes live in
+    // the picture_coding_extension().
     write_picture_header(
         bw,
         temporal_reference,
         PictureCodingType::Bidirectional,
-        forward_f_code,
-        backward_f_code,
+        0b111,
+        0b111,
     );
     write_picture_coding_extension(
         bw,

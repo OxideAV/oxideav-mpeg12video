@@ -448,12 +448,16 @@ pub fn encode_p_picture(
     let f_vert = forward_f_code;
     let search_range = max_search_range(forward_f_code).min(16);
 
+    // §6.3.10: the MPEG-1 legacy forward_f_code in the picture header
+    // "shall have the value seven (all ones)" in an ISO/IEC 13818-2
+    // stream — the real per-direction f_codes live in the
+    // picture_coding_extension().
     write_picture_header(
         bw,
         temporal_reference,
         PictureCodingType::Predictive,
-        forward_f_code,
-        15,
+        0b111,
+        0b111,
     );
     write_picture_coding_extension(
         bw,
