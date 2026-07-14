@@ -47,6 +47,8 @@ fn fixture_params() -> (IntraPictureParams, usize) {
     assert_eq!(ext.picture_structure, PictureStructure::Frame);
 
     let params = IntraPictureParams {
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
+        progressive_sequence: true,
         width: seq.horizontal_size as usize,
         height: seq.vertical_size as usize,
         chroma_format: seq.extension.chroma_format,

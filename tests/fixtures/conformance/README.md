@@ -41,6 +41,7 @@ yuv420p` (yuv422p for the 4:2:2 fixture) decodes of the streams.
 | `mpeg2-ivlc-96x64.m2v` | `testsrc2=size=96x64:rate=25:duration=0.8` → `-c:v mpeg2video -qscale:v 3 -qmax 28 -g 10 -bf 2 -intra_vlc 1 -non_linear_quant 1 -intra_dc_precision 2` |
 | `mpeg2-422-96x64.m2v` | `testsrc2=size=96x64:rate=25:duration=0.6` → `-c:v mpeg2video -qscale:v 3 -g 6 -bf 1 -pix_fmt yuv422p` |
 | `mpeg2-100x62.m2v` | `testsrc2=size=100x62:rate=25:duration=0.6` → `-c:v mpeg2video -qscale:v 3 -g 6 -bf 2` |
+| `mpeg2-ilaced48hm-96x48.m2v` | `mandelbrot=size=96x48:rate=25` (18 frames) → `-c:v mpeg2video -qscale:v 5 -g 9 -bf 2 -flags +ildct+ilme -top 1 -alternate_scan 1 -me_range 63` (generated 2026-07-14, same `ffmpeg` 8.1) |
 | `mpeg2-qmat-96x64.m2v` | `testsrc2=size=96x64:rate=25:duration=0.8` → `-c:v mpeg2video -qscale:v 4 -g 10 -bf 2 -intra_matrix 8,17,18,19,20,21,22,23,17,18,19,20,21,22,23,24,18,19,20,21,22,23,24,25,19,20,21,22,23,24,26,27,20,21,22,23,25,26,27,28,21,22,23,24,26,28,30,32,22,23,24,26,28,30,32,35,23,24,25,27,28,30,32,35 -inter_matrix 18,18,18,18,19,19,19,19,18,18,18,18,19,19,19,19,18,18,19,19,19,19,20,20,18,18,19,19,20,20,20,21,19,19,19,20,20,20,21,21,19,19,19,20,20,21,21,22,19,19,20,20,21,21,22,22,19,19,20,21,21,22,22,23` (generated 2026-07-14, same `ffmpeg` 8.1) |
 | `fieldpics-48x64.m2v` | hand-built: `cargo run --example gen_field_conformance -- fieldpics-48x64.m2v` (this crate's bitstream writers); reference decode via `ffmpeg -threads 1 -i … -f rawvideo -pix_fmt yuv420p` |
 | `mpeg1-dpics-48x32.m1v` | hand-built: `cargo run --example gen_d_conformance -- mpeg1-dpics-48x32.m1v`; **no `.ref.yuv`** — the black-box decoder refuses `picture_coding_type == 4` pictures outright ("Missing picture start code" per picture, zero frames out), so no external reference decode exists for D-pictures; the oracle is the generator's closed-form ISO/IEC 11172-2 §2.4.4.1 arithmetic, asserted sample-exactly by `tests/d_picture_decode.rs` |
@@ -65,6 +66,12 @@ yuv420p` (yuv422p for the 4:2:2 fixture) decodes of the streams.
 * **mpeg2-100x62** — non-macroblock-multiple dimensions: visible-rect
   cropping, macroblock-aligned reference storage, and a final slice
   that ends at EOF without a `sequence_end_code`.
+* **mpeg2-ilaced48hm** — **interlaced frame pictures at a
+  non-multiple-of-32 height** (§6.3.3: `progressive_sequence == 0`
+  makes the frame-picture macroblock grid `2*Ceil(48/32)` = 4 rows =
+  64 coded lines for a 48-line visible picture) with high-motion
+  content, so the fourth macroblock row is real reference material
+  for later predictions rather than dead padding.
 * **mpeg2-qmat** — **downloaded quantiser matrices** (§6.3.11): both
   `load_intra_quantiser_matrix` and `load_non_intra_quantiser_matrix`
   set in the sequence header (custom non-default 64-entry lists), so
@@ -115,6 +122,8 @@ e25233d69c46a23855ab58065f51769c9ac056cdffa6363aaed3b7b2a8483937  mpeg2-ivlc-96x
 a747b48e3784924f13d58048267bff8c2ab74248bb977323ca997d72eb49b04d  fieldpics-48x64.m2v
 ce03d2e41a31d435c5063e8765452ef603a4ce9d35a9c439cf2edf1ccb91f762  fieldpics-48x64.m2v.ref.yuv
 a231bd9060ebd121cd10f97f418e1737067dd910fe723169dad8408d41374c33  mpeg1-dpics-48x32.m1v
+294a7956cdd73871963b6701195693b0744b3a5593a757bcd514036e6ba43559  mpeg2-ilaced48hm-96x48.m2v
+d5bbe7a0b47af3392c7ba2359a94b71c39f914a86b4eee3be144abbd8a810d3f  mpeg2-ilaced48hm-96x48.m2v.ref.yuv
 b691ee7a4cb77c87f8509323ad735ecc91f0e265f0ef7492c37f4f89e7437a18  mpeg2-qmat-96x64.m2v
 f224530b6a09d17f58a05297d8510723d40e0686aa1d5f416afd77395f686ba7  mpeg2-qmat-96x64.m2v.ref.yuv
 ```

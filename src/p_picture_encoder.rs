@@ -464,6 +464,9 @@ pub fn encode_p_picture(
             q_scale_type: params.q_scale_type,
             intra_vlc_format: params.intra_vlc_format,
             alternate_scan: params.alternate_scan,
+            // §6.3.10: progressive_sequence == 1 requires
+            // progressive_frame == 1.
+            progressive_frame: params.progressive_sequence,
             ..Default::default()
         },
     );
@@ -635,6 +638,8 @@ mod tests {
 
     fn params(width: usize, height: usize) -> IntraPictureParams {
         IntraPictureParams {
+            // progressive sequence: Ceil(h/16) macroblock grid (§6.3.3)
+            progressive_sequence: true,
             width,
             height,
             chroma_format: ChromaFormat::Yuv420,

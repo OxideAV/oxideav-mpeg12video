@@ -250,7 +250,9 @@ pub fn encode_intra_picture(
             ..Default::default()
         },
     );
-    write_sequence_extension(&mut bw, params.chroma_format, false);
+    // §6.3.5/§6.3.3: this encoder codes progressive frame pictures on
+    // the Ceil(h/16) macroblock grid, so it declares progressive_sequence.
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
 
     // ----- Picture layer -----
     write_picture_header(
@@ -268,6 +270,9 @@ pub fn encode_intra_picture(
             q_scale_type: params.q_scale_type,
             intra_vlc_format: params.intra_vlc_format,
             alternate_scan: params.alternate_scan,
+            // §6.3.10: progressive_sequence == 1 requires
+            // progressive_frame == 1.
+            progressive_frame: params.progressive_sequence,
             ..Default::default()
         },
     );
@@ -343,6 +348,8 @@ mod tests {
 
     fn params_for(width: usize, height: usize) -> IntraPictureParams {
         IntraPictureParams {
+            // progressive sequence: Ceil(h/16) macroblock grid (§6.3.3)
+            progressive_sequence: true,
             width,
             height,
             chroma_format: ChromaFormat::Yuv420,

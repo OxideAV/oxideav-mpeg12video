@@ -170,6 +170,22 @@ fn mpeg2_non_mb_multiple_dimensions_reference_conformant() {
 }
 
 #[test]
+fn mpeg2_interlaced_height48_grid_reference_conformant() {
+    // §6.3.3: with progressive_sequence == 0 a frame picture codes
+    // 2*Ceil(48/32) = 4 macroblock rows (64 lines) even though only
+    // 48 lines are visible — this high-motion interlaced stream
+    // (vertical f_codes up to the 63-sample search range) exercises
+    // the fourth macroblock row as reference material.
+    run(&fixture!(
+        "mpeg2-ilaced48hm-96x48.m2v",
+        96,
+        48,
+        chroma420,
+        18
+    ));
+}
+
+#[test]
 fn mpeg2_downloaded_quant_matrices_reference_conformant() {
     // Custom intra + non-intra quantiser matrices downloaded by the
     // stream (§6.3.11): the decode is only reference-conformant if

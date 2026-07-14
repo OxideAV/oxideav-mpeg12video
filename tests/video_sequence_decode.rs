@@ -58,7 +58,10 @@ fn write_sequence_extension_chroma(bw: &mut BitWriter, chroma_code: u32) {
     bw.write_u32(EXTENSION_START_CODE, 32);
     bw.write_u32(0b0001, 4); // Sequence Extension ID
     bw.write_u32(0x48, 8); // profile_and_level (Main@Main, any byte legal)
-    bw.write_bit(false); // progressive_sequence
+                           // progressive_sequence = 1: these hand-built pictures code the
+                           // progressive Ceil(h/16) macroblock grid (§6.3.3) — an interlaced
+                           // declaration would make the coded frame grid 2*Ceil(h/32) rows.
+    bw.write_bit(true); // progressive_sequence
     bw.write_u32(chroma_code, 2); // chroma_format
     bw.write_u32(0, 2); // horizontal_size_extension
     bw.write_u32(0, 2); // vertical_size_extension

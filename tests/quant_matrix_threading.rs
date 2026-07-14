@@ -26,6 +26,8 @@ use oxideav_mpeg12video::{
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
     IntraPictureParams {
+        // progressive sequence: Ceil(h/16) macroblock grid (§6.3.3)
+        progressive_sequence: true,
         width,
         height,
         chroma_format: ChromaFormat::Yuv420,

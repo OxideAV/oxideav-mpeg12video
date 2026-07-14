@@ -167,7 +167,7 @@ pub fn decode_inter_picture_with_matrices(
     use crate::slice_header::{SliceContext, SliceHeader};
 
     let geom = params.geometry;
-    let mut frame = FrameBuffer::new(geom.width, geom.height, geom.chroma_format);
+    let mut frame = geom.new_frame_buffer();
     let mb_width = geom.mb_width() as u32;
     let slice_ctx = SliceContext::non_scalable(geom.height as u32);
 
@@ -755,7 +755,7 @@ pub fn decode_field_picture_with_matrices(
 
     let geom = params.geometry;
     // The destination is one field: a field-height frame buffer.
-    let mut field = FrameBuffer::new(geom.width, geom.height, geom.chroma_format);
+    let mut field = geom.new_frame_buffer();
     let mb_width = geom.mb_width() as u32;
     // The §6.2.3 slice_vertical_position spans the *field* height.
     let slice_ctx = SliceContext::non_scalable(geom.height as u32);

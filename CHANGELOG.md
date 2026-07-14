@@ -46,6 +46,27 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   default-matrix download is a byte-identical no-op, a doubled-AC
   matrix changes the reconstruction, the download persists to the
   next picture, and a repeat sequence header resets to defaults.
+- round 413: **§6.3.3 interlaced macroblock-grid alignment**
+  (the r410 non-multiple-of-32 height followup) —
+  `IntraPictureParams` gains `progressive_sequence` and its
+  `mb_height()` now implements the §6.3.3 rule: `Ceil(h/16)` rows
+  progressive, `2*Ceil(h/32)` rows for an interlaced sequence's frame
+  pictures. Reconstruction storage follows the coded grid
+  (`FrameBuffer::with_mb_grid` / `IntraPictureParams::new_frame_buffer`),
+  so an interlaced 48-line picture retains its fourth macroblock row
+  (lines 48..63) as legal §7.6.4 reference material instead of
+  clipping it. `assemble_frame_from_fields` now allocates the frame
+  as twice the field-plane storage so both fields' macroblock-grid
+  overhang rows survive the interleave (and `extract_field` recovers
+  them for the §7.6.2.1 second-field synthetic reference);
+  `field_geometry` uses `Ceil(h/2)` for the field height. The
+  encoders now declare `progressive_sequence = 1` (+ §6.3.10
+  `progressive_frame = 1`), matching the `Ceil(h/16)` grid they
+  actually code — previously they emitted interlaced declarations
+  with a progressive grid, non-conforming at heights not multiples
+  of 32. New corpus fixture `mpeg2-ilaced48hm-96x48.m2v`
+  (high-motion interlaced, 4-row grid on a 48-line picture) decodes
+  reference-conformant (max |delta| 2).
 - round 410: **Whole-sequence reference-conformance corpus**
   (`tests/fixtures/conformance/` + `tests/reference_conformance.rs`) —
   nine elementary streams (three MPEG-1: IBBP, high-motion wide-f_code,

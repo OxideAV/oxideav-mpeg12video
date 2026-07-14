@@ -129,6 +129,9 @@ pub fn encode_p_copy_picture(
             q_scale_type: params.q_scale_type,
             intra_vlc_format: params.intra_vlc_format,
             alternate_scan: params.alternate_scan,
+            // §6.3.10: progressive_sequence == 1 requires
+            // progressive_frame == 1.
+            progressive_frame: params.progressive_sequence,
             ..Default::default()
         },
     );
@@ -174,7 +177,9 @@ pub fn encode_i_then_p_copy(
             ..Default::default()
         },
     );
-    write_sequence_extension(&mut bw, params.chroma_format, false);
+    // §6.3.5/§6.3.3: this encoder codes progressive frame pictures on
+    // the Ceil(h/16) macroblock grid, so it declares progressive_sequence.
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
 
     // I-picture: delegate to the intra encoder's picture writer by
     // re-encoding into a temporary buffer and splicing out its picture
@@ -245,7 +250,9 @@ pub fn encode_i_then_p(
             ..Default::default()
         },
     );
-    write_sequence_extension(&mut bw, params.chroma_format, false);
+    // §6.3.5/§6.3.3: this encoder codes progressive frame pictures on
+    // the Ceil(h/16) macroblock grid, so it declares progressive_sequence.
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
 
     let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
         "encode_i_then_p: I picture start code missing",
@@ -306,7 +313,9 @@ pub fn encode_i_p_chain(
             ..Default::default()
         },
     );
-    write_sequence_extension(&mut bw, params.chroma_format, false);
+    // §6.3.5/§6.3.3: this encoder codes progressive frame pictures on
+    // the Ceil(h/16) macroblock grid, so it declares progressive_sequence.
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
     let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
         "encode_i_p_chain: I picture start code missing",
     ))?;
@@ -385,7 +394,9 @@ pub fn encode_i_p_b(
             ..Default::default()
         },
     );
-    write_sequence_extension(&mut bw, params.chroma_format, false);
+    // §6.3.5/§6.3.3: this encoder codes progressive frame pictures on
+    // the Ceil(h/16) macroblock grid, so it declares progressive_sequence.
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
     let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
         "encode_i_p_b: I picture start code missing",
     ))?;
@@ -502,6 +513,8 @@ mod tests {
 
     fn params(width: usize, height: usize) -> IntraPictureParams {
         IntraPictureParams {
+            // progressive sequence: Ceil(h/16) macroblock grid (§6.3.3)
+            progressive_sequence: true,
             width,
             height,
             chroma_format: ChromaFormat::Yuv420,

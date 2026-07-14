@@ -192,8 +192,36 @@ impl FrameBuffer {
     /// subsampled from the aligned luma storage per [`chroma_shift`].
     /// All samples start at `0`.
     pub fn new(width: usize, height: usize, chroma_format: ChromaFormat) -> Self {
-        let luma_w = width.div_ceil(16) * 16;
-        let luma_h = height.div_ceil(16) * 16;
+        Self::with_mb_grid(
+            width,
+            height,
+            chroma_format,
+            width.div_ceil(16),
+            height.div_ceil(16),
+        )
+    }
+
+    /// Allocate a frame buffer with an explicit macroblock grid.
+    ///
+    /// [`Self::new`] derives the grid as `Ceil(dim / 16)`, which is
+    /// the §6.3.3 rule for progressive sequences; an **interlaced**
+    /// sequence's frame pictures code `2 * Ceil(vertical_size / 32)`
+    /// macroblock rows (the grid is 32-aligned so it splits evenly
+    /// into the two fields' own grids), so their reconstruction
+    /// storage must cover that taller grid — see
+    /// [`IntraPictureParams::new_frame_buffer`].
+    ///
+    /// `mb_height` below the visible-height grid is grown back to it
+    /// (storage never truncates the visible picture).
+    pub fn with_mb_grid(
+        width: usize,
+        height: usize,
+        chroma_format: ChromaFormat,
+        mb_width: usize,
+        mb_height: usize,
+    ) -> Self {
+        let luma_w = mb_width.max(width.div_ceil(16)) * 16;
+        let luma_h = mb_height.max(height.div_ceil(16)) * 16;
         let (sx, sy) = chroma_shift(chroma_format);
         let cw = luma_w >> sx;
         let ch = luma_h >> sy;
@@ -491,6 +519,17 @@ pub struct IntraPictureParams {
     pub alternate_scan: bool,
     /// `q_scale_type` (§6.2.3.1).
     pub q_scale_type: bool,
+    /// `progressive_sequence` from `sequence_extension()` (§6.3.5).
+    /// Drives the §6.3.3 macroblock-grid height: a progressive
+    /// sequence codes `Ceil(vertical_size / 16)` macroblock rows,
+    /// while an interlaced sequence's **frame pictures** code
+    /// `2 * Ceil(vertical_size / 32)` rows (the grid is 32-aligned so
+    /// it splits evenly into the two fields' own macroblock grids).
+    /// Field-picture drivers receive field-level geometry (half
+    /// height) whose grid is 16-aligned in field coordinates, so they
+    /// set this `true` — see `field_geometry` in
+    /// [`crate::video_sequence`].
+    pub progressive_sequence: bool,
 }
 
 impl IntraPictureParams {
@@ -499,9 +538,29 @@ impl IntraPictureParams {
         self.width.div_ceil(16)
     }
 
-    /// Number of macroblock rows in the picture (`Ceil(height / 16)`).
+    /// Number of macroblock rows in the picture per §6.3.3:
+    /// `Ceil(height / 16)` for a progressive sequence,
+    /// `2 * Ceil(height / 32)` for an interlaced sequence's frame
+    /// pictures (identical whenever `height` is a multiple of 32).
     pub fn mb_height(&self) -> usize {
-        self.height.div_ceil(16)
+        if self.progressive_sequence {
+            self.height.div_ceil(16)
+        } else {
+            2 * self.height.div_ceil(32)
+        }
+    }
+
+    /// Allocate the reconstruction [`FrameBuffer`] for this picture:
+    /// visible `width × height`, plane storage covering the §6.3.3
+    /// macroblock grid ([`Self::mb_width`] × [`Self::mb_height`]).
+    pub fn new_frame_buffer(&self) -> FrameBuffer {
+        FrameBuffer::with_mb_grid(
+            self.width,
+            self.height,
+            self.chroma_format,
+            self.mb_width(),
+            self.mb_height(),
+        )
     }
 }
 
@@ -562,7 +621,7 @@ pub fn decode_intra_picture_with_matrices(
     use crate::slice_header::{SliceContext, SliceHeader};
     use crate::slice_macroblock_walk::SliceWalkContext;
 
-    let mut frame = FrameBuffer::new(params.width, params.height, params.chroma_format);
+    let mut frame = params.new_frame_buffer();
     let mb_width = params.mb_width() as u32;
     let slice_ctx = SliceContext::non_scalable(params.height as u32);
 
@@ -687,7 +746,21 @@ pub fn assemble_frame_from_fields(
 
     let frame_width = top.width;
     let frame_height = top.height + bottom.height;
-    let mut frame = FrameBuffer::new(frame_width, frame_height, top.chroma_format);
+    // §6.3.3: an interlaced frame's macroblock grid is
+    // `2 * Ceil(vertical_size / 32)` rows tall — exactly twice each
+    // field's own `Ceil(field_height / 16)` grid. Allocate the frame
+    // storage as twice the field-plane storage so every field
+    // macroblock-grid row (including the bottom overhang rows of a
+    // non-multiple-of-32 frame) survives the interleave: §7.6.4
+    // motion vectors in later pictures may legally reference them
+    // through the field view of this frame.
+    let mut frame = FrameBuffer::with_mb_grid(
+        frame_width,
+        frame_height,
+        top.chroma_format,
+        top.width.div_ceil(16),
+        2 * (top.y.height() / 16),
+    );
 
     interleave_plane(&mut frame.y, &top.y, &bottom.y);
     interleave_plane(&mut frame.cb, &top.cb, &bottom.cb);
@@ -939,8 +1012,11 @@ mod tests {
         let frame = assemble_frame_from_fields(&top, &bottom).unwrap();
         assert_eq!(frame.width, 4);
         assert_eq!(frame.height, 8);
-        // Storage is macroblock-aligned; the visible height is 8.
-        assert_eq!(frame.y.height(), 16);
+        // Storage is twice the field macroblock grid (§6.3.3: the
+        // interlaced frame grid is 2·Ceil(h/32) macroblock rows =
+        // 2× each field's own grid), so every field storage row
+        // survives the interleave; the visible height is 8.
+        assert_eq!(frame.y.height(), 32);
 
         // Even frame rows carry the top field rows in order.
         for fr in 0..4 {
@@ -969,13 +1045,58 @@ mod tests {
             }
         }
         let frame = assemble_frame_from_fields(&top, &bottom).unwrap();
-        // Storage is macroblock-aligned (16×16 luma → 8×8 chroma); the
-        // visible chroma extent is 4×8.
-        assert_eq!((frame.cb.width(), frame.cb.height()), (8, 8));
+        // Storage is twice the field macroblock grid (32-row luma →
+        // 16-row chroma at 4:2:0); the visible chroma extent is 4×8.
+        assert_eq!((frame.cb.width(), frame.cb.height()), (8, 16));
         assert_eq!(frame.visible_chroma_dims(), (4, 8));
         for r in 0..4 {
             assert_eq!(frame.cb.get(0, 2 * r), Some(10 + r as u8));
             assert_eq!(frame.cb.get(0, 2 * r + 1), Some(50 + r as u8));
+        }
+    }
+
+    #[test]
+    fn assemble_frame_preserves_field_overhang_rows() {
+        // The r413 non-multiple-of-32 height-alignment case: a 48-line
+        // frame coded as field pictures has 24-line fields whose own
+        // §6.3.3 macroblock grids are Ceil(24/16) = 2 rows = 32 lines.
+        // The assembled frame must retain all 32 field storage lines
+        // per field (64 frame storage rows), because §7.6.4 field
+        // predictions in later pictures may legally reference the
+        // overhang lines 24..31 — the 16-aligned visible-frame grid
+        // (48 rows) would truncate them.
+        let cf = ChromaFormat::Yuv420;
+        let mut top = FrameBuffer::new(16, 24, cf);
+        let mut bottom = FrameBuffer::new(16, 24, cf);
+        assert_eq!(top.y.height(), 32, "field storage is its own MB grid");
+        // Distinctive values across the full storage, incl. overhang.
+        for y in 0..32 {
+            for x in 0..16 {
+                top.y.put(x, y, 100 + y as u8);
+                bottom.y.put(x, y, 200 + y as u8);
+            }
+        }
+
+        let frame = assemble_frame_from_fields(&top, &bottom).unwrap();
+        assert_eq!((frame.width, frame.height), (16, 48));
+        assert_eq!(
+            frame.y.height(),
+            64,
+            "frame storage covers both field macroblock grids (2 * 32)"
+        );
+        for r in 0..32 {
+            assert_eq!(
+                frame.y.get(0, 2 * r),
+                Some(100 + r as u8),
+                "top field storage row {r} survives at frame row {}",
+                2 * r
+            );
+            assert_eq!(
+                frame.y.get(0, 2 * r + 1),
+                Some(200 + r as u8),
+                "bottom field storage row {r} survives at frame row {}",
+                2 * r + 1
+            );
         }
     }
 

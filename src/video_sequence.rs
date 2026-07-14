@@ -705,6 +705,9 @@ fn sequence_geometry(sequence: &Mpeg2Sequence) -> IntraPictureParams {
         intra_vlc_format: false,
         alternate_scan: false,
         q_scale_type: false,
+        // §6.3.3: drives the frame-picture macroblock-grid height
+        // (Ceil(h/16) progressive vs 2*Ceil(h/32) interlaced).
+        progressive_sequence: sequence.extension.progressive_sequence,
     }
 }
 
@@ -1115,12 +1118,19 @@ fn field_geometry(
     ext: &PictureCodingExtension,
 ) -> IntraPictureParams {
     IntraPictureParams {
-        height: base_geometry.height / 2,
+        // §6.3.3: a field is Ceil(h/2) lines tall (the top field of
+        // an odd-height frame carries the extra line), and its own
+        // macroblock grid is Ceil(vertical_size / 32) rows =
+        // Ceil(field_height / 16) — 16-aligned in field coordinates,
+        // which is the progressive grid rule, so the field-level
+        // params set `progressive_sequence` accordingly.
+        height: base_geometry.height.div_ceil(2),
         frame_pred_frame_dct: false,
         intra_dc_precision: ext.intra_dc_precision,
         intra_vlc_format: ext.intra_vlc_format,
         alternate_scan: ext.alternate_scan,
         q_scale_type: ext.q_scale_type,
+        progressive_sequence: true,
         ..base_geometry
     }
 }
@@ -1401,6 +1411,44 @@ mod tests {
     }
 
     #[test]
+    fn extract_field_round_trips_overhang_rows_of_a_field_assembled_frame() {
+        // The r413 non-multiple-of-32 case end-to-end: 24-line fields
+        // (storage 32 = the field's own §6.3.3 macroblock grid)
+        // assemble into a 48-line frame with 64 storage rows, and
+        // extract_field must recover each field's **entire storage**,
+        // overhang rows included, so a §7.6.2.1 second-field synthetic
+        // reference carries the same reference material a conforming
+        // decoder holds.
+        let cf = crate::sequence_extension::ChromaFormat::Yuv420;
+        let mut top = FrameBuffer::new(16, 24, cf);
+        let mut bottom = FrameBuffer::new(16, 24, cf);
+        for y in 0..32 {
+            for x in 0..16 {
+                top.y.put_sample(x, y, 60 + y as u8);
+                bottom.y.put_sample(x, y, 160 + y as u8);
+            }
+        }
+        let frame = crate::frame_assembly::assemble_frame_from_fields(&top, &bottom).unwrap();
+
+        let top_back = extract_field(&frame, PictureStructure::TopField);
+        let bottom_back = extract_field(&frame, PictureStructure::BottomField);
+        assert_eq!((top_back.width, top_back.height), (16, 24));
+        assert_eq!(top_back.y.height(), 32, "extracted field keeps its grid");
+        for r in 0..32 {
+            assert_eq!(
+                top_back.y.get(0, r),
+                Some(60 + r as u8),
+                "top field storage row {r}"
+            );
+            assert_eq!(
+                bottom_back.y.get(0, r),
+                Some(160 + r as u8),
+                "bottom field storage row {r}"
+            );
+        }
+    }
+
+    #[test]
     fn second_p_field_reference_pairs_current_first_with_prev_opposite() {
         // §7.6.2.1 / Figures 7-7, 7-8: when the second P field is the
         // BOTTOM field, the synthetic reference frame must carry the
@@ -1450,6 +1498,7 @@ mod tests {
             intra_dc_precision: 0,
             intra_vlc_format: false,
             alternate_scan: false,
+            progressive_sequence: false, // interlaced: field pictures exist
             q_scale_type: false,
         };
         let ext = PictureCodingExtension {

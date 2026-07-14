@@ -26,6 +26,8 @@ use oxideav_mpeg12video::{
 /// reference frame), 4:2:0, single-macroblock-wide.
 fn field_geometry_16x16() -> IntraPictureParams {
     IntraPictureParams {
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
+        progressive_sequence: true,
         width: 16,
         height: 16, // FIELD height (the frame is 32 rows)
         chroma_format: ChromaFormat::Yuv420,
@@ -210,6 +212,8 @@ fn field_picture_two_macroblocks_with_skip() {
     // skips address 1. The §7.6.6.2 P-picture skip is a (0,0) forward
     // copy reading the same-parity (top) reference field.
     let geom = IntraPictureParams {
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
+        progressive_sequence: true,
         width: 48,
         ..field_geometry_16x16()
     };
@@ -451,6 +455,8 @@ fn b_field_picture_skip_inherits_previous_direction_same_parity() {
         f
     };
     let geom = IntraPictureParams {
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
+        progressive_sequence: true,
         width: 48,
         ..field_geometry_16x16()
     };
