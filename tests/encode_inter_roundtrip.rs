@@ -319,3 +319,81 @@ fn non_multiple_of_16_dimensions_inter_roundtrip() {
     assert!(out.y.get(0, 0).is_some());
     assert!(out.y.get(39, 23).is_some());
 }
+
+#[test]
+fn gop_sequence_emits_headers_and_resets_temporal_reference() {
+    use oxideav_mpeg12video::encode_display_order_gop_sequence;
+    use oxideav_mpeg12video::gop_header::{Mpeg2Gop, TimeCode};
+    use oxideav_mpeg12video::PictureCodingType;
+
+    // 8 display frames, 1 B between anchors, 2 anchor periods per GOP
+    // → wait: 2 periods of (1+1) frames cover [0..=4] then [5..=7]
+    // (second GOP clamped: I at 5, anchors at 7).
+    let (w, h) = (48usize, 32usize);
+    let display: Vec<FrameBuffer> = (0..8)
+        .map(|k| {
+            frame_from(w, h, |x, y| {
+                (24 + ((x + 2 * k) * 3 + (y + k) * 5) % 200) as u8
+            })
+        })
+        .collect();
+    let stream = encode_display_order_gop_sequence(&display, 1, 2, params(w, h), 6, 3, 3)
+        .expect("encode GOP sequence");
+
+    // GOP headers: two, closed, unbroken, timecoded at display 0 / 5
+    // (25 fps default sequence header).
+    let gops: Vec<Mpeg2Gop> = stream
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w4)| w4 == &[0x00, 0x00, 0x01, 0xB8])
+        .map(|(pos, _)| Mpeg2Gop::parse(&stream[pos..]).expect("gop header"))
+        .collect();
+    assert_eq!(gops.len(), 2);
+    for gop in &gops {
+        assert!(gop.closed_gop);
+        assert!(!gop.broken_link);
+    }
+    assert_eq!(
+        gops[0].time_code,
+        TimeCode::from_display_index(0, 3).unwrap()
+    );
+    assert_eq!(
+        gops[1].time_code,
+        TimeCode::from_display_index(5, 3).unwrap()
+    );
+
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 8);
+    // §6.3.9 per-GOP temporal_reference reset: GOP 1 spans display
+    // 0..=4 (I B P B P), GOP 2 display 5..=7 (I B P).
+    let trefs: Vec<u16> = frames.iter().map(|f| f.temporal_reference).collect();
+    assert_eq!(trefs, vec![0, 1, 2, 3, 4, 0, 1, 2]);
+    let types: Vec<PictureCodingType> = frames.iter().map(|f| f.picture_coding_type).collect();
+    assert_eq!(
+        types,
+        vec![
+            PictureCodingType::Intra,
+            PictureCodingType::Bidirectional,
+            PictureCodingType::Predictive,
+            PictureCodingType::Bidirectional,
+            PictureCodingType::Predictive,
+            PictureCodingType::Intra,
+            PictureCodingType::Bidirectional,
+            PictureCodingType::Predictive,
+        ]
+    );
+
+    // Display order restored with bounded reconstruction error.
+    for (k, decoded) in frames.iter().enumerate() {
+        let mut total = 0u64;
+        for y in 0..h {
+            for x in 0..w {
+                let a = i64::from(display[k].y.get(x, y).unwrap());
+                let b = i64::from(decoded.frame.y.get(x, y).unwrap());
+                total += a.abs_diff(b);
+            }
+        }
+        let mae = total as f64 / (w * h) as f64;
+        assert!(mae < 7.0, "frame {k}: luma MAE {mae:.2}");
+    }
+}

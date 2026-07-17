@@ -480,8 +480,9 @@ pub use decoder::{
 };
 pub use frame_assembly::{FrameBuffer, IntraPictureParams, Plane};
 pub use inter_encoder::{
-    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p,
-    encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
+    encode_display_order_gop_sequence, encode_display_order_sequence, encode_i_p_b,
+    encode_i_p_chain, encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block,
+    encode_p_copy_picture,
 };
 pub use inter_reconstruction::InterError;
 pub use intra_encoder::encode_intra_picture;

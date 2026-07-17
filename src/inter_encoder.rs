@@ -544,6 +544,144 @@ pub fn encode_display_order_sequence(
     Ok(stream)
 }
 
+/// Encode a whole **display-order** frame sequence as one MPEG-2
+/// elementary stream with an explicit **group-of-pictures structure**:
+/// [`encode_display_order_sequence`] extended with §6.2.2.6
+/// `group_of_pictures_header()` emission and one I-picture per GOP.
+///
+/// * `anchors_per_gop` predictive periods per GOP (`>= 1`): each GOP
+///   spans display indices `[s, s + anchors_per_gop*(b_between+1)]`
+///   (clamped to the sequence tail), opens with an I-picture at `s`,
+///   and closes on an anchor — no B-picture ever references across a
+///   GOP boundary, so every GOP header carries `closed_gop = 1` and
+///   `broken_link = 0` (§6.3.8).
+/// * Each GOP header's 25-bit time code is derived from the GOP's
+///   first display frame at the sequence header's frame rate
+///   ([`crate::gop_header::TimeCode::from_display_index`]; the
+///   assembler writes the default `frame_rate_code = 3`, 25 frames/s).
+/// * `temporal_reference` restarts from `0` at each GOP's first
+///   display frame (§6.3.9: *"reset to zero for the earliest picture
+///   in display order in each group of pictures"*).
+///
+/// As with the flat assembler, every anchor the encoder predicts from
+/// is the decoder's exact reconstruction.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] for an empty `frames` or
+/// `anchors_per_gop == 0`; propagates encode / decode errors.
+pub fn encode_display_order_gop_sequence(
+    frames: &[crate::frame_assembly::FrameBuffer],
+    b_between: usize,
+    anchors_per_gop: usize,
+    params: IntraPictureParams,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+) -> Result<Vec<u8>> {
+    use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
+
+    if frames.is_empty() {
+        return Err(Error::InvalidBitstream(
+            "encode_display_order_gop_sequence: no frames to encode",
+        ));
+    }
+    if anchors_per_gop == 0 {
+        return Err(Error::InvalidBitstream(
+            "encode_display_order_gop_sequence: anchors_per_gop must be >= 1",
+        ));
+    }
+
+    let sequence_params = SequenceHeaderParams {
+        horizontal_size: params.width as u16,
+        vertical_size: params.height as u16,
+        ..Default::default()
+    };
+
+    let mut bw = BitWriter::new();
+    write_sequence_header(&mut bw, &sequence_params);
+    // §6.3.5/§6.3.3: progressive grid declaration (see intra_encoder).
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
+
+    let step = b_between + 1;
+    let mut gop_start = 0usize;
+    while gop_start < frames.len() {
+        let gop_end = (gop_start + anchors_per_gop * step).min(frames.len() - 1);
+
+        // §6.2.2.6 / §6.3.8: time code of the GOP's earliest display
+        // frame; the emitted structure codes no B across a GOP
+        // boundary, so the GOP is closed and the link unbroken.
+        write_gop_header(
+            &mut bw,
+            &Mpeg2Gop {
+                time_code: TimeCode::from_display_index(
+                    gop_start as u64,
+                    sequence_params.frame_rate_code,
+                )?,
+                closed_gop: true,
+                broken_link: false,
+            },
+        );
+
+        // The GOP's I anchor (temporal_reference = 0): encode via the
+        // intra encoder and splice out its picture layer, decoding it
+        // back for the decoder's exact reference.
+        let i_stream = crate::intra_encoder::encode_intra_picture(
+            &frames[gop_start],
+            params,
+            0,
+            quantiser_scale_code,
+        )?;
+        let mut forward_ref = crate::decode_video_sequence(&i_stream)?
+            .first()
+            .map(|d| d.frame.clone())
+            .ok_or(Error::InvalidBitstream(
+                "encode_display_order_gop_sequence: I anchor decode produced no frame",
+            ))?;
+        let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
+            "encode_display_order_gop_sequence: I picture start code missing",
+        ))?;
+        bw.write_bytes(&i_stream[pic_start..i_stream.len() - 4]);
+
+        // Anchor periods: each P coded before the Bs preceding it in
+        // display order (§6.1.1.11 coded order), temporal_reference
+        // GOP-relative (§6.3.9).
+        let mut prev_anchor = gop_start;
+        while prev_anchor < gop_end {
+            let next_anchor = (prev_anchor + step).min(gop_end);
+            let backward_ref = crate::p_picture_encoder::encode_p_picture(
+                &mut bw,
+                &frames[next_anchor],
+                &forward_ref,
+                params,
+                (next_anchor - gop_start) as u16,
+                quantiser_scale_code,
+                forward_f_code,
+            )?;
+            for b in (prev_anchor + 1)..next_anchor {
+                crate::b_picture_encoder::encode_b_picture(
+                    &mut bw,
+                    &frames[b],
+                    &forward_ref,
+                    &backward_ref,
+                    params,
+                    (b - gop_start) as u16,
+                    quantiser_scale_code,
+                    forward_f_code,
+                    backward_f_code,
+                )?;
+            }
+            forward_ref = backward_ref;
+            prev_anchor = next_anchor;
+        }
+
+        gop_start = gop_end + 1;
+    }
+
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+    Ok(stream)
+}
+
 /// Find the first 4-byte big-endian `code` start-code in `buf`.
 fn find_start(buf: &[u8], code: u32) -> Option<usize> {
     buf.windows(4).position(|w| {
