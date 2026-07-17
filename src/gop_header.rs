@@ -1,8 +1,15 @@
-//! Parser for the MPEG-1 / MPEG-2 video `group_of_pictures_header()`
-//! syntax element.
+//! Parser **and writer** for the MPEG-1 / MPEG-2 video
+//! `group_of_pictures_header()` syntax element.
 //!
 //! Implements the bitstream syntax in ISO/IEC 13818-2 (Recommendation
-//! ITU-T H.262) §6.2.2.6 and the field semantics in §6.3.8.
+//! ITU-T H.262) §6.2.2.6 and the field semantics in §6.3.8. The same
+//! wire syntax is the ISO/IEC 11172-2 (MPEG-1) §2.4.2.4 group-of-
+//! pictures layer with the §2.4.3.3 field semantics — one
+//! group_start_code, the 25-bit time_code, and the `closed_gop` /
+//! `broken_link` flags — so the parser and [`write_gop_header`] writer
+//! here serve both standards (MPEG-1 makes the layer mandatory:
+//! §2.4.2.2 `video_sequence()` loops `group_of_pictures()` directly
+//! under each `sequence_header()`).
 //!
 //! `group_of_pictures_header()` is an optional layer that may precede
 //! a `picture_header()`. When present it sets a 25-bit time-code (per
@@ -28,7 +35,7 @@
 //! Spec citations refer to the 1995 base text of ISO/IEC 13818-2
 //! (Recommendation ITU-T H.262 (1995 E)).
 
-use oxideav_core::bits::BitReader;
+use oxideav_core::bits::{BitReader, BitWriter};
 
 use crate::{Error, Result};
 
@@ -66,6 +73,90 @@ pub struct TimeCode {
     pub seconds: u8,
     /// `time_code_pictures` ∈ 0..=59 (6-bit field).
     pub pictures: u8,
+}
+
+impl TimeCode {
+    /// Derive the time code of the display frame at continuous display
+    /// index `display_index` for the sequence header's 4-bit
+    /// `picture_rate` / `frame_rate_code` (Table 6-4 of §6.3.3 /
+    /// ISO/IEC 11172-2 §2.4.3.2), with `drop_frame = 0`.
+    ///
+    /// Per §6.3.8 (and 11172-2 §2.4.3.3), with `drop_frame_flag == 0`
+    /// *"pictures are counted assuming rounding to the nearest integral
+    /// number of pictures per second"* — so the 23,976 / 29,97 / 59,94
+    /// rates count as 24 / 30 / 60 pictures per second. The hours field
+    /// wraps modulo 24 (its Table 6-11 range is `0..=23`).
+    ///
+    /// This is the encoder-side helper for GOP emission: the §6.3.8
+    /// time code *"refers to the first picture in the group of pictures
+    /// that has a `temporal_reference` of zero"* (the GOP's earliest
+    /// picture in display order), so a display-order assembler passes
+    /// the continuous display index of each GOP's first frame.
+    ///
+    /// # Errors
+    /// [`Error::InvalidBitstream`] for a `picture_rate` code outside
+    /// the defined `1..=8` range.
+    pub fn from_display_index(display_index: u64, picture_rate_code: u8) -> Result<Self> {
+        let fps = nominal_pictures_per_second(picture_rate_code)?;
+        let fps = u64::from(fps);
+        let pictures = (display_index % fps) as u8;
+        let total_seconds = display_index / fps;
+        let seconds = (total_seconds % 60) as u8;
+        let total_minutes = total_seconds / 60;
+        let minutes = (total_minutes % 60) as u8;
+        let hours = ((total_minutes / 60) % 24) as u8;
+        Ok(Self {
+            drop_frame: false,
+            hours,
+            minutes,
+            seconds,
+            pictures,
+        })
+    }
+}
+
+/// The Table 6-4 (§6.3.3) / ISO/IEC 11172-2 §2.4.3.2 picture-rate
+/// table, rounded to the nearest integral number of pictures per
+/// second as the `drop_frame == 0` counting rule prescribes (§6.3.8):
+/// codes 1..=8 → 24, 24, 25, 30, 30, 50, 60, 60.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] for code `0` (forbidden) or the
+/// reserved codes `9..=15`.
+pub fn nominal_pictures_per_second(picture_rate_code: u8) -> Result<u8> {
+    Ok(match picture_rate_code {
+        1 | 2 => 24, // 23,976 (24 000/1001) rounds to 24; 24 exact
+        3 => 25,
+        4 | 5 => 30, // 29,97 (30 000/1001) rounds to 30; 30 exact
+        6 => 50,
+        7 | 8 => 60, // 59,94 (60 000/1001) rounds to 60; 60 exact
+        _ => {
+            return Err(Error::InvalidBitstream(
+                "picture_rate: only codes 1..=8 are defined (Table 6-4 / §2.4.3.2)",
+            ))
+        }
+    })
+}
+
+/// Write a `group_of_pictures_header()` — the §6.2.2.6 / ISO/IEC
+/// 11172-2 §2.4.2.4 syntax: `group_start_code`, the 25-bit `time_code`
+/// (with its embedded marker bit), `closed_gop`, `broken_link`, then
+/// zero-padding to the next byte boundary for `next_start_code()`.
+///
+/// The writer emits exactly the fields [`Mpeg2Gop::parse`] reads back;
+/// the caller is responsible for the Table 6-11 / §2.4.3.3 value
+/// ranges (out-of-range values would be rejected by the parser).
+pub fn write_gop_header(bw: &mut BitWriter, gop: &Mpeg2Gop) {
+    bw.write_u32(GROUP_START_CODE, 32);
+    bw.write_bit(gop.time_code.drop_frame);
+    bw.write_u32(u32::from(gop.time_code.hours), 5);
+    bw.write_u32(u32::from(gop.time_code.minutes), 6);
+    bw.write_bit(true); // marker_bit (Table 6-11)
+    bw.write_u32(u32::from(gop.time_code.seconds), 6);
+    bw.write_u32(u32::from(gop.time_code.pictures), 6);
+    bw.write_bit(gop.closed_gop);
+    bw.write_bit(gop.broken_link);
+    bw.align_to_byte();
 }
 
 /// Parsed result of `group_of_pictures_header()` (§6.2.2.6).
@@ -166,13 +257,10 @@ mod tests {
     //! negative cases for every spec-defined rejection site that this
     //! parser introduces.
     use super::*;
-    use oxideav_core::bits::BitWriter;
 
-    /// Emit a minimal `group_of_pictures_header()`. The trailing
-    /// `next_start_code()` byte alignment is handled by
-    /// [`BitWriter::align_to_byte`] -- since the syntax consumes
-    /// 32 + 25 + 1 + 1 = 59 bits, the writer pads with 5 zero bits
-    /// to a byte boundary.
+    /// Emit a `group_of_pictures_header()` through the public writer.
+    /// Since the syntax consumes 32 + 25 + 1 + 1 = 59 bits, the writer
+    /// pads with 5 zero bits to a byte boundary.
     #[allow(clippy::too_many_arguments)]
     fn write_gop_header(
         bw: &mut BitWriter,
@@ -184,16 +272,20 @@ mod tests {
         closed_gop: bool,
         broken_link: bool,
     ) {
-        bw.write_u32(GROUP_START_CODE, 32);
-        bw.write_bit(drop_frame);
-        bw.write_u32(hours, 5);
-        bw.write_u32(minutes, 6);
-        bw.write_bit(true); // marker_bit
-        bw.write_u32(seconds, 6);
-        bw.write_u32(pictures, 6);
-        bw.write_bit(closed_gop);
-        bw.write_bit(broken_link);
-        bw.align_to_byte();
+        super::write_gop_header(
+            bw,
+            &Mpeg2Gop {
+                time_code: TimeCode {
+                    drop_frame,
+                    hours: hours as u8,
+                    minutes: minutes as u8,
+                    seconds: seconds as u8,
+                    pictures: pictures as u8,
+                },
+                closed_gop,
+                broken_link,
+            },
+        );
     }
 
     #[test]
@@ -346,6 +438,138 @@ mod tests {
             assert_eq!(
                 gop.broken_link, broken,
                 "broken_link bit at {closed},{broken}"
+            );
+        }
+    }
+
+    // ---- Writer round-trip -----------------------------------------
+
+    #[test]
+    fn writer_output_is_byte_aligned_and_parses_back() {
+        // 59 syntax bits + 5 pad bits = 8 bytes exactly.
+        let gop = Mpeg2Gop {
+            time_code: TimeCode {
+                drop_frame: false,
+                hours: 7,
+                minutes: 41,
+                seconds: 13,
+                pictures: 22,
+            },
+            closed_gop: true,
+            broken_link: false,
+        };
+        let mut bw = BitWriter::new();
+        super::write_gop_header(&mut bw, &gop);
+        let bytes = bw.finish();
+        assert_eq!(bytes.len(), 8, "59 bits pad to 8 bytes");
+        assert_eq!(Mpeg2Gop::parse(&bytes).expect("parse"), gop);
+    }
+
+    // ---- TimeCode::from_display_index ------------------------------
+
+    #[test]
+    fn nominal_rates_match_table_6_4_rounding() {
+        // §6.3.8 drop_frame == 0: count at the nearest integral rate.
+        let expect = [
+            (1u8, 24u8),
+            (2, 24),
+            (3, 25),
+            (4, 30),
+            (5, 30),
+            (6, 50),
+            (7, 60),
+            (8, 60),
+        ];
+        for (code, fps) in expect {
+            assert_eq!(
+                nominal_pictures_per_second(code).unwrap(),
+                fps,
+                "code {code}"
+            );
+        }
+        assert!(nominal_pictures_per_second(0).is_err());
+        assert!(nominal_pictures_per_second(9).is_err());
+        assert!(nominal_pictures_per_second(15).is_err());
+    }
+
+    #[test]
+    fn from_display_index_zero_is_all_zero() {
+        let tc = TimeCode::from_display_index(0, 3).unwrap();
+        assert_eq!(
+            tc,
+            TimeCode {
+                drop_frame: false,
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+                pictures: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn from_display_index_splits_at_25fps() {
+        // Display frame 3661*25 + 7 = 1 h 1 min 1 s, picture 7 at 25 fps.
+        let idx = (3600u64 + 60 + 1) * 25 + 7;
+        let tc = TimeCode::from_display_index(idx, 3).unwrap();
+        assert_eq!(
+            (tc.hours, tc.minutes, tc.seconds, tc.pictures),
+            (1, 1, 1, 7)
+        );
+        assert!(!tc.drop_frame);
+    }
+
+    #[test]
+    fn from_display_index_counts_29_97_as_30() {
+        // Code 4 (29,97 Hz) counts as 30 pictures/s with drop_frame 0.
+        let tc = TimeCode::from_display_index(30, 4).unwrap();
+        assert_eq!((tc.seconds, tc.pictures), (1, 0));
+        let tc = TimeCode::from_display_index(29, 4).unwrap();
+        assert_eq!((tc.seconds, tc.pictures), (0, 29));
+    }
+
+    #[test]
+    fn from_display_index_hours_wrap_modulo_24() {
+        // 25 h at 24 fps: hours field wraps into the 0..=23 range.
+        let idx = 25u64 * 3600 * 24;
+        let tc = TimeCode::from_display_index(idx, 2).unwrap();
+        assert_eq!(tc.hours, 1);
+        assert_eq!((tc.minutes, tc.seconds, tc.pictures), (0, 0, 0));
+    }
+
+    #[test]
+    fn from_display_index_rejects_undefined_rate_codes() {
+        assert!(TimeCode::from_display_index(0, 0).is_err());
+        assert!(TimeCode::from_display_index(0, 9).is_err());
+    }
+
+    #[test]
+    fn from_display_index_always_parses_back() {
+        // Every derived time code is in the Table 6-11 ranges, so the
+        // writer→parser loop must accept it. Spot a spread of indices
+        // and rates.
+        for &(idx, code) in &[
+            (0u64, 3u8),
+            (1, 1),
+            (59, 8),
+            (60, 8),
+            (89_999, 4),
+            (90_000, 5),
+            (12_345_678, 6),
+        ] {
+            let tc = TimeCode::from_display_index(idx, code).unwrap();
+            let gop = Mpeg2Gop {
+                time_code: tc,
+                closed_gop: false,
+                broken_link: false,
+            };
+            let mut bw = BitWriter::new();
+            super::write_gop_header(&mut bw, &gop);
+            let bytes = bw.finish();
+            assert_eq!(
+                Mpeg2Gop::parse(&bytes).expect("parse"),
+                gop,
+                "idx {idx} code {code}"
             );
         }
     }

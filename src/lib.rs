@@ -547,7 +547,9 @@ pub use frame_assembly::{
     decode_intra_picture_with_matrices, place_intra_block, place_intra_macroblock, BlockPlacement,
 };
 #[doc(hidden)] // internal: §6.2.2.6 GOP-header re-exports
-pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
+pub use gop_header::{
+    nominal_pictures_per_second, write_gop_header, Mpeg2Gop, TimeCode, GROUP_START_CODE,
+};
 #[doc(hidden)] // internal: §A IDCT re-exports
 pub use idct::{
     idct_8x8, idct_8x8_from_i32, idct_candidate_f64, idct_reference_f64,
