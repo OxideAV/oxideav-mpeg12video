@@ -318,6 +318,69 @@ fn read_dc_differential(br: &mut BitReader<'_>, dc_size: u8) -> Result<i32> {
 }
 
 // =============================================================
+// Encoder side — §2.4.2.8 / §2.4.3.7 emission
+// =============================================================
+
+/// The minimal `dct_dc_size_*` for a signed `dct_zz[0]` differential:
+/// `0` for zero, else the smallest `size` with
+/// `|value| <= 2^size - 1` (§2.4.3.7 value ranges).
+fn dc_size_for_value(dct_zz_0: i32) -> u8 {
+    if dct_zz_0 == 0 {
+        return 0;
+    }
+    let mag = dct_zz_0.unsigned_abs();
+    let mut size = 1u8;
+    while (1u32 << size) - 1 < mag {
+        size += 1;
+        debug_assert!(
+            size <= MAX_DC_SIZE,
+            "dct_zz[0] {dct_zz_0} exceeds the Table B.5a/B.5b size range"
+        );
+    }
+    size
+}
+
+/// Emit a §2.4.2.8 intra-block DC prelude: the `dct_dc_size_*` VLC
+/// (Table B.5a / B.5b by `component`) followed by the `dc_size`-bit
+/// `dct_dc_differential` that reconstructs `dct_zz_0` exactly.
+///
+/// `dct_zz_0` is the signed DC differential the §2.4.4.1 predictor
+/// chain requires (`(dct_recon[0][0] - dct_dc_<comp>_past) / 8`), in
+/// the Table B.5a/B.5b range `[-255, +255]`. The function is the exact
+/// inverse of the §2.4.3.7 reconstruction read back by
+/// [`DcCoefficient::parse`]: positive values are transmitted verbatim;
+/// a negative value `v` is transmitted as `v + 2^size - 1` (inverting
+/// `dct_zz[0] = ((-1) << size) | (differential + 1)`).
+///
+/// # Panics (debug)
+/// Debug-asserts `|dct_zz_0| <= 255`.
+pub fn encode_dc_coefficient(
+    bw: &mut oxideav_core::bits::BitWriter,
+    component: DcComponent,
+    dct_zz_0: i32,
+) {
+    let size = dc_size_for_value(dct_zz_0);
+    let table = match component {
+        DcComponent::Luminance => TABLE_B5A,
+        DcComponent::Chrominance => TABLE_B5B,
+    };
+    let entry = table
+        .iter()
+        .find(|e| e.size == size)
+        .expect("size <= MAX_DC_SIZE has a table row");
+    bw.write_u32(u32::from(entry.code), u32::from(entry.bits));
+    if size == 0 {
+        return;
+    }
+    let differential = if dct_zz_0 > 0 {
+        dct_zz_0
+    } else {
+        dct_zz_0 + (1i32 << size) - 1
+    };
+    bw.write_u32(differential as u32, u32::from(size));
+}
+
+// =============================================================
 // Public entry point
 // =============================================================
 
@@ -714,5 +777,50 @@ mod tests {
         let s = format!("{dc:?}");
         assert!(s.contains("DcCoefficient"));
         assert!(s.contains("dc_size"));
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    //! Encoder-side coverage: the full §2.4.3.7 differential range
+    //! round-trips through the Table B.5a / B.5b parser for both
+    //! component tables.
+    use super::*;
+    use oxideav_core::bits::{BitReader, BitWriter};
+
+    #[test]
+    fn dc_size_matches_value_magnitude() {
+        assert_eq!(dc_size_for_value(0), 0);
+        assert_eq!(dc_size_for_value(1), 1);
+        assert_eq!(dc_size_for_value(-1), 1);
+        assert_eq!(dc_size_for_value(2), 2);
+        assert_eq!(dc_size_for_value(3), 2);
+        assert_eq!(dc_size_for_value(4), 3);
+        assert_eq!(dc_size_for_value(127), 7);
+        assert_eq!(dc_size_for_value(128), 8);
+        assert_eq!(dc_size_for_value(-255), 8);
+        assert_eq!(dc_size_for_value(255), 8);
+    }
+
+    #[test]
+    fn every_differential_roundtrips_for_both_components() {
+        for component in [DcComponent::Luminance, DcComponent::Chrominance] {
+            for value in -255i32..=255 {
+                let mut bw = BitWriter::new();
+                encode_dc_coefficient(&mut bw, component, value);
+                let written = bw.bit_position();
+                bw.write_bit(false);
+                bw.align_to_byte();
+                bw.write_byte(0);
+                let bytes = bw.finish();
+                let mut br = BitReader::new(&bytes);
+                let dc = DcCoefficient::parse(&mut br, component).expect("parse DC prelude");
+                assert_eq!(dc.dct_zz_0, value, "{component:?} value {value}");
+                assert_eq!(
+                    dc.bit_position_after, written,
+                    "{component:?} value {value}"
+                );
+            }
+        }
     }
 }

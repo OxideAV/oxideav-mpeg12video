@@ -504,7 +504,9 @@ pub use add_coefficients::{
     saturate as saturate_decoded_sample,
 };
 #[doc(hidden)] // internal: MPEG-1 DC-prelude re-exports
-pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
+pub use block_dc::{
+    encode_dc_coefficient, DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN,
+};
 #[doc(hidden)] // internal: §6.2.5.3 CBP re-exports
 pub use coded_block_pattern::{encode_cbp420, CodedBlockPattern};
 #[doc(hidden)] // internal: §7.6.7 combining re-exports
@@ -515,7 +517,10 @@ pub use combine_predictions::{
 #[doc(hidden)] // internal: §6.2.3.6 extension re-exports
 pub use copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
 #[doc(hidden)] // internal: MPEG-1 run-level VLC re-exports
-pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
+pub use dct_coeff::{
+    encode_dct_coeff as encode_mpeg1_dct_coeff, encode_end_of_block as encode_mpeg1_end_of_block,
+    CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN,
+};
 #[doc(hidden)] // internal: MPEG-1 dequantiser re-exports
 pub use dequantize::{
     dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
@@ -541,7 +546,10 @@ pub use forming_predictions::{
 #[doc(hidden)] // internal: encoder forward-DCT re-exports
 pub use forward_dct::{fdct_8x8, fdct_candidate_f64, fdct_reference_f64};
 #[doc(hidden)] // internal: encoder forward-quantiser re-exports
-pub use forward_quant::{forward_quantise_block, forward_quantise_intra_dc, MAX_CODED_LEVEL};
+pub use forward_quant::{
+    forward_quantise_block, forward_quantise_intra_dc, mpeg1_forward_quantise_intra_ac,
+    mpeg1_forward_quantise_non_intra, MAX_CODED_LEVEL, MPEG1_MAX_CODED_LEVEL,
+};
 #[doc(hidden)] // internal: picture-assembly plumbing re-exports
 pub use frame_assembly::{
     assemble_frame_from_fields, block_placement, chroma_shift, decode_intra_picture,

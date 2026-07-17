@@ -132,6 +132,83 @@ pub fn forward_quantise_block(
     qf
 }
 
+// =============================================================
+// ISO/IEC 11172-2 (MPEG-1) forward quantisers — §2.4.4.1 / §2.4.4.2
+// =============================================================
+
+/// Maximum absolute quantised level the MPEG-1 run-level entropy
+/// layer can code: Tables B.5c..B.5e cap at 40 and the Table B.5f
+/// escape extends to 255 (`-256` is forbidden). MPEG-1 forward-
+/// quantised levels are clamped to this magnitude.
+pub const MPEG1_MAX_CODED_LEVEL: i32 = 255;
+
+/// Forward-quantise one 8×8 DCT block into the §2.4.3.7 zig-zag
+/// `dct_zz[]` array for an MPEG-1 **intra** block, inverting the
+/// §2.4.4.1 AC reconstruction
+/// `dct_recon = (2 * dct_zz * quantizer_scale * W) / 16`:
+/// `dct_zz = Round(8 * F / (quantizer_scale * W))` (round to nearest,
+/// no dead-zone — the decoder-side odd-value mismatch rule perturbs
+/// the reconstruction by at most one).
+///
+/// Only the 63 AC entries are produced; `dct_zz[0]` is left `0` — the
+/// §2.4.3.7 DC differential depends on the `dct_dc_*_past` predictor
+/// chain, which the caller owns (see
+/// [`crate::block_dc::encode_dc_coefficient`]).
+///
+/// `quantizer_scale` is the §2.4.3.6 value `1..=31` used **directly**
+/// (MPEG-1 has no §7.4.2.2 non-linear mapping); `intra_quant` is the
+/// raster-order `intra_quant[m][n]` matrix.
+pub fn mpeg1_forward_quantise_intra_ac(
+    f: &[[i32; 8]; 8],
+    quantizer_scale: u8,
+    intra_quant: &[[u8; 8]; 8],
+) -> [i32; 64] {
+    let qs = i64::from(quantizer_scale);
+    let mut dct_zz = [0i32; 64];
+    for m in 0..8 {
+        for n in 0..8 {
+            if (m, n) == (0, 0) {
+                continue;
+            }
+            let w = i64::from(intra_quant[m][n]);
+            debug_assert!(w > 0 && qs > 0);
+            // Inverse: recon = (2*z*qs*W)/16  →  z = F*8/(qs*W).
+            let level = round_div(i64::from(f[m][n]) * 8, qs * w);
+            dct_zz[crate::block_dc::SCAN[m][n] as usize] =
+                level.clamp(-MPEG1_MAX_CODED_LEVEL, MPEG1_MAX_CODED_LEVEL);
+        }
+    }
+    dct_zz
+}
+
+/// Forward-quantise one 8×8 DCT residual block into the §2.4.3.7
+/// zig-zag `dct_zz[]` array for an MPEG-1 **non-intra** block,
+/// inverting the §2.4.4.2 reconstruction
+/// `dct_recon = ((2 * dct_zz + Sign(dct_zz)) * quantizer_scale * W) / 16`:
+/// the `+ Sign` term restores a half-step of magnitude, so the matched
+/// forward quantiser truncates toward zero (a dead-zone around zero) —
+/// `dct_zz = Trunc(8 * F / (quantizer_scale * W))`.
+///
+/// All 64 entries are produced (non-intra blocks have no DC prelude).
+pub fn mpeg1_forward_quantise_non_intra(
+    f: &[[i32; 8]; 8],
+    quantizer_scale: u8,
+    non_intra_quant: &[[u8; 8]; 8],
+) -> [i32; 64] {
+    let qs = i64::from(quantizer_scale);
+    let mut dct_zz = [0i32; 64];
+    for m in 0..8 {
+        for n in 0..8 {
+            let w = i64::from(non_intra_quant[m][n]);
+            debug_assert!(w > 0 && qs > 0);
+            let level = trunc_div(i64::from(f[m][n]) * 8, qs * w);
+            dct_zz[crate::block_dc::SCAN[m][n] as usize] =
+                level.clamp(-MPEG1_MAX_CODED_LEVEL, MPEG1_MAX_CODED_LEVEL);
+        }
+    }
+    dct_zz
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +297,111 @@ mod tests {
         f[0][0] = 100_000;
         let qf = forward_quantise_block(&f, BlockCoding::Intra, &DEFAULT_INTRA_WEIGHT, 8, 1);
         assert_eq!(qf[0][0], MAX_CODED_LEVEL);
+    }
+
+    // ---- MPEG-1 (§2.4.4.1 / §2.4.4.2) ------------------------------
+
+    #[test]
+    fn mpeg1_intra_ac_inverts_the_dequantiser_within_one_step() {
+        use crate::dequantize::{
+            dequantize_intra_block, IntraBlockKind, IntraDcPredictors, DEFAULT_INTRA_QUANT,
+        };
+        // Structured AC content; DC handled by the predictor chain so
+        // dct_zz[0] stays 0 here.
+        let mut f = [[0i32; 8]; 8];
+        for m in 0..8 {
+            for n in 0..8 {
+                f[m][n] = (((m * 8 + n) as i32 * 23) % 700) - 350;
+            }
+        }
+        f[0][0] = 0;
+        for qs in [1u8, 4, 8, 31] {
+            let dct_zz = mpeg1_forward_quantise_intra_ac(&f, qs, &DEFAULT_INTRA_QUANT);
+            assert_eq!(dct_zz[0], 0, "AC-only quantiser must not touch DC");
+            let mut pred = IntraDcPredictors::at_slice_start();
+            let recon = dequantize_intra_block(
+                &dct_zz,
+                qs,
+                &DEFAULT_INTRA_QUANT,
+                IntraBlockKind::LuminanceFirst,
+                &mut pred,
+                0,
+            )
+            .expect("dequantise");
+            for m in 0..8 {
+                for n in 0..8 {
+                    if (m, n) == (0, 0) {
+                        continue; // DC overwritten by the predictor chain
+                    }
+                    // One §2.4.4.1 quantiser step (2*qs*W/16) plus the
+                    // odd-value mismatch perturbation (±1) plus the
+                    // truncation of the reconstruction itself.
+                    let step = (2 * i32::from(qs) * i32::from(DEFAULT_INTRA_QUANT[m][n])) / 16 + 2;
+                    let err = (recon[m][n] - f[m][n]).abs();
+                    assert!(
+                        err <= step.max(3),
+                        "qs {qs} ({m},{n}): err {err} > step {step}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mpeg1_non_intra_inverts_the_dequantiser_within_one_step() {
+        use crate::dequantize::dequantize_non_intra_block;
+        let flat16 = [[16u8; 8]; 8];
+        let mut f = [[0i32; 8]; 8];
+        for m in 0..8 {
+            for n in 0..8 {
+                f[m][n] = (((m * 8 + n) as i32 * 31) % 500) - 250;
+            }
+        }
+        for qs in [1u8, 8, 31] {
+            let dct_zz = mpeg1_forward_quantise_non_intra(&f, qs, &flat16);
+            let recon = dequantize_non_intra_block(&dct_zz, qs, &flat16).expect("dequantise");
+            for m in 0..8 {
+                for n in 0..8 {
+                    let step = (2 * i32::from(qs) * 16) / 16 + 2;
+                    let err = (recon[m][n] - f[m][n]).abs();
+                    assert!(
+                        err <= step.max(3),
+                        "qs {qs} ({m},{n}): err {err} > step {step}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mpeg1_non_intra_dead_zone_zeroes_small_coefficients() {
+        // With all-16 weights at quantizer_scale 8 the §2.4.4.2 step is
+        // 2*8*16/16 = 16; |F| < 16 truncates to level 0.
+        let flat16 = [[16u8; 8]; 8];
+        let mut f = [[0i32; 8]; 8];
+        f[1][1] = 15;
+        f[2][2] = 16;
+        let dct_zz = mpeg1_forward_quantise_non_intra(&f, 8, &flat16);
+        let z11 = dct_zz[crate::block_dc::SCAN[1][1] as usize];
+        let z22 = dct_zz[crate::block_dc::SCAN[2][2] as usize];
+        assert_eq!(z11, 0, "inside the dead-zone");
+        assert_eq!(z22, 1, "on the first step");
+    }
+
+    #[test]
+    fn mpeg1_levels_clamp_to_table_b5f_range() {
+        let flat16 = [[16u8; 8]; 8];
+        let mut f = [[0i32; 8]; 8];
+        f[3][4] = 100_000;
+        f[4][3] = -100_000;
+        let dct_zz = mpeg1_forward_quantise_non_intra(&f, 1, &flat16);
+        assert_eq!(
+            dct_zz[crate::block_dc::SCAN[3][4] as usize],
+            MPEG1_MAX_CODED_LEVEL
+        );
+        assert_eq!(
+            dct_zz[crate::block_dc::SCAN[4][3] as usize],
+            -MPEG1_MAX_CODED_LEVEL
+        );
     }
 }

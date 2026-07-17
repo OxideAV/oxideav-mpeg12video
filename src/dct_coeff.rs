@@ -1061,6 +1061,91 @@ impl DctCoeffStep {
 const ESCAPE_LEVEL_MIN_PAYLOAD_BITS: u32 = 14;
 
 // =============================================================
+// Encoder side — §2.4.3.7 emission
+// =============================================================
+
+/// Find the Table B.5c / B.5d / B.5e codeword for `(run, level_mag)`,
+/// honouring the `(0, 1)` FIRST/NEXT disambiguation: the 1-bit `1s`
+/// form is FIRST-only and the 2-bit `11s` form NEXT-only. Returns
+/// `(code, bits)` excluding the trailing sign bit.
+fn find_vlc_entry(position: CoefficientPosition, run: u8, level_mag: u16) -> Option<(u16, u8)> {
+    for table in [TABLE_B5C, TABLE_B5D, TABLE_B5E] {
+        for entry in table {
+            if entry.run != run || u16::from(entry.level) != level_mag {
+                continue;
+            }
+            if run == 0 && level_mag == 1 {
+                match (entry.bits, position) {
+                    (1, CoefficientPosition::Next) => continue,
+                    (2, CoefficientPosition::First) => continue,
+                    _ => {}
+                }
+            }
+            return Some((entry.code, entry.bits));
+        }
+    }
+    None
+}
+
+/// Emit one `(run, signed_level)` coefficient into `bw` per §2.4.3.7,
+/// using the Table B.5c / B.5d / B.5e VLC + sign bit when the pair is
+/// listed, or the Table B.5f escape otherwise (`000001` + 6-bit run +
+/// the 8-bit short-form level for `|level| <= 127`, or the 16-bit
+/// long form for `128 <= |level| <= 255`).
+///
+/// `position` is FIRST for the first coefficient of a non-intra block
+/// and NEXT otherwise (it only affects the `(0, ±1)` codeword form).
+/// `run` is the zero-run (`0..=63`); `signed_level` the non-zero
+/// amplitude in `[-255, +255] \ {0}` — the Table B.5f codable range.
+///
+/// # Panics (debug)
+/// Debug-asserts the `run` / `signed_level` ranges above.
+pub fn encode_dct_coeff(
+    bw: &mut oxideav_core::bits::BitWriter,
+    position: CoefficientPosition,
+    run: u8,
+    signed_level: i16,
+) {
+    debug_assert!(signed_level != 0, "signed_level = 0 is not codable");
+    debug_assert!(run <= MAX_RUN, "run {run} exceeds MAX_RUN");
+    let negative = signed_level < 0;
+    let level_mag = signed_level.unsigned_abs();
+    debug_assert!(
+        level_mag <= MAX_LEVEL_MAG,
+        "|level| {level_mag} exceeds the Table B.5f cap"
+    );
+    if let Some((code, bits)) = find_vlc_entry(position, run, level_mag) {
+        bw.write_u32(u32::from(code), u32::from(bits));
+        bw.write_bit(negative); // sign bit `s`: 0 = positive, 1 = negative
+        return;
+    }
+    // Table B.5f escape: prefix + 6-bit run + the level encoding.
+    bw.write_u32(ESCAPE_CODE, ESCAPE_BITS);
+    bw.write_u32(u32::from(run), 6);
+    let level = i32::from(signed_level);
+    if (-127..=127).contains(&level) {
+        // Short form: one 8-bit two's-complement byte (0x00 and 0x80
+        // are excluded by the |level| <= 127, level != 0 range).
+        bw.write_u32((level & 0xFF) as u32, 8);
+    } else if level > 0 {
+        // Long form positive: 0x00 marker + 8-bit magnitude 128..=255.
+        bw.write_u32(0x00, 8);
+        bw.write_u32(level as u32, 8);
+    } else {
+        // Long form negative: 0x80 marker + 8-bit `level + 256`
+        // (0x01..=0x80 for level -255..=-128).
+        bw.write_u32(0x80, 8);
+        bw.write_u32((level + 256) as u32, 8);
+    }
+}
+
+/// Emit the `end_of_block` codeword `10` (2 bits) per Table B.5c —
+/// the §2.4.3.7 block terminator (only ever read as `dct_coeff_next`).
+pub fn encode_end_of_block(bw: &mut oxideav_core::bits::BitWriter) {
+    bw.write_u32(END_OF_BLOCK_CODE, END_OF_BLOCK_BITS);
+}
+
+// =============================================================
 // Tests
 // =============================================================
 
@@ -1852,5 +1937,186 @@ mod tests {
         let dbg = format!("{s:?}");
         assert!(dbg.contains("DctCoeffStep"));
         assert!(dbg.contains("RunLevel"));
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    //! Encoder-side coverage: every Table B.5c / B.5d / B.5e row
+    //! round-trips through the parser, the `(0, ±1)` FIRST/NEXT forms
+    //! pick the correct alternate, and the Table B.5f escape carries
+    //! the full `[-255, +255] \ {0}` level range at any run.
+    use super::*;
+    use oxideav_core::bits::BitWriter;
+
+    fn roundtrip(position: CoefficientPosition, run: u8, level: i16) -> (DctCoeff, u64) {
+        let mut bw = BitWriter::new();
+        encode_dct_coeff(&mut bw, position, run, level);
+        let written = bw.bit_position();
+        for _ in 0..4 {
+            bw.write_byte(0);
+        }
+        let bytes = bw.finish();
+        let mut br = BitReader::new(&bytes);
+        let step = DctCoeffStep::parse(&mut br, position).expect("decode emitted symbol");
+        assert_eq!(step.bit_position_after, written, "run {run} level {level}");
+        (step.symbol, written)
+    }
+
+    #[test]
+    fn every_table_row_roundtrips_both_signs() {
+        for table in [TABLE_B5C, TABLE_B5D, TABLE_B5E] {
+            for entry in table {
+                // The 1-bit (0,1) row is FIRST-only; the 2-bit `11s`
+                // row NEXT-only; everything else works at NEXT.
+                let position = if entry.bits == 1 {
+                    CoefficientPosition::First
+                } else {
+                    CoefficientPosition::Next
+                };
+                for sign in [1i16, -1] {
+                    let level = sign * i16::from(entry.level);
+                    let (symbol, bits) = roundtrip(position, entry.run, level);
+                    assert_eq!(
+                        symbol,
+                        DctCoeff::RunLevel {
+                            run: entry.run,
+                            signed_level: level,
+                            escape: false,
+                        },
+                        "table row run {} level {}",
+                        entry.run,
+                        entry.level
+                    );
+                    // Codeword + sign bit — the escape (20+ bits) must
+                    // never beat a listed row.
+                    assert_eq!(bits, u64::from(entry.bits) + 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_run_level_one_uses_position_specific_form() {
+        // FIRST: 1-bit `1` + sign = 2 bits total.
+        let (symbol, bits) = roundtrip(CoefficientPosition::First, 0, 1);
+        assert_eq!(
+            symbol,
+            DctCoeff::RunLevel {
+                run: 0,
+                signed_level: 1,
+                escape: false
+            }
+        );
+        assert_eq!(bits, 2);
+        // NEXT: 2-bit `11` + sign = 3 bits total.
+        let (symbol, bits) = roundtrip(CoefficientPosition::Next, 0, -1);
+        assert_eq!(
+            symbol,
+            DctCoeff::RunLevel {
+                run: 0,
+                signed_level: -1,
+                escape: false
+            }
+        );
+        assert_eq!(bits, 3);
+    }
+
+    #[test]
+    fn escape_short_form_levels_roundtrip() {
+        // Runs / levels outside the tables but inside the 8-bit short
+        // form: |level| <= 127.
+        for &(run, level) in &[
+            (0u8, 41i16),
+            (0, -41),
+            (5, 19),
+            (31, -2),
+            (63, 1),
+            (63, -127),
+            (2, 127),
+            (33, -1),
+        ] {
+            assert!(
+                find_vlc_entry(CoefficientPosition::Next, run, level.unsigned_abs()).is_none(),
+                "({run},{level}) unexpectedly in-table"
+            );
+            let (symbol, bits) = roundtrip(CoefficientPosition::Next, run, level);
+            assert_eq!(
+                symbol,
+                DctCoeff::RunLevel {
+                    run,
+                    signed_level: level,
+                    escape: true
+                },
+                "escape ({run},{level})"
+            );
+            // 6 escape + 6 run + 8 level.
+            assert_eq!(bits, 20, "escape short form is 20 bits");
+        }
+    }
+
+    #[test]
+    fn escape_long_form_levels_roundtrip() {
+        for &(run, level) in &[
+            (0u8, 128i16),
+            (0, -128),
+            (7, 255),
+            (7, -255),
+            (63, 200),
+            (63, -129),
+        ] {
+            let (symbol, bits) = roundtrip(CoefficientPosition::Next, run, level);
+            assert_eq!(
+                symbol,
+                DctCoeff::RunLevel {
+                    run,
+                    signed_level: level,
+                    escape: true
+                },
+                "escape ({run},{level})"
+            );
+            // 6 escape + 6 run + 16 level.
+            assert_eq!(bits, 28, "escape long form is 28 bits");
+        }
+    }
+
+    #[test]
+    fn exhaustive_runs_and_levels_roundtrip() {
+        // Every codable (run, level) pair the §2.4.3.7 walker can
+        // consume: run 0..=63, |level| 1..=255, both signs — table
+        // form or escape, whichever the encoder picks must decode to
+        // the same symbol.
+        for run in 0..=MAX_RUN {
+            for mag in 1..=MAX_LEVEL_MAG {
+                for sign in [1i16, -1] {
+                    let level = sign * mag as i16;
+                    let (symbol, _) = roundtrip(CoefficientPosition::Next, run, level);
+                    match symbol {
+                        DctCoeff::RunLevel {
+                            run: r,
+                            signed_level: l,
+                            ..
+                        } => {
+                            assert_eq!((r, l), (run, level));
+                        }
+                        DctCoeff::EndOfBlock => panic!("({run},{level}) decoded as EoB"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn end_of_block_roundtrips() {
+        let mut bw = BitWriter::new();
+        encode_end_of_block(&mut bw);
+        assert_eq!(bw.bit_position(), 2);
+        for _ in 0..4 {
+            bw.write_byte(0);
+        }
+        let bytes = bw.finish();
+        let mut br = BitReader::new(&bytes);
+        let step = DctCoeffStep::parse(&mut br, CoefficientPosition::Next).expect("decode EoB");
+        assert_eq!(step.symbol, DctCoeff::EndOfBlock);
     }
 }
