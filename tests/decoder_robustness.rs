@@ -81,3 +81,37 @@ fn no_panic_on_garbage_and_empty() {
     salted.extend_from_slice(&v);
     drive(MPEG2_CODEC_ID_STR, &salted);
 }
+
+/// Self-encoded ISO/IEC 11172-2 streams (this crate's own MPEG-1
+/// encoder output — see `tests/fixtures/selfenc/`): the §2.4 decode
+/// path (GOP layer, MPEG-1 picture/slice/block drivers) must survive
+/// truncation and corruption of a stream it normally accepts.
+const MPEG1_SELFENC: &[u8] = include_bytes!("fixtures/selfenc/selfenc-mpeg1-ibbp2gop-64x48.m1v");
+
+#[test]
+fn no_panic_on_truncated_mpeg1_streams() {
+    for n in 0..160.min(MPEG1_SELFENC.len()) {
+        drive(MPEG1_CODEC_ID_STR, &MPEG1_SELFENC[..n]);
+    }
+    let mut n = 0;
+    while n <= MPEG1_SELFENC.len() {
+        drive(MPEG1_CODEC_ID_STR, &MPEG1_SELFENC[..n]);
+        n += 61;
+    }
+}
+
+#[test]
+fn no_panic_on_mpeg1_bit_flips() {
+    for pos in (0..MPEG1_SELFENC.len()).step_by(31) {
+        let mut buf = MPEG1_SELFENC.to_vec();
+        buf[pos] ^= 0xFF;
+        drive(MPEG1_CODEC_ID_STR, &buf);
+    }
+    // Byte-precise flips through the sequence + GOP + first picture
+    // header region, where a flip lands in length/flag fields.
+    for pos in 0..64.min(MPEG1_SELFENC.len()) {
+        let mut buf = MPEG1_SELFENC.to_vec();
+        buf[pos] ^= 0x55;
+        drive(MPEG1_CODEC_ID_STR, &buf);
+    }
+}
