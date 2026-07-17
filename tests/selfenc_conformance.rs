@@ -20,8 +20,9 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_display_order_sequence, encode_i_p_b, encode_i_p_chain,
-    encode_intra_picture, DecodedFrame, FrameBuffer, IntraPictureParams,
+    decode_video_sequence, encode_display_order_gop_sequence, encode_display_order_sequence,
+    encode_i_p_b, encode_i_p_chain, encode_intra_picture, encode_mpeg1_display_order_sequence,
+    encode_mpeg1_intra_stream, DecodedFrame, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
 };
 
 const MAX_ABS_DELTA: i32 = 3;
@@ -204,6 +205,76 @@ fn selfenc_ibbp_sequence_is_pinned_and_reference_conformant() {
     );
     let inputs: Vec<&FrameBuffer> = display.iter().collect();
     assert_reference_conformant("selfenc-ibbp-64x48", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_mpeg2_gop_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-gops-48x32.m2v");
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(48, 32, 2 * k, k, false)).collect();
+    let regenerated = encode_display_order_gop_sequence(&display, 1, 2, params(48, 32), 6, 3, 3)
+        .expect("gop re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-gops-48x32", &stream, &reference, &inputs);
+}
+
+fn mpeg1_seq(width: u16, height: u16) -> Mpeg1SequenceParams {
+    Mpeg1SequenceParams {
+        horizontal_size: width,
+        vertical_size: height,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn selfenc_mpeg1_intra_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-mpeg1-intra-64x48.m1v");
+    let input = frame_at(64, 48, 0, 0, false);
+    let regenerated =
+        encode_mpeg1_intra_stream(&input, &mpeg1_seq(64, 48), 6).expect("mpeg1 intra re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    assert_reference_conformant("selfenc-mpeg1-intra-64x48", &stream, &reference, &[&input]);
+}
+
+#[test]
+fn selfenc_mpeg1_ippp_chain_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-mpeg1-ippp-64x48.m1v");
+    let display = [
+        frame_at(64, 48, 0, 0, false),
+        frame_at(64, 48, 2, 1, false),
+        frame_at(64, 48, 4, 2, true),
+        frame_at(64, 48, 6, 3, true),
+    ];
+    let regenerated =
+        encode_mpeg1_display_order_sequence(&display, 0, 3, &mpeg1_seq(64, 48), 6, 3, 3)
+            .expect("mpeg1 ippp re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-mpeg1-ippp-64x48", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_mpeg1_two_gop_ibbp_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-mpeg1-ibbp2gop-64x48.m1v");
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 5)).collect();
+    let regenerated =
+        encode_mpeg1_display_order_sequence(&display, 2, 1, &mpeg1_seq(64, 48), 6, 3, 3)
+            .expect("mpeg1 ibbp re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-mpeg1-ibbp2gop-64x48", &stream, &reference, &inputs);
 }
 
 #[test]

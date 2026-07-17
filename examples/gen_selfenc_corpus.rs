@@ -1,9 +1,12 @@
 //! Generate the **self-encoded conformance corpus**
 //! (`tests/fixtures/selfenc/`): deterministic synthetic frames pushed
 //! through this crate's own MPEG-2 encoder
-//! (`encode_intra_picture` / `encode_i_p_chain` / `encode_i_p_b`),
-//! whose output streams are then decoded by a black-box reference
-//! decoder to produce the committed `.ref.yuv` files. The paired test
+//! (`encode_intra_picture` / `encode_i_p_chain` / `encode_i_p_b` /
+//! `encode_display_order_gop_sequence`) and MPEG-1 encoder
+//! (`encode_mpeg1_intra_stream` /
+//! `encode_mpeg1_display_order_sequence`), whose output streams are
+//! then decoded by a black-box reference decoder to produce the
+//! committed `.ref.yuv` files. The paired test
 //! `tests/selfenc_conformance.rs` regenerates the streams (pinning
 //! the encoder bit-exactly) and holds our own decode against the
 //! committed reference decode.
@@ -12,8 +15,9 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_intra_picture,
-    FrameBuffer, IntraPictureParams,
+    encode_display_order_gop_sequence, encode_display_order_sequence, encode_i_p_b,
+    encode_i_p_chain, encode_intra_picture, encode_mpeg1_display_order_sequence,
+    encode_mpeg1_intra_stream, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
 };
 
 /// Deterministic busy frame: diagonal luma gradient + 4×4 checker,
@@ -116,4 +120,46 @@ fn main() {
     )
     .expect("i-p-b encode");
     write("selfenc-ipb-64x48.m2v", &ipb);
+
+    // 6. MPEG-2 GOP-structured sequence: 8 frames, 1 B between
+    //    anchors, 2 anchor periods per GOP → GOP headers at display
+    //    0 and 5 (I B P B P | I B P), closed GOPs, per-GOP
+    //    temporal_reference reset.
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(48, 32, 2 * k, k, false)).collect();
+    let gops = encode_display_order_gop_sequence(&display, 1, 2, params(48, 32), 6, 3, 3)
+        .expect("mpeg2 gop encode");
+    write("selfenc-gops-48x32.m2v", &gops);
+
+    // ---- ISO/IEC 11172-2 (MPEG-1) streams -------------------------
+
+    let mpeg1_seq = |w: u16, h: u16| Mpeg1SequenceParams {
+        horizontal_size: w,
+        vertical_size: h,
+        ..Default::default()
+    };
+
+    // 7. MPEG-1 all-intra (one closed GOP, one I picture).
+    let m1_intra = encode_mpeg1_intra_stream(&frame_at(64, 48, 0, 0, false), &mpeg1_seq(64, 48), 6)
+        .expect("mpeg1 intra encode");
+    write("selfenc-mpeg1-intra-64x48.m1v", &m1_intra);
+
+    // 8. MPEG-1 I P P P chain (one GOP, 3 anchor periods, no Bs),
+    //    with the intra-fallback stamp from the second P on.
+    let display: Vec<FrameBuffer> = vec![
+        frame_at(64, 48, 0, 0, false),
+        frame_at(64, 48, 2, 1, false),
+        frame_at(64, 48, 4, 2, true),
+        frame_at(64, 48, 6, 3, true),
+    ];
+    let m1_ipp = encode_mpeg1_display_order_sequence(&display, 0, 3, &mpeg1_seq(64, 48), 6, 3, 3)
+        .expect("mpeg1 ipp encode");
+    write("selfenc-mpeg1-ippp-64x48.m1v", &m1_ipp);
+
+    // 9. MPEG-1 two-GOP I B B P | I B B P (8 frames, 2 Bs between
+    //    anchors, 1 anchor period per GOP): GOP headers with advancing
+    //    time codes, closed GOPs, per-GOP temporal_reference reset.
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 5)).collect();
+    let m1_ibbp = encode_mpeg1_display_order_sequence(&display, 2, 1, &mpeg1_seq(64, 48), 6, 3, 3)
+        .expect("mpeg1 ibbp encode");
+    write("selfenc-mpeg1-ibbp2gop-64x48.m1v", &m1_ibbp);
 }
