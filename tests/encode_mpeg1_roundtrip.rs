@@ -119,8 +119,8 @@ fn ipp_chain_decodes_to_encoder_reconstructions() {
         },
     );
     let r0 = encode_mpeg1_intra_picture(&mut bw, &f0, &p, 0, 6).expect("I");
-    let r1 = encode_mpeg1_p_picture(&mut bw, &f1, &r0, &p, 1, 6, 3).expect("P1");
-    let r2 = encode_mpeg1_p_picture(&mut bw, &f2, &r1, &p, 2, 6, 3).expect("P2");
+    let r1 = encode_mpeg1_p_picture(&mut bw, &f1, &r0, &p, 1, 6, 3, false).expect("P1");
+    let r2 = encode_mpeg1_p_picture(&mut bw, &f2, &r1, &p, 2, 6, 3, false).expect("P2");
     let mut stream = bw.finish();
     stream.extend_from_slice(&[0x00, 0x00, 0x01, 0xB7]);
 
@@ -159,8 +159,8 @@ fn b_picture_group_decodes_in_display_order() {
         },
     );
     let r_i = encode_mpeg1_intra_picture(&mut bw, &f_i, &p, 0, 6).expect("I");
-    let r_p = encode_mpeg1_p_picture(&mut bw, &f_p, &r_i, &p, 2, 6, 3).expect("P");
-    encode_mpeg1_b_picture(&mut bw, &f_b, &r_i, &r_p, &p, 1, 6, 3, 3).expect("B");
+    let r_p = encode_mpeg1_p_picture(&mut bw, &f_p, &r_i, &p, 2, 6, 3, false).expect("P");
+    encode_mpeg1_b_picture(&mut bw, &f_b, &r_i, &r_p, &p, 1, 6, 3, 3, false, false).expect("B");
     let mut stream = bw.finish();
     stream.extend_from_slice(&[0x00, 0x00, 0x01, 0xB7]);
 
@@ -379,4 +379,64 @@ fn loaded_quantizer_matrices_thread_through_encode_and_decode() {
         let mae = luma_mae(&display[k], &decoded.frame);
         assert!(mae < 7.0, "frame {k}: luma MAE {mae:.2}");
     }
+}
+
+#[test]
+fn full_pel_vectors_roundtrip_sample_exact() {
+    // full_pel_forward_vector / full_pel_backward_vector = 1: the wire
+    // codes unshifted integer-pel vectors that the §2.4.4.2/§2.4.4.3
+    // final `recon <<= 1` doubles back. The decode must still equal
+    // the encoder's reconstructions exactly, and the picture headers
+    // must carry the flags.
+    use oxideav_core::bits::BitWriter;
+    use oxideav_mpeg12video::gop_header::write_gop_header;
+    use oxideav_mpeg12video::picture_header::Mpeg2PictureHeader;
+    use oxideav_mpeg12video::write_mpeg1_sequence_header;
+
+    let (w, h) = (64usize, 48usize);
+    let p = params(w, h);
+    // A 6-pel shift: exactly representable as a full-pel vector.
+    let f_i = frame_at(w, h, 0, 0, false);
+    let f_b = frame_at(w, h, 3, 0, false);
+    let f_p = frame_at(w, h, 6, 0, false);
+
+    let mut bw = BitWriter::new();
+    write_mpeg1_sequence_header(&mut bw, &seq(w as u16, h as u16)).expect("write header");
+    write_gop_header(
+        &mut bw,
+        &Mpeg2Gop {
+            time_code: TimeCode::from_display_index(0, 3).unwrap(),
+            closed_gop: true,
+            broken_link: false,
+        },
+    );
+    let r_i = encode_mpeg1_intra_picture(&mut bw, &f_i, &p, 0, 6).expect("I");
+    let r_p = encode_mpeg1_p_picture(&mut bw, &f_p, &r_i, &p, 2, 6, 3, true).expect("P full-pel");
+    encode_mpeg1_b_picture(&mut bw, &f_b, &r_i, &r_p, &p, 1, 6, 3, 3, true, true)
+        .expect("B full-pel");
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&[0x00, 0x00, 0x01, 0xB7]);
+
+    // The two inter picture headers carry the full_pel flags.
+    let pic_starts: Vec<usize> = stream
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w4)| w4 == &[0x00, 0x00, 0x01, 0x00])
+        .map(|(pos, _)| pos)
+        .collect();
+    assert_eq!(pic_starts.len(), 3);
+    let p_hdr = Mpeg2PictureHeader::parse(&stream[pic_starts[1]..]).expect("P header");
+    assert_eq!(p_hdr.full_pel_forward_vector, Some(true));
+    let b_hdr = Mpeg2PictureHeader::parse(&stream[pic_starts[2]..]).expect("B header");
+    assert_eq!(b_hdr.full_pel_forward_vector, Some(true));
+    assert_eq!(b_hdr.full_pel_backward_vector, Some(true));
+
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 3);
+    assert_frames_equal(&frames[0].frame, &r_i, "I");
+    assert_frames_equal(&frames[2].frame, &r_p, "P full-pel");
+    // Fidelity: the shifts are integer-pel so the full-pel restriction
+    // costs nothing.
+    assert!(luma_mae(&f_p, &frames[2].frame) < 6.0, "P fidelity");
+    assert!(luma_mae(&f_b, &frames[1].frame) < 6.0, "B fidelity");
 }

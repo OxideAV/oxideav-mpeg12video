@@ -396,10 +396,15 @@ MPEG-2 encoders declare `progressive_sequence = 1` (+ §6.3.10
 MPEG-1 streams declare (and satisfy) the §2.4.3.2
 constrained-parameters bounds.
 
-Field-picture / field-based inter encoding (`frame_pred_frame_dct = 0`),
-rate control (vbv_delay is emitted as the 0xFFFF variable-rate marker),
-MPEG-1 `full_pel_*_vector = 1` emission, D-picture encoding, and
-encoder runtime-registry wiring remain future work (the **decoder** is
+MPEG-1 `full_pel_*_vector = 1` emission is supported per direction
+(`write_mpeg1_picture_header` + the P/B encoders' `full_pel_*` flags:
+vectors confined to integer-pel positions, the wire carrying the
+unshifted values the §2.4.4.2 / §2.4.4.3 final `recon <<= 1`
+restores; pinned by a sample-exact round-trip and a strict black-box
+decode). Field-picture / field-based inter encoding
+(`frame_pred_frame_dct = 0`), rate control (vbv_delay is emitted as
+the 0xFFFF variable-rate marker), D-picture encoding, and encoder
+runtime-registry wiring remain future work (the **decoder** is
 registry-wired — see **Runtime decoder** above).
 
 ## Not yet supported

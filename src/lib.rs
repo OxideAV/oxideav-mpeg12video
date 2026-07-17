@@ -492,8 +492,8 @@ pub use mpeg1_encoder::{
 };
 pub use mpeg1_picture::Mpeg1PictureParams;
 pub use mpeg1_stream_writer::{
-    constrained_parameters_admissible, write_mpeg1_sequence_header, Mpeg1SequenceParams,
-    CPB_MAX_BIT_RATE_VALUE, CPB_MAX_VBV_BUFFER_SIZE_VALUE,
+    constrained_parameters_admissible, write_mpeg1_picture_header, write_mpeg1_sequence_header,
+    Mpeg1SequenceParams, CPB_MAX_BIT_RATE_VALUE, CPB_MAX_VBV_BUFFER_SIZE_VALUE,
 };
 pub use p_picture_encoder::encode_p_picture;
 pub use picture_header::PictureCodingType;

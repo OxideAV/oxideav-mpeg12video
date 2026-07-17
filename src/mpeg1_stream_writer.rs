@@ -215,6 +215,72 @@ pub fn write_mpeg1_sequence_header(bw: &mut BitWriter, p: &Mpeg1SequenceParams) 
     Ok(())
 }
 
+/// Write a §2.4.2.5 MPEG-1 `picture()` header with explicit
+/// `full_pel_forward_vector` / `full_pel_backward_vector` control —
+/// the general form of [`crate::stream_writer::write_picture_header`]
+/// (which always writes the flags `'0'`).
+///
+/// Field order per §2.4.2.5: `picture_start_code`,
+/// `temporal_reference` (10), `picture_coding_type` (3), `vbv_delay`
+/// (16, emitted as the `0xFFFF` variable-rate marker), then for P/B
+/// pictures `full_pel_forward_vector` + `forward_f_code` (3) and for
+/// B pictures `full_pel_backward_vector` + `backward_f_code` (3),
+/// the closing `extra_bit_picture = '0'`, and zero-padding to the
+/// byte boundary for `next_start_code()`.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] on an out-of-range f_code for the
+/// directions the coding type carries (§2.4.3.4 `1..=7`).
+pub fn write_mpeg1_picture_header(
+    bw: &mut BitWriter,
+    temporal_reference: u16,
+    coding_type: crate::picture_header::PictureCodingType,
+    full_pel_forward: bool,
+    forward_f_code: u8,
+    full_pel_backward: bool,
+    backward_f_code: u8,
+) -> Result<()> {
+    use crate::picture_header::{PictureCodingType, PICTURE_START_CODE};
+
+    let has_forward = matches!(
+        coding_type,
+        PictureCodingType::Predictive | PictureCodingType::Bidirectional
+    );
+    let has_backward = coding_type == PictureCodingType::Bidirectional;
+    if has_forward && !(1..=7).contains(&forward_f_code) {
+        return Err(Error::InvalidBitstream(
+            "forward_f_code outside 1..=7 (§2.4.3.4)",
+        ));
+    }
+    if has_backward && !(1..=7).contains(&backward_f_code) {
+        return Err(Error::InvalidBitstream(
+            "backward_f_code outside 1..=7 (§2.4.3.4)",
+        ));
+    }
+
+    bw.write_u32(PICTURE_START_CODE, 32);
+    bw.write_u32(u32::from(temporal_reference), 10);
+    let ct_code = match coding_type {
+        PictureCodingType::Intra => 0b001,
+        PictureCodingType::Predictive => 0b010,
+        PictureCodingType::Bidirectional => 0b011,
+        PictureCodingType::DcIntra => 0b100,
+    };
+    bw.write_u32(ct_code, 3);
+    bw.write_u32(0xFFFF, 16); // vbv_delay (variable-rate marker)
+    if has_forward {
+        bw.write_bit(full_pel_forward);
+        bw.write_u32(u32::from(forward_f_code), 3);
+    }
+    if has_backward {
+        bw.write_bit(full_pel_backward);
+        bw.write_u32(u32::from(backward_f_code), 3);
+    }
+    bw.write_bit(false); // extra_bit_picture = 0
+    bw.align_to_byte();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

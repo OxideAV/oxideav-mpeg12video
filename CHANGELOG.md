@@ -58,6 +58,16 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `encode_display_order_gop_sequence` assembler: one I-picture per
   GOP, per-GOP time codes, closed GOPs, and the §6.3.9 per-GOP
   `temporal_reference` reset.
+- round 416: **MPEG-1 `full_pel_*_vector = 1` emission** —
+  `mpeg1_stream_writer::write_mpeg1_picture_header` (the §2.4.2.5
+  picture header with per-direction full-pel flag control) and
+  `full_pel_forward` / `full_pel_backward` parameters on
+  `encode_mpeg1_p_picture` / `encode_mpeg1_b_picture`: vectors are
+  confined to integer-pel positions and the wire (and predictor
+  pair) carries the unshifted values the §2.4.4.2 / §2.4.4.3 final
+  `recon <<= 1` restores. Round-trip test pins the header flags and
+  the sample-exact decode; a full-pel stream passes the black-box
+  strict decode clean.
 - round 416: **downloadable §2.4.3.2 quantiser matrices in the
   MPEG-1 encoder** — `Mpeg1SequenceParams` carries optional
   `intra_quant_matrix` / `non_intra_quant_matrix` zigzag payloads;

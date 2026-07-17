@@ -68,14 +68,15 @@ use crate::motion_vector::encode_motion_component;
 use crate::mpeg1_block_decoder::intra_block_kind;
 use crate::mpeg1_picture::Mpeg1PictureParams;
 use crate::mpeg1_stream_writer::{
-    constrained_parameters_admissible, write_mpeg1_sequence_header, Mpeg1SequenceParams,
+    constrained_parameters_admissible, write_mpeg1_picture_header, write_mpeg1_sequence_header,
+    Mpeg1SequenceParams,
 };
 use crate::mpeg2_block_dc::ColourComponent;
 use crate::mpeg2_macroblock_blocks::block_component;
 use crate::p_picture_encoder::wrap_delta;
 use crate::picture_header::PictureCodingType;
 use crate::sequence_extension::ChromaFormat;
-use crate::stream_writer::{write_picture_header, write_slice_header, SEQUENCE_END_CODE};
+use crate::stream_writer::{write_slice_header, SEQUENCE_END_CODE};
 use crate::{Error, Result};
 
 /// A macroblock's chroma extent in samples for the 4:2:0 layout MPEG-1
@@ -532,7 +533,15 @@ pub fn encode_mpeg1_intra_picture(
 
     // I-pictures carry no f_code fields; the writer's P/B-gated
     // arguments are unused.
-    write_picture_header(bw, temporal_reference, PictureCodingType::Intra, 7, 7);
+    write_mpeg1_picture_header(
+        bw,
+        temporal_reference,
+        PictureCodingType::Intra,
+        false,
+        7,
+        false,
+        7,
+    )?;
 
     let mut recon = FrameBuffer::new(params.width, params.height, ChromaFormat::Yuv420);
     let mb_w = params.mb_width();
@@ -572,6 +581,12 @@ pub fn encode_mpeg1_intra_picture(
 /// the §2.4.4.2 `recon_*_prev` pair (reset at slice start and after
 /// every intra macroblock).
 ///
+/// With `full_pel_forward` the picture header's
+/// `full_pel_forward_vector` flag is `'1'` and vectors are confined
+/// to integer-pel positions: the wire codes the **unshifted** value
+/// the §2.4.4.2 final `recon <<= 1` doubles back to the vector used
+/// for prediction (the predictor pair also lives unshifted).
+///
 /// Returns the encoder-side reconstruction (the decoder's exact
 /// frame) to chain as the next reference.
 pub fn encode_mpeg1_p_picture(
@@ -582,18 +597,21 @@ pub fn encode_mpeg1_p_picture(
     temporal_reference: u16,
     quantizer_scale_code: u8,
     forward_f_code: u8,
+    full_pel_forward: bool,
 ) -> Result<FrameBuffer> {
     check_quantizer_scale(quantizer_scale_code)?;
     check_f_code(forward_f_code)?;
     let search_range = max_search_range(forward_f_code).min(16);
 
-    write_picture_header(
+    write_mpeg1_picture_header(
         bw,
         temporal_reference,
         PictureCodingType::Predictive,
+        full_pel_forward,
         forward_f_code,
+        false,
         7,
-    );
+    )?;
 
     let mut recon = FrameBuffer::new(params.width, params.height, ChromaFormat::Yuv420);
     let mb_w = params.mb_width();
@@ -607,7 +625,17 @@ pub fn encode_mpeg1_p_picture(
         for mb_col in 0..mb_w {
             let address = (mb_row * mb_w + mb_col) as i32;
             let search = estimate_forward_mv(current, reference, mb_col, mb_row, search_range);
-            let mv = search.vector;
+            // full_pel: confine to integer-pel positions (truncate the
+            // half-pel refinement toward zero, keeping the §7.6.4-
+            // equivalent read span inside the picture).
+            let mv = if full_pel_forward {
+                crate::inter_reconstruction::MotionVectorPel::new(
+                    (search.vector.horizontal / 2) * 2,
+                    (search.vector.vertical / 2) * 2,
+                )
+            } else {
+                search.vector
+            };
 
             // Intra fallback when the best prediction is much worse
             // than the macroblock's own activity.
@@ -662,12 +690,19 @@ pub fn encode_mpeg1_p_picture(
                 bw.write_u32(0b001, 3);
             }
 
-            // Forward motion vector, §2.4.4.2 differential.
-            let dx = wrap_delta(mv.horizontal - pmv.0, forward_f_code)?;
-            let dy = wrap_delta(mv.vertical - pmv.1, forward_f_code)?;
+            // Forward motion vector, §2.4.4.2 differential. With
+            // full_pel the wire carries the unshifted (pre-`<< 1`)
+            // value and the predictor pair stays unshifted too.
+            let (wire_h, wire_v) = if full_pel_forward {
+                (mv.horizontal / 2, mv.vertical / 2)
+            } else {
+                (mv.horizontal, mv.vertical)
+            };
+            let dx = wrap_delta(wire_h - pmv.0, forward_f_code)?;
+            let dy = wrap_delta(wire_v - pmv.1, forward_f_code)?;
             encode_motion_component(bw, dx, forward_f_code);
             encode_motion_component(bw, dy, forward_f_code);
-            pmv = (mv.horizontal, mv.vertical);
+            pmv = (wire_h, wire_v);
 
             if cbp != 0 {
                 encode_cbp420(bw, cbp);
@@ -715,7 +750,10 @@ fn write_b_macroblock_type(bw: &mut BitWriter, dir: BDirection, coded: bool) {
 /// predictions are scored by luma SAD and the cheapest is coded
 /// (Table B.2c), forward vectors before backward, each direction with
 /// its own §2.4.4.3 predictor pair (updated only when that direction
-/// transmits — the carry-over-on-absence rule).
+/// transmits — the carry-over-on-absence rule). `full_pel_forward` /
+/// `full_pel_backward` confine the matching direction to integer-pel
+/// vectors and code the unshifted values (the §2.4.4.2/§2.4.4.3
+/// final `recon <<= 1` restores them).
 ///
 /// B-pictures are never references, so nothing is returned.
 pub fn encode_mpeg1_b_picture(
@@ -728,6 +766,8 @@ pub fn encode_mpeg1_b_picture(
     quantizer_scale_code: u8,
     forward_f_code: u8,
     backward_f_code: u8,
+    full_pel_forward: bool,
+    full_pel_backward: bool,
 ) -> Result<()> {
     check_quantizer_scale(quantizer_scale_code)?;
     check_f_code(forward_f_code)?;
@@ -735,13 +775,15 @@ pub fn encode_mpeg1_b_picture(
     let fwd_range = max_search_range(forward_f_code).min(16);
     let bwd_range = max_search_range(backward_f_code).min(16);
 
-    write_picture_header(
+    write_mpeg1_picture_header(
         bw,
         temporal_reference,
         PictureCodingType::Bidirectional,
+        full_pel_forward,
         forward_f_code,
+        full_pel_backward,
         backward_f_code,
-    );
+    )?;
 
     let mb_w = params.mb_width();
     // Geometry carrier for the prediction former (samples never read).
@@ -754,8 +796,25 @@ pub fn encode_mpeg1_b_picture(
         let mut pmv_bwd = (0i32, 0i32);
 
         for mb_col in 0..mb_w {
-            let fwd = estimate_forward_mv(current, forward, mb_col, mb_row, fwd_range).vector;
-            let bwd = estimate_forward_mv(current, backward, mb_col, mb_row, bwd_range).vector;
+            let full_pel_confine = |v: crate::inter_reconstruction::MotionVectorPel,
+                                    full_pel: bool| {
+                if full_pel {
+                    crate::inter_reconstruction::MotionVectorPel::new(
+                        (v.horizontal / 2) * 2,
+                        (v.vertical / 2) * 2,
+                    )
+                } else {
+                    v
+                }
+            };
+            let fwd = full_pel_confine(
+                estimate_forward_mv(current, forward, mb_col, mb_row, fwd_range).vector,
+                full_pel_forward,
+            );
+            let bwd = full_pel_confine(
+                estimate_forward_mv(current, backward, mb_col, mb_row, bwd_range).vector,
+                full_pel_backward,
+            );
 
             let pred_fwd = predict_frame_macroblock_planes(
                 &geom,
@@ -822,19 +881,31 @@ pub fn encode_mpeg1_b_picture(
             write_b_macroblock_type(bw, dir, coded);
 
             // Forward vector(s) precede backward (§2.4.2.7 order).
+            // With full_pel the wire and predictor carry the
+            // unshifted (pre-`<< 1`) values.
             if matches!(dir, BDirection::Forward | BDirection::Interpolated) {
-                let dx = wrap_delta(fwd.horizontal - pmv_fwd.0, forward_f_code)?;
-                let dy = wrap_delta(fwd.vertical - pmv_fwd.1, forward_f_code)?;
+                let (wire_h, wire_v) = if full_pel_forward {
+                    (fwd.horizontal / 2, fwd.vertical / 2)
+                } else {
+                    (fwd.horizontal, fwd.vertical)
+                };
+                let dx = wrap_delta(wire_h - pmv_fwd.0, forward_f_code)?;
+                let dy = wrap_delta(wire_v - pmv_fwd.1, forward_f_code)?;
                 encode_motion_component(bw, dx, forward_f_code);
                 encode_motion_component(bw, dy, forward_f_code);
-                pmv_fwd = (fwd.horizontal, fwd.vertical);
+                pmv_fwd = (wire_h, wire_v);
             }
             if matches!(dir, BDirection::Backward | BDirection::Interpolated) {
-                let dx = wrap_delta(bwd.horizontal - pmv_bwd.0, backward_f_code)?;
-                let dy = wrap_delta(bwd.vertical - pmv_bwd.1, backward_f_code)?;
+                let (wire_h, wire_v) = if full_pel_backward {
+                    (bwd.horizontal / 2, bwd.vertical / 2)
+                } else {
+                    (bwd.horizontal, bwd.vertical)
+                };
+                let dx = wrap_delta(wire_h - pmv_bwd.0, backward_f_code)?;
+                let dy = wrap_delta(wire_v - pmv_bwd.1, backward_f_code)?;
                 encode_motion_component(bw, dx, backward_f_code);
                 encode_motion_component(bw, dy, backward_f_code);
-                pmv_bwd = (bwd.horizontal, bwd.vertical);
+                pmv_bwd = (wire_h, wire_v);
             }
 
             if coded {
@@ -1006,6 +1077,7 @@ pub fn encode_mpeg1_display_order_sequence(
                 (next_anchor - gop_start) as u16,
                 quantizer_scale_code,
                 forward_f_code,
+                false,
             )?;
             for b in (prev_anchor + 1)..next_anchor {
                 encode_mpeg1_b_picture(
@@ -1018,6 +1090,8 @@ pub fn encode_mpeg1_display_order_sequence(
                     quantizer_scale_code,
                     forward_f_code,
                     backward_f_code,
+                    false,
+                    false,
                 )?;
             }
             forward_ref = backward_ref;
