@@ -263,10 +263,11 @@ decoder reusable.
 
 ## Encoder
 
-An **MPEG-2 video encoder** is now in hand for the baseline intra path
-**and motion-compensated P + B pictures**, built as the bit-exact
-inverse of the decode pipeline so that everything it emits round-trips
-back through `decode_video_sequence`:
+An **MPEG-2 video encoder** is in hand for the baseline intra path
+**and motion-compensated P + B pictures**, and a **conformant MPEG-1
+(ISO/IEC 11172-2) encoder** now sits beside it — both built as the
+bit-exact inverse of the decode pipeline so that everything they emit
+round-trips back through `decode_video_sequence`. The MPEG-2 side:
 
 - **§A forward DCT** (`forward_dct::fdct_8x8`, plus the `f64` reference
   / separable layers) — the transpose of the §A IDCT kernel.
@@ -322,27 +323,83 @@ back through `decode_video_sequence`:
   motion-compensated copy is a bit-exact fixed point, a clean translation
   reconstructs with luma MAE < 4, an unpredictable region triggers the
   intra fallback, and an I-B-P group decodes in display order.
+- **GOP-structured assembly** — `encode_display_order_gop_sequence`
+  extends the display-order assembler with §6.2.2.6
+  `group_of_pictures_header()` emission (`gop_header::write_gop_header`
+  + `TimeCode::from_display_index`, which counts at the Table 6-4
+  nominal integral rate per the `drop_frame = 0` rule): one I-picture
+  per GOP, per-GOP time codes, `closed_gop = 1` (the emitted structure
+  never codes a B across a GOP boundary) with `broken_link = 0`, and
+  the §6.3.9 per-GOP `temporal_reference` reset.
 
-The encoder is now **externally conformance-validated**: a pinned
-self-encoded corpus (`tests/fixtures/selfenc/` — all-intra 64×48 and
-non-macroblock-multiple 100×62, an I+3P motion-compensated chain with
-intra fallback, and an I/B/P group) decodes in a black-box reference
-decoder (strict error-detection mode clean) with its committed
-reference decode agreeing with ours at max |Δ| 2 (pure Annex A IDCT
-rounding). `tests/selfenc_conformance.rs` pins the encoder
-**bit-exactly** (regenerate-and-compare against the committed
-streams) so any bit-moving encoder change must consciously refresh
-the corpus and re-run the black-box validation. Getting there fixed a
-real encoder bug: the motion search could pick §7.6.3.8-illegal
-vectors at right/bottom edge macroblocks (scored through the padding
-predictor, mirrored by our own padding decoder); it now visits only
-vectors whose whole §7.6.4 read span stays inside the coded picture.
-The encoders declare `progressive_sequence = 1` (+ §6.3.10
-`progressive_frame`), matching the `Ceil(h/16)` grid they code.
+An **MPEG-1 (ISO/IEC 11172-2) encoder** (`mpeg1_encoder`) mirrors the
+whole path against the crate's own §2.4 decode pipeline:
+
+- **Sequence layer** — `mpeg1_stream_writer::write_mpeg1_sequence_header`
+  (the §2.4.2.3 header: `pel_aspect_ratio` / `picture_rate` semantics,
+  **no** `sequence_extension()` — its absence is the 11172-2
+  classification) with `constrained_parameters_admissible` evaluating
+  the §2.4.3.2 bounds (768×576 / 396-MB / MB×rate / rate ≤ 30 /
+  f_code ≤ 4 / 1 856 000 bit/s / 327 680-bit VBV) so the assembler
+  sets `constrained_parameters_flag` exactly when they hold; the
+  **mandatory** §2.4.2.4 GOP layer is always emitted.
+- **Entropy layer** — `block_dc::encode_dc_coefficient` (Tables
+  B.5a/B.5b DC prelude, exhaustively round-tripped over `[-255, 255]`),
+  `dct_coeff::encode_dct_coeff` (Tables B.5c/B.5d/B.5e + the Table
+  B.5f short/long escape, exhaustively round-tripped over run 0..=63 ×
+  |level| 1..=255), and the §2.4.4.1 round-to-nearest / §2.4.4.2
+  dead-zone forward quantisers (`forward_quant::mpeg1_*`,
+  `quantizer_scale` used directly).
+- **Picture encoders** — `encode_mpeg1_intra_picture` (DC differentials
+  against the exact `dct_dc_*_past` chain including the
+  `past_intra_address` reset branch), `encode_mpeg1_p_picture`
+  (Table B.2b modes + intra fallback, §2.4.4.2 `recon_*_prev`
+  differential MVs, the picture header's real 3-bit f_code +
+  `full_pel = 0`), and `encode_mpeg1_b_picture` (Table B.2c
+  forward/backward/interpolated modes, per-direction predictors
+  updated only on transmission). All reconstructions come from the
+  decoder's own dequantiser + Annex A IDCT, so decodes are
+  sample-exact against the encoder's returned frames.
+- **`encode_mpeg1_display_order_sequence`** — the whole display-order
+  assembler: `sequence_header` → one `group_of_pictures()` per GOP
+  (time codes from each GOP's first display frame, `closed_gop = 1`,
+  `broken_link = 0`, per-GOP `temporal_reference` reset per §2.4.3.4)
+  → `I (B…) P (B…) P` coded-order groups that never predict across a
+  GOP boundary → `sequence_end_code`. D-pictures are never emitted
+  (§2.4.3.4 confines them to D-only sequences).
+  `encode_mpeg1_intra_stream` is the single-frame degenerate.
+  `tests/encode_mpeg1_roundtrip.rs` pins sample-exact I/P/B decodes,
+  the two-GOP temporal-reference pattern, parse-back of the GOP
+  headers/time codes, 100×62 geometry, wide motion at f_code 4, and
+  the absence of any extension start code.
+
+Both encoders are **externally conformance-validated**: a pinned
+self-encoded corpus (`tests/fixtures/selfenc/` — nine streams: MPEG-2
+all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
+motion-compensated chain with intra fallback, an I/B/P group, a
+7-frame IBBP display-order sequence, a two-GOP MPEG-2 stream with GOP
+headers, and three MPEG-1 streams — all-intra, one-GOP I P P P, and a
+two-GOP I B B P | I B B P) decodes in a black-box reference decoder
+(strict error-detection mode clean) with its committed reference
+decode agreeing with ours at max |Δ| 2 (pure Annex A IDCT rounding).
+`tests/selfenc_conformance.rs` pins every stream **bit-exactly**
+(regenerate-and-compare against the committed bytes) so any
+bit-moving encoder change must consciously refresh the corpus and
+re-run the black-box validation. Getting there fixed a real encoder
+bug: the motion search could pick §7.6.3.8-illegal vectors at
+right/bottom edge macroblocks (scored through the padding predictor,
+mirrored by our own padding decoder); it now visits only vectors
+whose whole §7.6.4 read span stays inside the coded picture. The
+MPEG-2 encoders declare `progressive_sequence = 1` (+ §6.3.10
+`progressive_frame`), matching the `Ceil(h/16)` grid they code; the
+MPEG-1 streams declare (and satisfy) the §2.4.3.2
+constrained-parameters bounds.
 
 Field-picture / field-based inter encoding (`frame_pred_frame_dct = 0`),
-rate control, and encoder runtime-registry wiring remain future work
-(the **decoder** is now registry-wired — see **Runtime decoder** above).
+rate control (vbv_delay is emitted as the 0xFFFF variable-rate marker),
+MPEG-1 `full_pel_*_vector = 1` emission, D-picture encoding, and
+encoder runtime-registry wiring remain future work (the **decoder** is
+registry-wired — see **Runtime decoder** above).
 
 ## Not yet supported
 

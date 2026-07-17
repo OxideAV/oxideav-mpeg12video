@@ -6,6 +6,67 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- round 416: **conformant ISO/IEC 11172-2 (MPEG-1) encode path**
+  (`mpeg1_encoder`) — the bit-exact inverse of the crate's §2.4
+  decode pipeline:
+  - `mpeg1_stream_writer::write_mpeg1_sequence_header` (§2.4.2.3
+    header with MPEG-1 field semantics and **no**
+    `sequence_extension()` — its absence is the 11172-2
+    classification) + `constrained_parameters_admissible` evaluating
+    the §2.4.3.2 bounds (768×576, 396 MBs, MB×rate ≤ 396·25,
+    rate ≤ 30, f_codes ≤ 4, 1 856 000 bit/s, 327 680-bit VBV) so the
+    assembler sets `constrained_parameters_flag` exactly when they
+    hold.
+  - MPEG-1 entropy encoders: `block_dc::encode_dc_coefficient`
+    (Tables B.5a/B.5b DC prelude, exhaustive `[-255, 255]`
+    round-trip), `dct_coeff::encode_dct_coeff` /
+    `encode_end_of_block` (Tables B.5c–B.5e VLCs with the `(0, ±1)`
+    FIRST/NEXT two-form rule + the Table B.5f short/long escape,
+    exhaustive run 0..=63 × |level| 1..=255 round-trip), and the
+    §2.4.4.1 round-to-nearest / §2.4.4.2 dead-zone forward
+    quantisers (`forward_quant::mpeg1_forward_quantise_intra_ac` /
+    `mpeg1_forward_quantise_non_intra`, `quantizer_scale` used
+    directly, ±255 clamp).
+  - Picture encoders `encode_mpeg1_intra_picture` (§2.4.2.8 DC
+    differentials against the exact §2.4.4.1 `dct_dc_*_past` chain
+    incl. the `past_intra_address` reset branch, every macroblock
+    coded per §2.4.4.4), `encode_mpeg1_p_picture` (Table B.2b
+    `MC Coded` / `MC Not Coded` / intra-fallback modes, §2.4.4.2
+    `recon_*_prev` differential MVs with slice-start + after-intra
+    resets, real 3-bit picture-header f_code, `full_pel = 0`), and
+    `encode_mpeg1_b_picture` (Table B.2c forward/backward/
+    interpolated modes, per-direction §2.4.4.3 predictors updated
+    only on transmission) — each reconstructing through the
+    decoder's own dequantiser + Annex A IDCT so decodes are
+    sample-exact against the encoder's returned frames.
+  - `encode_mpeg1_display_order_sequence` /
+    `encode_mpeg1_intra_stream` — whole display-order assembly with
+    the **mandatory §2.4.2.4 GOP layer**: per-GOP §2.4.3.3 time
+    codes, `closed_gop = 1` (no B ever predicts across a GOP
+    boundary in the emitted structure), `broken_link = 0`, per-GOP
+    `temporal_reference` reset (§2.4.3.4), anchors every
+    `b_between + 1` display frames with the final frame always an
+    anchor, D-picture-free.
+- round 416: **GOP header emission** —
+  `gop_header::write_gop_header` (the §6.2.2.6 / §2.4.2.4 writer,
+  byte-exact against the existing parser) and
+  `TimeCode::from_display_index` (+ `nominal_pictures_per_second`,
+  the Table 6-4 / §2.4.3.2 rate table under the `drop_frame = 0`
+  nearest-integral-rate counting rule), plus the MPEG-2
+  `encode_display_order_gop_sequence` assembler: one I-picture per
+  GOP, per-GOP time codes, closed GOPs, and the §6.3.9 per-GOP
+  `temporal_reference` reset.
+- round 416: **self-encoded corpus extended to nine streams** —
+  `selfenc-mpeg1-intra-64x48.m1v`, `selfenc-mpeg1-ippp-64x48.m1v`,
+  `selfenc-mpeg1-ibbp2gop-64x48.m1v`, and `selfenc-gops-48x32.m2v`
+  (MPEG-2 GOP structure), each black-box validated (strict
+  error-detection clean; committed reference decodes agree with ours
+  at max |Δ| = 2, ≤ 1.7 % samples differing) and pinned bit-exactly
+  by `tests/selfenc_conformance.rs`; the five pre-existing MPEG-2
+  fixtures regenerate byte-identical (no encoder bit drift).
+
 ### Changed
 
 - Internal §6 syntax-walker / §7 reconstruction / encoder-stage plumbing
