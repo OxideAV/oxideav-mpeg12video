@@ -406,6 +406,7 @@ pub mod motion_vector;
 pub mod motion_vector_selection;
 #[doc(hidden)] // internal: MPEG-1 block(i) driver
 pub mod mpeg1_block_decoder;
+pub mod mpeg1_encoder;
 #[doc(hidden)] // internal: MPEG-1 §2.4.2.7 motion-vector walker
 pub mod mpeg1_motion_vector;
 #[doc(hidden)] // internal: MPEG-1 picture-layer parser
@@ -484,6 +485,15 @@ pub use inter_encoder::{
 };
 pub use inter_reconstruction::InterError;
 pub use intra_encoder::encode_intra_picture;
+pub use mpeg1_encoder::{
+    encode_mpeg1_b_picture, encode_mpeg1_display_order_sequence, encode_mpeg1_intra_picture,
+    encode_mpeg1_intra_stream, encode_mpeg1_p_picture,
+};
+pub use mpeg1_picture::Mpeg1PictureParams;
+pub use mpeg1_stream_writer::{
+    constrained_parameters_admissible, write_mpeg1_sequence_header, Mpeg1SequenceParams,
+    CPB_MAX_BIT_RATE_VALUE, CPB_MAX_VBV_BUFFER_SIZE_VALUE,
+};
 pub use p_picture_encoder::encode_p_picture;
 pub use picture_header::PictureCodingType;
 pub use sequence_extension::ChromaFormat;
