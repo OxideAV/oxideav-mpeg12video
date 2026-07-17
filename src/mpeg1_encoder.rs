@@ -858,11 +858,25 @@ pub fn encode_mpeg1_b_picture(
 /// Derive the [`Mpeg1PictureParams`] (default §2.4.3.2 matrices) for a
 /// sequence-parameter set.
 fn picture_params(seq: &Mpeg1SequenceParams) -> Mpeg1PictureParams {
+    // §2.4.3.2: a loaded matrix payload is transmitted in zigzag
+    // order; inverse-zigzag it into the raster W[m][n] the §2.4.4
+    // arithmetic (and its forward inverse) consumes. The MPEG-1
+    // §2.4.4.1 scan is the §7.3.1 default scan, so the shared
+    // payload converter applies.
+    let to_raster = |zz: [u8; 64]| {
+        crate::quant_matrix_extension::QuantiserMatrixPayload { bytes: zz }.to_matrix()
+    };
     Mpeg1PictureParams {
         width: usize::from(seq.horizontal_size),
         height: usize::from(seq.vertical_size),
-        intra_quant: crate::dequantize::DEFAULT_INTRA_QUANT,
-        non_intra_quant: crate::dequantize::DEFAULT_NON_INTRA_QUANT,
+        intra_quant: seq
+            .intra_quant_matrix
+            .map(to_raster)
+            .unwrap_or(crate::dequantize::DEFAULT_INTRA_QUANT),
+        non_intra_quant: seq
+            .non_intra_quant_matrix
+            .map(to_raster)
+            .unwrap_or(crate::dequantize::DEFAULT_NON_INTRA_QUANT),
     }
 }
 
@@ -945,7 +959,7 @@ pub fn encode_mpeg1_display_order_sequence(
     };
 
     let mut bw = BitWriter::new();
-    write_mpeg1_sequence_header(&mut bw, &seq_effective);
+    write_mpeg1_sequence_header(&mut bw, &seq_effective)?;
 
     // GOP partition: each GOP spans display indices [gop_start,
     // gop_end] where gop_end is the GOP's final anchor (clamped to
@@ -1118,7 +1132,7 @@ mod tests {
             }
         }
         let mut bw = BitWriter::new();
-        write_mpeg1_sequence_header(&mut bw, &seq(48, 32));
+        write_mpeg1_sequence_header(&mut bw, &seq(48, 32)).expect("write header");
         write_gop_header(
             &mut bw,
             &Mpeg2Gop {

@@ -109,7 +109,7 @@ fn ipp_chain_decodes_to_encoder_reconstructions() {
     let f2 = frame_at(w, h, 4, 2, true);
 
     let mut bw = BitWriter::new();
-    write_mpeg1_sequence_header(&mut bw, &seq(w as u16, h as u16));
+    write_mpeg1_sequence_header(&mut bw, &seq(w as u16, h as u16)).expect("write header");
     write_gop_header(
         &mut bw,
         &Mpeg2Gop {
@@ -149,7 +149,7 @@ fn b_picture_group_decodes_in_display_order() {
     let f_p = frame_at(w, h, 4, 2, false);
 
     let mut bw = BitWriter::new();
-    write_mpeg1_sequence_header(&mut bw, &seq(w as u16, h as u16));
+    write_mpeg1_sequence_header(&mut bw, &seq(w as u16, h as u16)).expect("write header");
     write_gop_header(
         &mut bw,
         &Mpeg2Gop {
@@ -332,4 +332,51 @@ fn wide_motion_uses_larger_f_code() {
     assert_eq!(frames.len(), 2);
     let mae = luma_mae(&display[1], &frames[1].frame);
     assert!(mae < 6.0, "P frame with wide motion: luma MAE {mae:.2}");
+}
+
+#[test]
+fn loaded_quantizer_matrices_thread_through_encode_and_decode() {
+    // Custom (flatter-than-default) matrices: the encoder must
+    // quantise with them and the decoder must pick them up from the
+    // sequence header, so the decode still equals the encoder's own
+    // reconstruction sample-for-sample — and differs from a
+    // default-matrix encode of the same content.
+    let (w, h) = (48usize, 32usize);
+    let display: Vec<FrameBuffer> = (0..3).map(|k| frame_at(w, h, 2 * k, k, false)).collect();
+
+    let mut intra = [8u8; 64];
+    for (i, v) in intra.iter_mut().enumerate().skip(1) {
+        *v = 12 + (i as u8 % 8);
+    }
+    let non_intra = [20u8; 64];
+    let seq_custom = Mpeg1SequenceParams {
+        intra_quant_matrix: Some(intra),
+        non_intra_quant_matrix: Some(non_intra),
+        ..seq(w as u16, h as u16)
+    };
+
+    let custom = encode_mpeg1_display_order_sequence(&display, 1, 1, &seq_custom, 6, 3, 3)
+        .expect("custom-matrix encode");
+    let default =
+        encode_mpeg1_display_order_sequence(&display, 1, 1, &seq(w as u16, h as u16), 6, 3, 3)
+            .expect("default-matrix encode");
+    assert_ne!(
+        custom, default,
+        "loaded matrices must change the coded bits"
+    );
+
+    // The header carries both payloads.
+    let header = Mpeg2SequenceHeader::parse(&custom).expect("sequence header");
+    assert_eq!(header.intra_quant, Some(intra));
+    assert_eq!(header.non_intra_quant, Some(non_intra));
+
+    // Decode round-trips with bounded error (the decoder must apply
+    // the loaded matrices — decoding with the defaults would shear
+    // every AC coefficient).
+    let frames = decode_video_sequence(&custom).expect("decode");
+    assert_eq!(frames.len(), 3);
+    for (k, decoded) in frames.iter().enumerate() {
+        let mae = luma_mae(&display[k], &decoded.frame);
+        assert!(mae < 7.0, "frame {k}: luma MAE {mae:.2}");
+    }
 }

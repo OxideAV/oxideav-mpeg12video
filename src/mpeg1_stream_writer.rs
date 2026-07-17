@@ -37,10 +37,13 @@ use oxideav_core::bits::BitWriter;
 
 use crate::gop_header::nominal_pictures_per_second;
 use crate::sequence_header::SEQUENCE_HEADER_CODE;
+use crate::{Error, Result};
 
-/// Parameters for a §2.4.2.3 MPEG-1 `sequence_header()` write. Both
-/// `load_*_quantizer_matrix` flags are written `'0'` (the §2.4.3.2
-/// default matrices apply).
+/// Parameters for a §2.4.2.3 MPEG-1 `sequence_header()` write. The
+/// optional `*_quant_matrix` payloads drive the
+/// `load_*_quantizer_matrix` flags (downloadable §2.4.3.2 matrices,
+/// transmitted in §2.4.4.1 zigzag order); `None` writes the flag
+/// `'0'` and the §2.4.3.2 default matrix applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mpeg1SequenceParams {
     /// `horizontal_size` (12 bits) — width of the displayable
@@ -64,6 +67,15 @@ pub struct Mpeg1SequenceParams {
     /// §2.4.3.2 bounds hold (see
     /// [`constrained_parameters_admissible`]).
     pub constrained_parameters_flag: bool,
+    /// `intra_quantizer_matrix` payload (64 bytes in §2.4.4.1 zigzag
+    /// order) when `load_intra_quantizer_matrix` is to be `'1'`.
+    /// §2.4.3.2: zero values are forbidden and
+    /// `intra_quant[0][0]` shall always be `8`.
+    pub intra_quant_matrix: Option<[u8; 64]>,
+    /// `non_intra_quantizer_matrix` payload (64 zigzag bytes) when
+    /// `load_non_intra_quantizer_matrix` is to be `'1'`. §2.4.3.2:
+    /// zero values are forbidden.
+    pub non_intra_quant_matrix: Option<[u8; 64]>,
 }
 
 impl Default for Mpeg1SequenceParams {
@@ -80,6 +92,8 @@ impl Default for Mpeg1SequenceParams {
             bit_rate_value: 4640,
             vbv_buffer_size_value: 20,
             constrained_parameters_flag: false,
+            intra_quant_matrix: None,
+            non_intra_quant_matrix: None,
         }
     }
 }
@@ -132,15 +146,44 @@ pub fn constrained_parameters_admissible(
         && p.vbv_buffer_size_value <= CPB_MAX_VBV_BUFFER_SIZE_VALUE
 }
 
-/// Write a §2.4.2.3 MPEG-1 `sequence_header()` with both quantiser-
-/// matrix load flags `'0'` (the §2.4.3.2 default matrices apply),
-/// padded to the byte boundary for `next_start_code()`.
+/// Write a §2.4.2.3 MPEG-1 `sequence_header()`, padded to the byte
+/// boundary for `next_start_code()`. When a `*_quant_matrix` payload
+/// is supplied, the matching `load_*_quantizer_matrix` flag is
+/// written `'1'` followed by the 64 zigzag-ordered bytes; otherwise
+/// the flag is `'0'` and the §2.4.3.2 default matrix applies.
 ///
 /// The caller supplies field values inside their syntactic ranges
-/// (the companion parser rejects the §2.4.3.2 forbidden values).
+/// (the companion parser rejects the §2.4.3.2 forbidden values); the
+/// two matrix-payload constraints — no zero bytes, and
+/// `intra_quant[0][0] == 8` — are enforced here since a violating
+/// payload would poison the whole sequence.
 /// **No `sequence_extension()` may follow** — its absence is what
 /// makes the stream ISO/IEC 11172-2.
-pub fn write_mpeg1_sequence_header(bw: &mut BitWriter, p: &Mpeg1SequenceParams) {
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] on a zero matrix byte or an intra
+/// payload whose first (zigzag) byte is not `8` (§2.4.3.2).
+pub fn write_mpeg1_sequence_header(bw: &mut BitWriter, p: &Mpeg1SequenceParams) -> Result<()> {
+    if let Some(m) = &p.intra_quant_matrix {
+        if m.contains(&0) {
+            return Err(Error::InvalidBitstream(
+                "intra_quantizer_matrix: the value zero is forbidden (§2.4.3.2)",
+            ));
+        }
+        if m[0] != 8 {
+            return Err(Error::InvalidBitstream(
+                "intra_quantizer_matrix: intra_quant[0][0] shall always be 8 (§2.4.3.2)",
+            ));
+        }
+    }
+    if let Some(m) = &p.non_intra_quant_matrix {
+        if m.contains(&0) {
+            return Err(Error::InvalidBitstream(
+                "non_intra_quantizer_matrix: the value zero is forbidden (§2.4.3.2)",
+            ));
+        }
+    }
+
     bw.write_u32(SEQUENCE_HEADER_CODE, 32);
     bw.write_u32(u32::from(p.horizontal_size), 12);
     bw.write_u32(u32::from(p.vertical_size), 12);
@@ -150,9 +193,26 @@ pub fn write_mpeg1_sequence_header(bw: &mut BitWriter, p: &Mpeg1SequenceParams) 
     bw.write_bit(true); // marker_bit
     bw.write_u32(u32::from(p.vbv_buffer_size_value), 10);
     bw.write_bit(p.constrained_parameters_flag);
-    bw.write_bit(false); // load_intra_quantizer_matrix
-    bw.write_bit(false); // load_non_intra_quantizer_matrix
+    match &p.intra_quant_matrix {
+        Some(m) => {
+            bw.write_bit(true); // load_intra_quantizer_matrix
+            for &b in m.iter() {
+                bw.write_u32(u32::from(b), 8);
+            }
+        }
+        None => bw.write_bit(false),
+    }
+    match &p.non_intra_quant_matrix {
+        Some(m) => {
+            bw.write_bit(true); // load_non_intra_quantizer_matrix
+            for &b in m.iter() {
+                bw.write_u32(u32::from(b), 8);
+            }
+        }
+        None => bw.write_bit(false),
+    }
     bw.align_to_byte();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -174,7 +234,7 @@ mod tests {
     fn sequence_header_roundtrips_through_the_parser() {
         let p = sif_params();
         let mut bw = BitWriter::new();
-        write_mpeg1_sequence_header(&mut bw, &p);
+        write_mpeg1_sequence_header(&mut bw, &p).expect("write header");
         let bytes = bw.finish();
         // 32+12+12+4+4+18+1+10+1+1+1 = 96 bits = 12 bytes exactly.
         assert_eq!(bytes.len(), 12);
@@ -198,7 +258,7 @@ mod tests {
         // parser must fail on the bare header while the bare parser
         // succeeds.
         let mut bw = BitWriter::new();
-        write_mpeg1_sequence_header(&mut bw, &sif_params());
+        write_mpeg1_sequence_header(&mut bw, &sif_params()).expect("write header");
         // Follow with a GOP start code, as a real MPEG-1 stream does.
         bw.write_u32(crate::gop_header::GROUP_START_CODE, 32);
         let bytes = bw.finish();
@@ -298,6 +358,65 @@ mod tests {
             ..base
         };
         assert!(!constrained_parameters_admissible(&p, 1, 1));
+    }
+
+    // ---- §2.4.3.2 downloadable matrices ----------------------------
+
+    #[test]
+    fn loaded_matrices_roundtrip_through_the_parser() {
+        let mut intra = [8u8; 64];
+        for (i, v) in intra.iter_mut().enumerate().skip(1) {
+            *v = 8 + (i as u8 % 24);
+        }
+        let mut non_intra = [16u8; 64];
+        for (i, v) in non_intra.iter_mut().enumerate() {
+            *v = 10 + (i as u8 % 30);
+        }
+        let p = Mpeg1SequenceParams {
+            intra_quant_matrix: Some(intra),
+            non_intra_quant_matrix: Some(non_intra),
+            ..sif_params()
+        };
+        let mut bw = BitWriter::new();
+        write_mpeg1_sequence_header(&mut bw, &p).expect("write header");
+        let bytes = bw.finish();
+        // 96 bits + 2*512 payload bits = 140 bytes exactly.
+        assert_eq!(bytes.len(), 140);
+        let h = Mpeg2SequenceHeader::parse(&bytes).expect("parse");
+        assert_eq!(h.intra_quant, Some(intra));
+        assert_eq!(h.non_intra_quant, Some(non_intra));
+    }
+
+    #[test]
+    fn zero_matrix_byte_is_rejected() {
+        let mut m = [16u8; 64];
+        m[13] = 0;
+        let p = Mpeg1SequenceParams {
+            non_intra_quant_matrix: Some(m),
+            ..sif_params()
+        };
+        let mut bw = BitWriter::new();
+        assert!(write_mpeg1_sequence_header(&mut bw, &p).is_err());
+        let mut m = [8u8; 64];
+        m[63] = 0;
+        let p = Mpeg1SequenceParams {
+            intra_quant_matrix: Some(m),
+            ..sif_params()
+        };
+        let mut bw = BitWriter::new();
+        assert!(write_mpeg1_sequence_header(&mut bw, &p).is_err());
+    }
+
+    #[test]
+    fn intra_matrix_first_byte_must_be_eight() {
+        let mut m = [16u8; 64];
+        m[0] = 16; // not 8
+        let p = Mpeg1SequenceParams {
+            intra_quant_matrix: Some(m),
+            ..sif_params()
+        };
+        let mut bw = BitWriter::new();
+        assert!(write_mpeg1_sequence_header(&mut bw, &p).is_err());
     }
 
     #[test]

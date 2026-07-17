@@ -278,6 +278,29 @@ fn selfenc_mpeg1_two_gop_ibbp_is_pinned_and_reference_conformant() {
 }
 
 #[test]
+fn selfenc_mpeg1_loaded_matrices_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-mpeg1-qmat-48x32.m1v");
+    let mut intra = [8u8; 64];
+    for (i, v) in intra.iter_mut().enumerate().skip(1) {
+        *v = 12 + (i as u8 % 8);
+    }
+    let seq_qmat = Mpeg1SequenceParams {
+        intra_quant_matrix: Some(intra),
+        non_intra_quant_matrix: Some([20u8; 64]),
+        ..mpeg1_seq(48, 32)
+    };
+    let display: Vec<FrameBuffer> = (0..3).map(|k| frame_at(48, 32, 2 * k, k, false)).collect();
+    let regenerated = encode_mpeg1_display_order_sequence(&display, 1, 1, &seq_qmat, 6, 3, 3)
+        .expect("mpeg1 qmat re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-mpeg1-qmat-48x32", &stream, &reference, &inputs);
+}
+
+#[test]
 fn selfenc_ipb_group_is_pinned_and_reference_conformant() {
     let (stream, reference) = fixture("selfenc-ipb-64x48.m2v");
     let i_frame = frame_at(64, 48, 0, 0, false);

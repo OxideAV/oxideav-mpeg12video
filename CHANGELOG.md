@@ -58,9 +58,19 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `encode_display_order_gop_sequence` assembler: one I-picture per
   GOP, per-GOP time codes, closed GOPs, and the §6.3.9 per-GOP
   `temporal_reference` reset.
-- round 416: **self-encoded corpus extended to nine streams** —
+- round 416: **downloadable §2.4.3.2 quantiser matrices in the
+  MPEG-1 encoder** — `Mpeg1SequenceParams` carries optional
+  `intra_quant_matrix` / `non_intra_quant_matrix` zigzag payloads;
+  `write_mpeg1_sequence_header` emits the `load_*_quantizer_matrix`
+  flags + payloads (returning `Result` and enforcing the no-zero-byte
+  and `intra_quant[0][0] == 8` rules), and the assembler threads the
+  loaded matrices into both the forward quantiser and the returned
+  reconstructions (the decoder derives the same matrices from the
+  header, so decodes stay sample-exact).
+- round 416: **self-encoded corpus extended to ten streams** —
   `selfenc-mpeg1-intra-64x48.m1v`, `selfenc-mpeg1-ippp-64x48.m1v`,
-  `selfenc-mpeg1-ibbp2gop-64x48.m1v`, and `selfenc-gops-48x32.m2v`
+  `selfenc-mpeg1-ibbp2gop-64x48.m1v`, `selfenc-mpeg1-qmat-48x32.m1v`
+  (downloadable quantiser matrices), and `selfenc-gops-48x32.m2v`
   (MPEG-2 GOP structure), each black-box validated (strict
   error-detection clean; committed reference decodes agree with ours
   at max |Δ| = 2, ≤ 1.7 % samples differing) and pinned bit-exactly

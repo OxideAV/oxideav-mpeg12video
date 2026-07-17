@@ -374,12 +374,13 @@ whole path against the crate's own §2.4 decode pipeline:
   the absence of any extension start code.
 
 Both encoders are **externally conformance-validated**: a pinned
-self-encoded corpus (`tests/fixtures/selfenc/` — nine streams: MPEG-2
+self-encoded corpus (`tests/fixtures/selfenc/` — ten streams: MPEG-2
 all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
 motion-compensated chain with intra fallback, an I/B/P group, a
 7-frame IBBP display-order sequence, a two-GOP MPEG-2 stream with GOP
-headers, and three MPEG-1 streams — all-intra, one-GOP I P P P, and a
-two-GOP I B B P | I B B P) decodes in a black-box reference decoder
+headers, and four MPEG-1 streams — all-intra, one-GOP I P P P, a
+two-GOP I B B P | I B B P, and an I B P with downloadable §2.4.3.2
+quantiser matrices) decodes in a black-box reference decoder
 (strict error-detection mode clean) with its committed reference
 decode agreeing with ours at max |Δ| 2 (pure Annex A IDCT rounding).
 `tests/selfenc_conformance.rs` pins every stream **bit-exactly**

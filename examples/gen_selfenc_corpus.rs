@@ -162,4 +162,21 @@ fn main() {
     let m1_ibbp = encode_mpeg1_display_order_sequence(&display, 2, 1, &mpeg1_seq(64, 48), 6, 3, 3)
         .expect("mpeg1 ibbp encode");
     write("selfenc-mpeg1-ibbp2gop-64x48.m1v", &m1_ibbp);
+
+    // 10. MPEG-1 I B P group with downloadable §2.4.3.2 quantiser
+    //     matrices (flat-ish intra ramp + all-20 non-intra) loaded by
+    //     the sequence header.
+    let mut intra = [8u8; 64];
+    for (i, v) in intra.iter_mut().enumerate().skip(1) {
+        *v = 12 + (i as u8 % 8);
+    }
+    let seq_qmat = Mpeg1SequenceParams {
+        intra_quant_matrix: Some(intra),
+        non_intra_quant_matrix: Some([20u8; 64]),
+        ..mpeg1_seq(48, 32)
+    };
+    let display: Vec<FrameBuffer> = (0..3).map(|k| frame_at(48, 32, 2 * k, k, false)).collect();
+    let m1_qmat = encode_mpeg1_display_order_sequence(&display, 1, 1, &seq_qmat, 6, 3, 3)
+        .expect("mpeg1 qmat encode");
+    write("selfenc-mpeg1-qmat-48x32.m1v", &m1_qmat);
 }

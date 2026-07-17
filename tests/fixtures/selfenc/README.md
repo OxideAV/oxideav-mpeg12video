@@ -32,6 +32,7 @@ they pin two facts:
 | `selfenc-mpeg1-intra-64x48.m1v` | `encode_mpeg1_intra_stream` | ISO/IEC 11172-2 all-intra: bare §2.4.2.3 sequence header (no extension, `constrained_parameters_flag = 1`), mandatory §2.4.2.4 GOP layer, Tables B.5a–B.5f entropy coding, §2.4.4.1 quantisation |
 | `selfenc-mpeg1-ippp-64x48.m1v` | `encode_mpeg1_display_order_sequence` | MPEG-1 I P P P chain in one GOP: §2.4.4.2 dead-zone residuals, Table B.2b modes with the intra fallback (frames 2–3 carry the stamp), `recon_*_prev` differential MVs |
 | `selfenc-mpeg1-ibbp2gop-64x48.m1v` | `encode_mpeg1_display_order_sequence` | MPEG-1 two-GOP I B B P \| I B B P: advancing GOP time codes, closed GOPs, §2.4.3.4 per-GOP `temporal_reference` reset, Table B.2c forward/backward/interpolated B modes |
+| `selfenc-mpeg1-qmat-48x32.m1v` | `encode_mpeg1_display_order_sequence` | MPEG-1 I B P with **downloadable §2.4.3.2 quantiser matrices** (intra ramp + all-20 non-intra loaded by the sequence header; both the forward quantiser and the decoder derive them from the header) |
 
 All MPEG-2 streams: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -79,4 +80,6 @@ cca30f325557703935157d1c6188771e1237b3874fb091851cb64e4c0d784388  selfenc-mpeg1-
 236d605e0594ed20cb41901381319a2a41313b995968b406106fc41341369954  selfenc-mpeg1-intra-64x48.m1v.ref.yuv
 19e8d38b36381372214c5b368aafffc79cfd3a57c0ff6d654bf71e48449c7c0b  selfenc-mpeg1-ippp-64x48.m1v
 e5d00c6f007bed3a0e5bfdf3a10875050aef68bced62c5dd04768defc6dc5d38  selfenc-mpeg1-ippp-64x48.m1v.ref.yuv
+9882e3a029dbdcb9d643fd21696b883d8287b976b8488887729045c831fc4687  selfenc-mpeg1-qmat-48x32.m1v
+4916b08fb15265aa3d795cfd37d63c0bbe870f126846cabe7a6509ec8a81ee77  selfenc-mpeg1-qmat-48x32.m1v.ref.yuv
 ```
