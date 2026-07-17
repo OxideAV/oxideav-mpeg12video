@@ -12,7 +12,7 @@
 //!
 //! * §7.6.3 — [`crate::reconstruct_slice_motion_vectors`] reconstructs
 //!   `vector'[r][s][t]` for every coded macroblock of a slice (MPEG-2)
-//!   and [`crate::mpeg1_reconstruct`] does the MPEG-1 equivalent.
+//!   and `crate::mpeg1_reconstruct` does the MPEG-1 equivalent.
 //! * §7.6.5 — [`crate::select_predictions`] turns one macroblock
 //!   descriptor into the ordered [`crate::PredictionOp`] list.
 //! * §7.6.4 — [`crate::predict_block`] reads the half-pel prediction
@@ -80,6 +80,7 @@ use crate::sequence_extension::ChromaFormat;
 /// A motion vector in half-sample units, as the §7.6.4 pel reader
 /// consumes it: `(horizontal, vertical)` = `vector'[r][s][1:0]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing (InterError below is the stable type)
 pub struct MotionVectorPel {
     /// `vector'[r][s][0]` — horizontal half-sample component.
     pub horizontal: i32,
@@ -124,6 +125,7 @@ impl MotionVectorPel {
 /// (`width`, `height`, `chroma_format`); the driver reads the matching
 /// component plane from whichever direction a prediction op names.
 #[derive(Debug, Clone, Copy)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct ReferenceFrames<'a> {
     /// The forward (past) reference frame. Always present for an inter
     /// macroblock that forms any forward prediction.
@@ -197,6 +199,7 @@ impl core::fmt::Display for InterError {
 impl std::error::Error for InterError {}
 
 /// Local `Result` alias for the inter-reconstruction driver.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub type InterResult<T> = core::result::Result<T, InterError>;
 
 /// The per-direction, per-component motion vectors for one frame-based
@@ -206,6 +209,7 @@ pub type InterResult<T> = core::result::Result<T, InterError>;
 /// [`scale_chroma`]; the caller supplies only the reconstructed
 /// **luminance** vector for each present direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct FrameMotion {
     /// Forward luminance motion vector (`s = 0`), present when the
     /// macroblock forms a forward prediction.
@@ -342,6 +346,7 @@ fn chroma_mb_extent(chroma_format: ChromaFormat) -> (usize, usize) {
 ///   requested but the matching reference is absent.
 /// * [`InterError::ReferenceGeometryMismatch`] when the reference
 ///   geometry differs from `dest`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn predict_frame_macroblock_planes(
     dest: &FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -441,6 +446,7 @@ pub fn predict_frame_macroblock_planes(
 /// **field**-sample half units (the §7.6.3 reconstruction already
 /// produces field vectors in those units).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct FieldVector {
     /// The luminance motion vector.
     pub vector: MotionVectorPel,
@@ -471,6 +477,7 @@ impl FieldVector {
 /// own §6.3.17.2 `motion_vertical_field_select` flag names (§7.6.4);
 /// the destination field does **not** imply the source field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct FieldBasedMotion {
     /// Forward `(top_field_vector, bottom_field_vector)` — present when
     /// the macroblock forms a forward prediction.
@@ -609,6 +616,7 @@ fn predict_field_component_one_direction(
 ///
 /// Mirrors [`predict_frame_macroblock_planes`]: missing reference for a
 /// requested direction, or a reference geometry mismatch.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn predict_field_based_macroblock_planes(
     dest: &FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -744,6 +752,7 @@ pub fn predict_field_based_macroblock_planes(
 ///
 /// Propagates [`predict_field_based_macroblock_planes`] reference / mode
 /// errors and rejects an out-of-range residual `block_index`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn reconstruct_field_based_macroblock(
     dest: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -804,6 +813,7 @@ pub fn reconstruct_field_based_macroblock(
 /// the destination is itself one field of a reconstructed frame
 /// (§3-defn "reconstructed picture").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct FieldPictureMotion {
     /// Forward `(luminance_vector, selected_reference_field)` — present
     /// when the macroblock forms a forward prediction.
@@ -917,6 +927,7 @@ fn predict_field_picture_component(
 /// a requested direction. The reference is a full frame, so its height
 /// is twice the destination field height — only the chroma format and
 /// the field-vs-frame height relationship are validated.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn predict_field_picture_macroblock_planes(
     dest: &FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -1040,6 +1051,7 @@ pub fn predict_field_picture_macroblock_planes(
 ///
 /// Propagates [`predict_field_picture_macroblock_planes`] reference
 /// errors and rejects an out-of-range residual `block_index`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn reconstruct_field_picture_macroblock(
     dest: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -1101,6 +1113,7 @@ pub fn reconstruct_field_picture_macroblock(
 /// interleave (§6.1.3 Table 6-19): the upper region occupies the
 /// macroblock's first half of lines, the lower region the second half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct FieldPicture16x8Motion {
     /// Forward `[(upper_vector, upper_field), (lower_vector,
     /// lower_field)]` — present when the macroblock forms a forward
@@ -1220,6 +1233,7 @@ fn predict_field_picture_16x8_component(
 /// Mirrors [`predict_field_picture_macroblock_planes`]: a missing
 /// reference for a requested direction or a reference geometry mismatch
 /// (the reference frame's height must be twice the field height).
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn predict_field_picture_16x8_macroblock_planes(
     dest: &FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -1338,6 +1352,7 @@ pub fn predict_field_picture_16x8_macroblock_planes(
 ///
 /// Propagates [`predict_field_picture_16x8_macroblock_planes`] reference
 /// errors and rejects an out-of-range residual `block_index`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn reconstruct_field_picture_16x8_macroblock(
     dest: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
@@ -1399,6 +1414,7 @@ pub fn reconstruct_field_picture_16x8_macroblock(
 /// read contiguously from its chosen [`FieldReference`] — there is no
 /// frame/field interleave (§6.1.3 Table 6-19).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct FieldPictureDualPrimeMotion {
     /// Same-parity luminance vector `vector'[0][0][1:0]` (decoded from
     /// the bitstream), reading the reference field of `same_parity`.
@@ -1451,6 +1467,7 @@ impl FieldPictureDualPrimeMotion {
 /// [`InterError::ReferenceGeometryMismatch`] when the reference frame's
 /// format / width differs from `dest` or its height is not twice the
 /// field height (§6.1.1).
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn predict_field_picture_dual_prime_macroblock_planes(
     dest: &FrameBuffer,
     reference: &FrameBuffer,
@@ -1536,6 +1553,7 @@ pub fn predict_field_picture_dual_prime_macroblock_planes(
 ///
 /// Propagates [`predict_field_picture_dual_prime_macroblock_planes`]
 /// reference errors and rejects an out-of-range residual `block_index`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn reconstruct_field_picture_dual_prime_macroblock(
     dest: &mut FrameBuffer,
     reference: &FrameBuffer,
@@ -1603,6 +1621,7 @@ pub fn reconstruct_field_picture_dual_prime_macroblock(
 /// Dual-prime is forward-only (P-picture), so there is no backward
 /// direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct FrameDualPrimeMotion {
     /// The decoded same-parity vector `vector'[0][0][1:0]`, used for both
     /// the top field's top-reference prediction and the bottom field's
@@ -1731,6 +1750,7 @@ fn predict_frame_dual_prime_component(
 ///
 /// [`InterError::ReferenceGeometryMismatch`] when the reference frame's
 /// geometry differs from `dest`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn predict_frame_dual_prime_macroblock_planes(
     dest: &FrameBuffer,
     reference: &FrameBuffer,
@@ -1813,6 +1833,7 @@ pub fn predict_frame_dual_prime_macroblock_planes(
 ///
 /// Propagates [`predict_frame_dual_prime_macroblock_planes`] reference
 /// errors and rejects an out-of-range residual `block_index`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn reconstruct_frame_dual_prime_macroblock(
     dest: &mut FrameBuffer,
     reference: &FrameBuffer,
@@ -1962,6 +1983,7 @@ fn write_inter_block(
 /// (`DecodedBlock { block_index, decoded: { f_pel, .. } }`); the caller
 /// extracts the pair per coded block before invoking the driver.
 #[derive(Debug, Clone, Copy)]
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub struct ResidualBlock<'a> {
     /// §6.1.1.8 block ordering index (`0..block_count(chroma_format)`).
     pub block_index: u8,
@@ -1997,6 +2019,7 @@ pub struct ResidualBlock<'a> {
 ///
 /// Propagates the [`predict_frame_macroblock_planes`] reference / mode
 /// errors and rejects an out-of-range residual `block_index`.
+#[doc(hidden)] // internal: §7.6 reconstruction plumbing
 pub fn reconstruct_inter_macroblock(
     dest: &mut FrameBuffer,
     references: ReferenceFrames<'_>,

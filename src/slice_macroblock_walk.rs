@@ -1640,7 +1640,7 @@ pub struct SliceMotionWalk {
 ///       zero-motion non-intra macroblock, etc.). Skipped for the
 ///       MPEG-1 path (`ctx.mpeg1`), whose §2.4.4.2 / §2.4.4.3
 ///       reconstruction owns its own predictor update and is decoded
-///       through [`crate::mpeg1_reconstruct`].
+///       through `crate::mpeg1_reconstruct`.
 ///
 /// The §7.6.3.4 reset *between* slices is the caller's responsibility:
 /// each call resets at its own start, so a picture-level driver simply

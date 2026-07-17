@@ -6,6 +6,15 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Internal §6 syntax-walker / §7 reconstruction / encoder-stage plumbing
+  (49 modules plus the internal items and crate-root re-exports of the
+  mixed modules) is now `#[doc(hidden)]`: the documented / semver-checked
+  surface is the whole-stream decode entry points, the encoder entry
+  points, the registry glue, and the frame/error types their signatures
+  expose. No item was removed or changed — hidden paths keep working.
+
 ### Added
 
 - round 413: **ISO/IEC 11172-2 D-picture decode** (dc intra-coded,

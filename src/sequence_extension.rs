@@ -24,10 +24,12 @@ use crate::{Error, Result};
 
 /// 32-bit `extension_start_code`, byte string `00 00 01 B5`
 /// (§6.3.4).
+#[doc(hidden)] // internal: §6.2.2.3 parser plumbing
 pub const EXTENSION_START_CODE: u32 = 0x0000_01B5;
 
 /// `extension_start_code_identifier` value for `sequence_extension()`
 /// (Table 6-2 entry `0001`).
+#[doc(hidden)] // internal: §6.2.2.3 parser plumbing
 pub const SEQUENCE_EXTENSION_ID: u32 = 0b0001;
 
 /// `chroma_format` (Table 6-5).
@@ -66,6 +68,7 @@ impl ChromaFormat {
 /// only. The convenience helper [`Mpeg2Sequence::from_buf`] composes
 /// them with the lower bits in [`Mpeg2SequenceHeader`].
 #[derive(Debug, Clone, Copy)]
+#[doc(hidden)] // internal: §6.2.2.3 parser plumbing (ChromaFormat above is the stable type)
 pub struct Mpeg2SequenceExtension {
     /// 8-bit `profile_and_level_indication` (clause 8). The bit
     /// layout is profile-specific; this crate currently surfaces the
@@ -177,6 +180,7 @@ impl Mpeg2SequenceExtension {
 /// * `bit_rate        = (bit_rate_extension        << 18) | bit_rate_value`
 /// * `vbv_buffer_size = (vbv_buffer_size_extension << 10) | vbv_buffer_size_value`
 #[derive(Debug, Clone)]
+#[doc(hidden)] // internal: §6.2.2 composed sequence-layer view, parser plumbing
 pub struct Mpeg2Sequence {
     /// The parsed `sequence_header()` (lower-bit values, plus all
     /// MPEG-1-compatible fields).

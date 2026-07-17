@@ -42,10 +42,12 @@ use crate::{Error, Result};
 
 /// The 32-bit start code that introduces a `picture_header()`: the
 /// byte string `00 00 01 00` (§6.3.10).
+#[doc(hidden)] // internal: §6.2.3 parser plumbing
 pub const PICTURE_START_CODE: u32 = 0x0000_0100;
 
 /// `extension_start_code_identifier` value for
 /// `picture_coding_extension()` (Table 6-2 entry `1000`).
+#[doc(hidden)] // internal: §6.2.3 parser plumbing
 pub const PICTURE_CODING_EXTENSION_ID: u32 = 0b1000;
 
 /// `picture_coding_type` (§6.3.10, Table 6-12).
@@ -120,6 +122,7 @@ impl PictureCodingType {
 /// parser keeps the bytes for callers that need to faithfully
 /// reproduce a non-conforming input.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc(hidden)] // internal: §6.2.3 parser plumbing (PictureCodingType above is the stable type)
 pub struct Mpeg2PictureHeader {
     /// 10-bit `temporal_reference`, modulo-1024 frame index
     /// (§6.3.10).
@@ -348,6 +351,7 @@ fn picture_header_byte_length(buf: &[u8]) -> Result<usize> {
 /// raw bit-slice for now; full structural decoding is deferred to a
 /// later round that needs the values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)] // internal: §6.2.3.1 parser plumbing
 pub struct PictureCodingExtension {
     /// `f_code[0][0]` — 4-bit forward horizontal motion-vector range.
     /// `15` (`0b1111`) means "unused" per §6.3.11.
@@ -392,6 +396,7 @@ pub struct PictureCodingExtension {
 
 /// `picture_structure` (§6.3.11, Table 6-14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)] // internal: §6.3.11 field of the hidden PictureCodingExtension
 pub enum PictureStructure {
     /// `01` — top field only.
     TopField,

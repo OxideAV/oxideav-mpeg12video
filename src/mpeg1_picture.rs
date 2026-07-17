@@ -11,7 +11,7 @@
 //!   through [`crate::mpeg1_block_decoder`], selected inside the slice
 //!   walker by `SliceWalkContext::mpeg1`.
 //! * **Motion vectors** — §2.4.4.2 / §2.4.4.3 reconstruction with the
-//!   `recon_*_prev` predictor pair ([`crate::mpeg1_reconstruct`]):
+//!   `recon_*_prev` predictor pair (`crate::mpeg1_reconstruct`):
 //!   * P-pictures: the predictor resets at slice start and after any
 //!     macroblock that carried no forward vector (skipped, intra, or
 //!     `macroblock_motion_forward == 0`); a macroblock with no

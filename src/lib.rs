@@ -336,158 +336,268 @@
 //!   ctx.with_quantiser_matrices(state)` dance themselves.
 
 #![warn(missing_debug_implementations)]
+// The crate docs above deliberately link into `#[doc(hidden)]` internal
+// modules (the §6/§7 stage-by-stage build log); keep those links valid
+// without surfacing the internals in the rendered API docs.
+#![allow(rustdoc::private_intra_doc_links)]
 
 use oxideav_core::{
     CodecCapabilities, CodecId, CodecInfo, CodecRegistry, CodecTag, RuntimeContext,
 };
 
+// Modules marked `#[doc(hidden)]` below are internal §6 syntax-walker /
+// §7 reconstruction / encoder-stage plumbing: they stay `pub` so the
+// integration tests and cross-stage callers keep exercising them, but
+// they are NOT part of the stable API surface and are excluded from
+// semver analysis. The stable surface is: the whole-stream decode entry
+// points (`video_sequence`), the encoder entry points (`intra_encoder`,
+// `p_picture_encoder`, `b_picture_encoder`, `inter_encoder`), the
+// registry glue (`decoder`, `register`, `register_codecs`), and the
+// frame/error types those signatures expose (`frame_assembly`,
+// `picture_header::PictureCodingType`, `sequence_extension::ChromaFormat`,
+// `inter_reconstruction::InterError`).
+#[doc(hidden)] // internal: §7.6.8 add-and-saturate stage
 pub mod add_coefficients;
 pub mod b_picture_encoder;
+#[doc(hidden)] // internal: MPEG-1 §2.4.3.7 DC prelude walker
 pub mod block_dc;
+#[doc(hidden)] // internal: §6.2.5.3 CBP syntax walker
 pub mod coded_block_pattern;
+#[doc(hidden)] // internal: §7.6.7 prediction-combining stage
 pub mod combine_predictions;
+#[doc(hidden)] // internal: §6.2.3.6 extension parser
 pub mod copyright_extension;
+#[doc(hidden)] // internal: MPEG-1 §2.4.3.7 run-level VLC walker
 pub mod dct_coeff;
 pub mod decoder;
+#[doc(hidden)] // internal: MPEG-1 §2.4.4 dequantiser stage
 pub mod dequantize;
+#[doc(hidden)] // internal: §7.6.3.6 dual-prime vector arithmetic
 pub mod dual_prime;
+#[doc(hidden)] // internal: §6.2.2.2 extension/user-data dispatcher
 pub mod extension_and_user_data;
+#[doc(hidden)] // internal: §7.6.4 forming-predictions pel reader
 pub mod forming_predictions;
+#[doc(hidden)] // internal: encoder forward-DCT stage
 pub mod forward_dct;
+#[doc(hidden)] // internal: encoder forward-quantiser stage
 pub mod forward_quant;
 pub mod frame_assembly;
+#[doc(hidden)] // internal: §6.2.2.6 GOP-header parser
 pub mod gop_header;
+#[doc(hidden)] // internal: §A 8x8 IDCT stage
 pub mod idct;
 pub mod inter_encoder;
 pub mod inter_reconstruction;
 pub mod intra_encoder;
+#[doc(hidden)] // internal: §6.2.5.1 macroblock-modes syntax walker
 pub mod macroblock_modes;
+#[doc(hidden)] // internal: §7.6 per-macroblock block-dispatch driver
 pub mod macroblock_pipeline;
+#[doc(hidden)] // internal: §6.2.5.1 macroblock_type VLC walker
 pub mod macroblock_type;
+#[doc(hidden)] // internal: §6.2.5 address-increment VLC walker
 pub mod mb_address_increment;
+#[doc(hidden)] // internal: encoder motion-search stage
 pub mod motion_estimation;
+#[doc(hidden)] // internal: §6.2.5.2 motion-vector syntax walker
 pub mod motion_vector;
+#[doc(hidden)] // internal: §7.6.5/§7.6.6 prediction-selection tables
 pub mod motion_vector_selection;
+#[doc(hidden)] // internal: MPEG-1 block(i) driver
 pub mod mpeg1_block_decoder;
+#[doc(hidden)] // internal: MPEG-1 §2.4.2.7 motion-vector walker
 pub mod mpeg1_motion_vector;
+#[doc(hidden)] // internal: MPEG-1 picture-layer parser
 pub mod mpeg1_picture;
+#[doc(hidden)] // internal: MPEG-1 §2.4.4.2/§2.4.4.3 MV reconstruction
 pub mod mpeg1_reconstruct;
+#[doc(hidden)] // internal: §7.2.1 DC prelude walker
 pub mod mpeg2_block_dc;
+#[doc(hidden)] // internal: §6.2.6 block(i) driver
 pub mod mpeg2_block_decoder;
+#[doc(hidden)] // internal: §7.2.2 run-level VLC walker
 pub mod mpeg2_dct_coeff;
+#[doc(hidden)] // internal: §7.4 inverse-quantisation stage
 pub mod mpeg2_dequantize;
+#[doc(hidden)] // internal: §7.3 inverse-scan stage
 pub mod mpeg2_inverse_scan;
+#[doc(hidden)] // internal: §6.2.5 per-macroblock block loop
 pub mod mpeg2_macroblock_blocks;
 pub mod p_picture_encoder;
+#[doc(hidden)] // internal: §6.2.3.3 extension parser
 pub mod picture_display_extension;
 pub mod picture_header;
+#[doc(hidden)] // internal: picture-level reconstruction driver
 pub mod picture_reconstruction;
+#[doc(hidden)] // internal: §6.2.3.5 extension parser
 pub mod picture_spatial_scalable_extension;
+#[doc(hidden)] // internal: §6.2.3.4 extension parser
 pub mod picture_temporal_scalable_extension;
+#[doc(hidden)] // internal: §7.6.3 motion-vector predictor state
 pub mod pmv;
+#[doc(hidden)] // internal: §6.2.3.1 quant-matrix extension state
 pub mod quant_matrix_extension;
+#[doc(hidden)] // internal: MPEG-1 §2.4.2.7 quantizer_scale field
 pub mod quantizer_scale;
+#[doc(hidden)] // internal: §6.2.2.4 extension parser
 pub mod sequence_display_extension;
+#[doc(hidden)] // internal: display-order verification driver
 pub mod sequence_display_order;
 pub mod sequence_extension;
+#[doc(hidden)] // internal: §6.2.2.1 sequence-header parser
 pub mod sequence_header;
+#[doc(hidden)] // internal: §6.2.2.5 extension parser
 pub mod sequence_scalable_extension;
+#[doc(hidden)] // internal: §7.6.6 skipped-macroblock semantics
 pub mod skipped_macroblock;
+#[doc(hidden)] // internal: §6.2.4 slice-header parser
 pub mod slice_header;
+#[doc(hidden)] // internal: §6.2.4/§6.2.5 slice-macroblock walker
 pub mod slice_macroblock_walk;
+#[doc(hidden)] // internal: §7.8 SNR-scalability addition stage
 pub mod snr_coefficient_addition;
+#[doc(hidden)] // internal: §7.7 spatial-scalability prediction stage
 pub mod spatial_prediction_picture;
+#[doc(hidden)] // internal: §7.7 spatial-resampling stage
 pub mod spatial_resampling;
+#[doc(hidden)] // internal: §7.7 spatial/temporal weight combining
 pub mod spatial_temporal_combine;
+#[doc(hidden)] // internal: encoder bitstream-writer stage
 pub mod stream_writer;
 pub mod video_sequence;
 
-pub use add_coefficients::{
-    add_intra_block, add_prediction_and_coefficients, add_prediction_and_coefficients_in_place,
-    saturate as saturate_decoded_sample,
-};
+// ---------------------------------------------------------------------
+// Stable crate-root surface: whole-stream decode, encoder entry points,
+// registry glue, and the frame/error types their signatures expose.
+// ---------------------------------------------------------------------
 pub use b_picture_encoder::encode_b_picture;
-pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
-pub use coded_block_pattern::{encode_cbp420, CodedBlockPattern};
-pub use combine_predictions::{
-    average_dual_prime_predictions, average_predictions, average_predictions_in_place,
-    combine_directional_predictions, PredictionDirection,
-};
-pub use copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
-pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
 pub use decoder::{
     frame_buffer_to_video_frame, make_decoder, Mpeg12Decoder, MPEG1_CODEC_ID_STR,
     MPEG2_CODEC_ID_STR,
 };
+pub use frame_assembly::{FrameBuffer, IntraPictureParams, Plane};
+pub use inter_encoder::{
+    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p,
+    encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
+};
+pub use inter_reconstruction::InterError;
+pub use intra_encoder::encode_intra_picture;
+pub use p_picture_encoder::encode_p_picture;
+pub use picture_header::PictureCodingType;
+pub use sequence_extension::ChromaFormat;
+pub use video_sequence::{
+    decode_video_sequence, display_indices_from_coded_pictures,
+    display_indices_from_temporal_references, verify_display_order,
+    verify_display_order_with_types, DecodedFrame,
+};
+
+// ---------------------------------------------------------------------
+// Internal re-exports (kept for test / historical callers, hidden from
+// the documented API and from semver analysis; each mirrors a hidden
+// module or a hidden item of a mixed module above).
+// ---------------------------------------------------------------------
+#[doc(hidden)] // internal: §7.6.8 stage re-exports
+pub use add_coefficients::{
+    add_intra_block, add_prediction_and_coefficients, add_prediction_and_coefficients_in_place,
+    saturate as saturate_decoded_sample,
+};
+#[doc(hidden)] // internal: MPEG-1 DC-prelude re-exports
+pub use block_dc::{DcCoefficient, DcComponent, INVERSE_SCAN, MAX_DC_SIZE, SCAN};
+#[doc(hidden)] // internal: §6.2.5.3 CBP re-exports
+pub use coded_block_pattern::{encode_cbp420, CodedBlockPattern};
+#[doc(hidden)] // internal: §7.6.7 combining re-exports
+pub use combine_predictions::{
+    average_dual_prime_predictions, average_predictions, average_predictions_in_place,
+    combine_directional_predictions, PredictionDirection,
+};
+#[doc(hidden)] // internal: §6.2.3.6 extension re-exports
+pub use copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
+#[doc(hidden)] // internal: MPEG-1 run-level VLC re-exports
+pub use dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, MAX_LEVEL_MAG, MAX_RUN};
+#[doc(hidden)] // internal: MPEG-1 dequantiser re-exports
 pub use dequantize::{
     dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
     IntraDcPredictors, DCT_RECON_MAX, DCT_RECON_MIN, DC_PREDICTOR_RESET, DEFAULT_INTRA_QUANT,
     DEFAULT_NON_INTRA_QUANT,
 };
+#[doc(hidden)] // internal: §6.2.2.2 dispatcher re-exports
 pub use extension_and_user_data::{
     ExtensionAndUserData, ExtensionLocation, UserData, USER_DATA_START_CODE,
 };
 
+#[doc(hidden)] // internal: §7.6.3.6 dual-prime re-exports
 pub use dual_prime::{
     derive_all as derive_dual_prime_all, derive_opposite_parity_vector as derive_dual_prime_vector,
     dual_prime_picture, e_offset, m_factor, DerivedDualPrimeVector, DualPrimePicture, FieldParity,
 };
+#[doc(hidden)] // internal: §7.6.4 pel-reader re-exports
 pub use forming_predictions::{
     predict_block, predict_field_block, predict_field_sample, predict_sample, split_component,
     split_reconstructed, split_vector, BlockSize, BoundaryMode, ComponentSplit, FieldReference,
     HalfPattern, ReferencePlane, SplitVector,
 };
+#[doc(hidden)] // internal: encoder forward-DCT re-exports
 pub use forward_dct::{fdct_8x8, fdct_candidate_f64, fdct_reference_f64};
+#[doc(hidden)] // internal: encoder forward-quantiser re-exports
 pub use forward_quant::{forward_quantise_block, forward_quantise_intra_dc, MAX_CODED_LEVEL};
+#[doc(hidden)] // internal: picture-assembly plumbing re-exports
 pub use frame_assembly::{
     assemble_frame_from_fields, block_placement, chroma_shift, decode_intra_picture,
     decode_intra_picture_with_matrices, place_intra_block, place_intra_macroblock, BlockPlacement,
-    FrameBuffer, IntraPictureParams, Plane,
 };
+#[doc(hidden)] // internal: §6.2.2.6 GOP-header re-exports
 pub use gop_header::{Mpeg2Gop, TimeCode, GROUP_START_CODE};
+#[doc(hidden)] // internal: §A IDCT re-exports
 pub use idct::{
     idct_8x8, idct_8x8_from_i32, idct_candidate_f64, idct_reference_f64,
     saturate_input as saturate_idct_input, saturate_output as saturate_idct_output, F_INPUT_MAX,
     F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN,
 };
-pub use inter_encoder::{
-    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p,
-    encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
-};
+#[doc(hidden)] // internal: §7.6 inter-reconstruction plumbing re-exports
 pub use inter_reconstruction::{
     predict_field_based_macroblock_planes, predict_field_picture_16x8_macroblock_planes,
     predict_field_picture_macroblock_planes, predict_frame_macroblock_planes,
     reconstruct_field_based_macroblock, reconstruct_field_picture_16x8_macroblock,
     reconstruct_field_picture_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
-    FieldPicture16x8Motion, FieldPictureMotion, FrameMotion, InterError, MotionVectorPel,
-    ReferenceFrames, ResidualBlock,
+    FieldPicture16x8Motion, FieldPictureMotion, FrameMotion, MotionVectorPel, ReferenceFrames,
+    ResidualBlock,
 };
-pub use intra_encoder::encode_intra_picture;
+#[doc(hidden)] // internal: §6.2.5.1 macroblock-modes re-exports
 pub use macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, PredictionType,
     SpatialTemporalWeight,
 };
+#[doc(hidden)] // internal: §7.6 macroblock-pipeline re-exports
 pub use macroblock_pipeline::{
     blocks_per_macroblock, decode_block as pipeline_decode_block,
     decode_macroblock as pipeline_decode_macroblock, BlockInputs, DecodedBlock, MacroblockKind,
     PipelineError,
 };
+#[doc(hidden)] // internal: §6.2.5.1 macroblock_type re-exports
 pub use macroblock_type::{MacroblockType, MacroblockTypeTable};
+#[doc(hidden)] // internal: §6.2.5 address-increment re-exports
 pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
+#[doc(hidden)] // internal: encoder motion-search re-exports
 pub use motion_estimation::{estimate_forward_mv, max_search_range, MotionSearchResult};
+#[doc(hidden)] // internal: §6.2.5.2 motion-vector re-exports
 pub use motion_vector::{
     encode_dmvector, encode_motion_component, encode_motion_vector, split_delta, MotionVector,
     MotionVectorEntry, MotionVectors, MotionVectorsContext, MotionVectorsKind,
 };
+#[doc(hidden)] // internal: §7.6.5/§7.6.6 selection re-exports
 pub use motion_vector_selection::{
     select_predictions, MacroblockPrediction, PredictionOp, PredictionRegion, ReferenceTarget,
 };
+#[doc(hidden)] // internal: MPEG-1 motion-vector re-exports
 pub use mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
+#[doc(hidden)] // internal: MPEG-1 MV-reconstruction re-exports
 pub use mpeg1_reconstruct::{
     reconstruct as mpeg1_reconstruct, reconstruct_absent as mpeg1_reconstruct_absent,
     reconstruct_zero as mpeg1_reconstruct_zero, Mpeg1FrameMvContext, Mpeg1Predictor,
     Mpeg1ReconstructedMv,
 };
+#[doc(hidden)] // internal: §7.2.1 DC-prelude re-exports
 pub use mpeg2_block_dc::{
     dc_pred_reset_value as mpeg2_dc_pred_reset_value, decode_dc_block as mpeg2_decode_dc_block,
     encode_intra_dc as mpeg2_encode_intra_dc, qfs_zero_max as mpeg2_qfs_zero_max,
@@ -495,10 +605,12 @@ pub use mpeg2_block_dc::{
     DcComponent as Mpeg2DcComponent, DcPredictors as Mpeg2DcPredictors,
     MAX_DC_SIZE as MPEG2_MAX_DC_SIZE,
 };
+#[doc(hidden)] // internal: §6.2.6 block(i) re-exports
 pub use mpeg2_block_decoder::{
     decode_block as mpeg2_decode_block, BlockContext as Mpeg2BlockContext,
     DecodedBlock as Mpeg2DecodedBlock,
 };
+#[doc(hidden)] // internal: §7.2.2 run-level VLC re-exports
 pub use mpeg2_dct_coeff::{
     encode_dct_coeff as mpeg2_encode_dct_coeff, encode_end_of_block as mpeg2_encode_end_of_block,
     CoefficientPosition as Mpeg2CoefficientPosition, DctCoeff as Mpeg2DctCoeff,
@@ -506,6 +618,7 @@ pub use mpeg2_dct_coeff::{
     ESCAPE_SIGNED_LEVEL_MAX as MPEG2_ESCAPE_SIGNED_LEVEL_MAX,
     ESCAPE_SIGNED_LEVEL_MIN as MPEG2_ESCAPE_SIGNED_LEVEL_MIN, MAX_RUN as MPEG2_DCT_MAX_RUN,
 };
+#[doc(hidden)] // internal: §7.4 inverse-quantisation re-exports
 pub use mpeg2_dequantize::{
     intra_dc_mult, intra_dc_mult_from_extension,
     inverse_quantise_block as mpeg2_inverse_quantise_block, quantiser_scale,
@@ -514,12 +627,14 @@ pub use mpeg2_dequantize::{
     DEFAULT_NON_INTRA_WEIGHT, F_SATURATION_MAX, F_SATURATION_MIN, QUANTISER_SCALE_LINEAR,
     QUANTISER_SCALE_NONLINEAR,
 };
+#[doc(hidden)] // internal: §7.3 inverse-scan re-exports
 pub use mpeg2_inverse_scan::{
     apply_inverse_scan as mpeg2_apply_inverse_scan, inverse_scan_table as mpeg2_inverse_scan_table,
     place_coefficient as mpeg2_place_coefficient, scan_table as mpeg2_scan_table,
     ALTERNATE_INVERSE_SCAN as MPEG2_ALTERNATE_INVERSE_SCAN, ALTERNATE_SCAN as MPEG2_ALTERNATE_SCAN,
     ZIGZAG_INVERSE_SCAN as MPEG2_ZIGZAG_INVERSE_SCAN,
 };
+#[doc(hidden)] // internal: §6.2.5 block-loop re-exports
 pub use mpeg2_macroblock_blocks::{
     block_component as mpeg2_block_component, block_count as mpeg2_block_count,
     decode_macroblock_blocks as mpeg2_decode_macroblock_blocks,
@@ -527,85 +642,99 @@ pub use mpeg2_macroblock_blocks::{
     MacroblockBlockContext as Mpeg2MacroblockBlockContext,
     DEFAULT_WEIGHT_MATRICES as MPEG2_DEFAULT_WEIGHT_MATRICES,
 };
-pub use p_picture_encoder::encode_p_picture;
+#[doc(hidden)] // internal: §6.2.3.3 extension re-exports
 pub use picture_display_extension::{
     number_of_frame_centre_offsets, FieldUsage, FrameCentreOffset, FrameCentreOffsetDriver,
     FrameCentreOffsetState, PictureDisplayContext, PictureDisplayExtension,
     MAX_FRAME_CENTRE_OFFSETS, PICTURE_DISPLAY_EXTENSION_ID,
 };
+#[doc(hidden)] // internal: §6.2.3 picture-layer parser re-exports
 pub use picture_header::{
-    Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
-    PICTURE_CODING_EXTENSION_ID, PICTURE_START_CODE,
+    Mpeg2PictureHeader, PictureCodingExtension, PictureStructure, PICTURE_CODING_EXTENSION_ID,
+    PICTURE_START_CODE,
 };
+#[doc(hidden)] // internal: picture-level reconstruction re-exports
 pub use picture_reconstruction::{
     decode_field_picture, decode_field_picture_with_matrices, decode_inter_picture,
     decode_inter_picture_with_matrices, PicturePredictionParams,
 };
+#[doc(hidden)] // internal: §6.2.3.5 extension re-exports
 pub use picture_spatial_scalable_extension::{
     PictureSpatialScalableExtension, PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
 };
+#[doc(hidden)] // internal: §6.2.3.4 extension re-exports
 pub use picture_temporal_scalable_extension::{
     PictureReferences, PictureTemporalScalableExtension, ReferenceSource,
     PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
 };
+#[doc(hidden)] // internal: §7.6.3 PMV-state re-exports
 pub use pmv::{
     apply_spatial_temporal_reset, compute_delta, decode_motion_vector, reconstruct_component,
     reconstruct_motion_vector, scale_chroma, update_predictors, vector_range, Component, Direction,
     Pmv, PmvUpdateContext, PmvUpdateOutcome, ReconstructedComponent, ScaledMotionVector,
     VectorIndex,
 };
+#[doc(hidden)] // internal: quant-matrix state re-exports
 pub use quant_matrix_extension::{
     QuantMatrixDriver, QuantMatrixExtension, QuantiserMatrixPayload, QuantiserMatrixState,
     QUANT_MATRIX_EXTENSION_ID,
 };
+#[doc(hidden)] // internal: MPEG-1 quantizer_scale re-exports
 pub use quantizer_scale::{QuantizerScale, QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
+#[doc(hidden)] // internal: §6.2.2.4 extension re-exports
 pub use sequence_display_extension::{
     ColourDescription, SequenceDisplayExtension, VideoFormat, SEQUENCE_DISPLAY_EXTENSION_ID,
 };
+#[doc(hidden)] // internal: display-order driver re-exports
 pub use sequence_display_order::{Requirement, SequenceDisplayOrderDriver};
+#[doc(hidden)] // internal: §6.2.2.3 sequence-layer parser re-exports
 pub use sequence_extension::{
-    ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension, EXTENSION_START_CODE,
-    SEQUENCE_EXTENSION_ID,
+    Mpeg2Sequence, Mpeg2SequenceExtension, EXTENSION_START_CODE, SEQUENCE_EXTENSION_ID,
 };
+#[doc(hidden)] // internal: §6.2.2.1 sequence-header re-exports
 pub use sequence_header::{AspectRatio, Mpeg2SequenceHeader, SEQUENCE_HEADER_CODE};
+#[doc(hidden)] // internal: §6.2.2.5 extension re-exports
 pub use sequence_scalable_extension::{
     ScalableMode, SequenceScalableExtension, SpatialScalabilityParams, TemporalScalabilityParams,
     SEQUENCE_SCALABLE_EXTENSION_ID,
 };
+#[doc(hidden)] // internal: §7.6.6 skipped-macroblock re-exports
 pub use skipped_macroblock::{
     apply_to_pmv as skipped_macroblock_apply_to_pmv, describe_skipped_macroblock,
     SkippedMacroblock, SkippedMacroblockContext, SkippedMotionVector,
 };
+#[doc(hidden)] // internal: §6.2.4 slice-header re-exports
 pub use slice_header::{
     SliceContext, SliceHeader, SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN,
 };
+#[doc(hidden)] // internal: slice-walker re-exports
 pub use slice_macroblock_walk::{
     reconstruct_record_motion_vectors, reconstruct_slice_motion_vectors, walk_slice, walk_slice_at,
     MacroblockRecord, ReconstructedMotionVectors, ReconstructedVector, SliceMotionRecord,
     SliceMotionWalk, SliceWalk, SliceWalkContext, PAST_INTRA_ADDRESS_RESET,
 };
+#[doc(hidden)] // internal: SNR-scalability re-exports
 pub use snr_coefficient_addition::{
     add_layer_block, add_layer_chroma_simulcast, simulcast_dc_predictor_block, CoeffBlock,
 };
+#[doc(hidden)] // internal: spatial-scalability re-exports
 pub use spatial_prediction_picture::{spatial_prediction_picture, SpatialPredictionPicture};
+#[doc(hidden)] // internal: spatial-resampling re-exports
 pub use spatial_resampling::{
     deinterlace, horizontal_resample, reinterlace, resample_progressive,
     upsample_spatial_prediction, vertical_resample, Field as ResampleField, Plane as ResamplePlane,
     ResampleParams, UpsampleCase,
 };
+#[doc(hidden)] // internal: spatial/temporal combining re-exports
 pub use spatial_temporal_combine::{
     combine_field_interleaved, combine_macroblock_spatial_temporal, combine_spatial_temporal,
     combine_uniform, extract_colocated_spatial, SpatialWeight,
 };
+#[doc(hidden)] // internal: encoder bitstream-writer re-exports
 pub use stream_writer::{
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
     write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
     SEQUENCE_END_CODE,
-};
-pub use video_sequence::{
-    decode_video_sequence, display_indices_from_coded_pictures,
-    display_indices_from_temporal_references, verify_display_order,
-    verify_display_order_with_types, DecodedFrame,
 };
 
 /// Crate-local error type. Each variant is raised at most by the

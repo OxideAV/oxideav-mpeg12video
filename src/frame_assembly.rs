@@ -175,6 +175,7 @@ pub struct FrameBuffer {
 /// * 4:2:0 → `(1, 1)` (half width, half height).
 /// * 4:2:2 → `(1, 0)` (half width, full height).
 /// * 4:4:4 → `(0, 0)` (full resolution).
+#[doc(hidden)] // internal: geometry helper for the assembly plumbing
 pub fn chroma_shift(chroma_format: ChromaFormat) -> (u32, u32) {
     match chroma_format {
         ChromaFormat::Yuv420 => (1, 1),
@@ -262,6 +263,7 @@ impl FrameBuffer {
 /// block's rows are field-interleaved (field DCT) and which field
 /// (`0` = top, `1` = bottom) it carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)] // internal: block-to-plane placement plumbing
 pub struct BlockPlacement {
     /// Colour component the block belongs to.
     pub component: ColourComponent,
@@ -299,6 +301,7 @@ impl BlockPlacement {
 ///
 /// Returns `None` when `i` is not a valid block index for
 /// `chroma_format` (i.e. `i >= block_count`).
+#[doc(hidden)] // internal: block-to-plane placement plumbing
 pub fn block_placement(
     i: usize,
     chroma_format: ChromaFormat,
@@ -419,6 +422,7 @@ fn chroma_block_index(i: usize, component: ColourComponent) -> usize {
 /// The macroblock grid is padded up to a multiple of 16 macroblocks,
 /// so block samples that fall outside the coded picture dimensions are
 /// silently discarded by [`Plane::put`].
+#[doc(hidden)] // internal: block-to-plane placement plumbing
 pub fn place_intra_block(
     frame: &mut FrameBuffer,
     placement: BlockPlacement,
@@ -456,6 +460,7 @@ pub fn place_intra_block(
 /// Returns the number of blocks written. A record whose
 /// `decoded_blocks` is `None` (the walker ran in wire-only mode) writes
 /// nothing and returns `0`.
+#[doc(hidden)] // internal: block-to-plane placement plumbing
 pub fn place_intra_macroblock(
     frame: &mut FrameBuffer,
     record: &crate::slice_macroblock_walk::MacroblockRecord,
@@ -593,6 +598,7 @@ impl IntraPictureParams {
 /// Propagates any [`crate::Error`] from slice-header parsing or the
 /// macroblock walk. A picture with no slice start codes yields an
 /// all-zero frame and a count of `0`.
+#[doc(hidden)] // internal: picture-level driver; the stable entry point is decode_video_sequence
 pub fn decode_intra_picture(
     picture: &[u8],
     params: IntraPictureParams,
@@ -612,6 +618,7 @@ pub fn decode_intra_picture(
 ///
 /// # Errors
 /// As [`decode_intra_picture`].
+#[doc(hidden)] // internal: picture-level driver; the stable entry point is decode_video_sequence
 pub fn decode_intra_picture_with_matrices(
     picture: &[u8],
     params: IntraPictureParams,
@@ -724,6 +731,7 @@ fn find_next_start_code(buf: &[u8]) -> Option<usize> {
 /// [`Error::InvalidBitstream`](crate::Error::InvalidBitstream) if the two
 /// fields disagree on `chroma_format`, on luma width, or on luma height —
 /// a mismatched pair cannot be a top/bottom pair of one coded frame.
+#[doc(hidden)] // internal: field-pair interleaving plumbing
 pub fn assemble_frame_from_fields(
     top: &FrameBuffer,
     bottom: &FrameBuffer,
