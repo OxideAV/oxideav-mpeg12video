@@ -412,6 +412,7 @@ pub mod mpeg1_motion_vector;
 pub mod mpeg1_picture;
 #[doc(hidden)] // internal: MPEG-1 §2.4.4.2/§2.4.4.3 MV reconstruction
 pub mod mpeg1_reconstruct;
+pub mod mpeg1_stream_writer;
 #[doc(hidden)] // internal: §7.2.1 DC prelude walker
 pub mod mpeg2_block_dc;
 #[doc(hidden)] // internal: §6.2.6 block(i) driver
