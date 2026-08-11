@@ -204,3 +204,62 @@ fn cbr_rejects_impossible_configs() {
     };
     assert!(encode_cbr_gop_sequence(&frames, 0, 1, params(w, h), &starved, 3, 3).is_err());
 }
+
+#[test]
+fn cbr_field_coded_sequence_verifies_and_decodes() {
+    // Interlaced field-picture pairs under the C.11 field-period
+    // cadence: every field picture is its own VBV picture with a real
+    // vbv_delay; the verifier reads picture_structure from each
+    // picture coding extension and applies the field interval.
+    use oxideav_mpeg12video::encode_field_cbr_gop_sequence;
+    let (w, h) = (48usize, 64usize);
+    let mut fp = params(w, h);
+    fp.frame_pred_frame_dct = false;
+    fp.progressive_sequence = false;
+
+    let frames: Vec<FrameBuffer> = (0..6)
+        .map(|t| {
+            let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+            for y in 0..h {
+                for x in 0..w {
+                    let v = 30 + ((x * 4 + y * 7 + t * 3) % 180);
+                    let line = if y % 2 == 0 { 12 } else { 0 };
+                    f.y.put_sample(x, y, (v + line).min(235) as u8);
+                }
+            }
+            for y in 0..h / 2 {
+                for x in 0..w / 2 {
+                    f.cb.put_sample(x, y, (90 + (x + t) % 80) as u8);
+                    f.cr.put_sample(x, y, (190u8).saturating_sub(((y + 2 * t) % 80) as u8));
+                }
+            }
+            f
+        })
+        .collect();
+
+    let cbr = CbrConfig {
+        bit_rate_value: 375, // 150 kbit/s
+        vbv_buffer_size_value: 4,
+        frame_rate_code: 3,
+        initial_quantiser_scale_code: 6,
+    };
+    let enc =
+        encode_field_cbr_gop_sequence(&frames, 1, 2, &fp, &cbr, 3, 3).expect("field CBR encode");
+
+    // Annex C conformance: 12 field pictures on the field cadence.
+    let report = verify_cbr_stream(&enc.stream, VbvStandard::Mpeg2).expect("VBV conformant");
+    assert_eq!(report.pictures.len(), 12);
+    assert!(report.max_occupancy_before_bits as u64 <= report.buffer_size_bits);
+    assert!(report.min_occupancy_after_bits >= 0);
+    for p in &report.pictures {
+        assert_ne!(p.vbv_delay, 0xFFFF);
+    }
+    assert_eq!(enc.quantiser_scale_codes.len(), 12);
+
+    // Decode round-trip: 6 assembled frames in display order.
+    let decoded = decode_video_sequence(&enc.stream).expect("decode");
+    assert_eq!(decoded.len(), 6);
+    for d in &decoded {
+        assert_eq!((d.frame.width, d.frame.height), (w, h));
+    }
+}

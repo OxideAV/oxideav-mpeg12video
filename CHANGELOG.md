@@ -113,6 +113,16 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
     (its strict mode flags field-pair packets while decoding them —
     the same documented behaviour as the fieldpics conformance
     fixture).
+- round 440: **CBR rate control over field-coded sequences**
+  (`encode_field_cbr_gop_sequence`) — the field assembler under Annex
+  C VBV regulation: every field picture is its own VBV picture removed
+  at the **C.11 field-period cadence** (`t(n+1) − t(n) = T`, `T` the
+  inverse of twice the frame rate; the second field of a P/I frame
+  follows at `2*T − T = T`), with its own real §6.3.9 `vbv_delay`,
+  quantiser decision, and C.5 stuffing; the whole-stream verifier
+  reads each picture's `picture_structure` and applies the matching
+  cadence. Pinned in `tests/encode_cbr_roundtrip.rs` (12 field
+  pictures verify + decode to 6 assembled frames).
 - round 440: **two CBR streams join the pinned self-encoded corpus**
   (`tests/fixtures/selfenc/`): `selfenc-cbr-64x48.m2v` (MPEG-2
   I B P B P | I B P at 240 kbit/s, 65 536-bit VBV) and

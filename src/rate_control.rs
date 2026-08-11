@@ -169,13 +169,15 @@ impl CbrWriter {
     /// the encoder-side reconstruction for anchor pictures.
     ///
     /// Applies the C.6 re-encode loop, stamps the C.3.1 `vbv_delay`,
-    /// appends C.5 zero stuffing, and advances the model by one frame
-    /// period (C.9 — the emitted sequence is progressive,
-    /// `repeat_first_field = 0`).
+    /// appends C.5 zero stuffing, and advances the model by `interval`
+    /// — one frame period for a frame picture (C.9 / C.11 with
+    /// `repeat_first_field = 0`), one field period for a field picture
+    /// (C.11).
     fn emit<F>(
         &mut self,
         headers: &[u8],
         kind: PictureKind,
+        interval: RemovalInterval,
         is_last: bool,
         mut enc: F,
     ) -> Result<Option<FrameBuffer>>
@@ -232,7 +234,7 @@ impl CbrWriter {
         if !is_last {
             // C.5: stuff up to the overflow bound for the next
             // examination (no examination follows the last picture).
-            let min_end = self.model.min_end_bits(RemovalInterval::Frame, self.frd);
+            let min_end = self.model.min_end_bits(interval, self.frd);
             if end_bits < min_end {
                 let stuff = min_end.saturating_sub(end_bits).div_ceil(8);
                 self.out.resize(self.out.len() + stuff as usize, 0u8);
@@ -242,7 +244,7 @@ impl CbrWriter {
         }
 
         self.model
-            .remove_picture(end_bits, RemovalInterval::Frame, self.frd)
+            .remove_picture(end_bits, interval, self.frd)
             .map_err(|v| {
                 // The controller holds both bounds before removal, so a
                 // violation here is an internal invariant break.
@@ -394,20 +396,27 @@ pub fn encode_cbr_gop_sequence(
         let is_last = coded == total;
         let i_frame = &frames[gop_start];
         let mut forward_ref = w
-            .emit(&gop_header, PictureKind::I, is_last, |q| {
-                let stream = crate::intra_encoder::encode_intra_picture(i_frame, params, 0, q)?;
-                let pic_start = find_start(&stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
-                    "encode_cbr_gop_sequence: I picture start code missing",
-                ))?;
-                let layer = stream[pic_start..stream.len() - 4].to_vec();
-                let recon = crate::decode_video_sequence(&stream)?
-                    .first()
-                    .map(|d| d.frame.clone())
-                    .ok_or(Error::InvalidBitstream(
-                        "encode_cbr_gop_sequence: I anchor decode produced no frame",
-                    ))?;
-                Ok((layer, Some(recon)))
-            })?
+            .emit(
+                &gop_header,
+                PictureKind::I,
+                RemovalInterval::Frame,
+                is_last,
+                |q| {
+                    let stream = crate::intra_encoder::encode_intra_picture(i_frame, params, 0, q)?;
+                    let pic_start =
+                        find_start(&stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
+                            "encode_cbr_gop_sequence: I picture start code missing",
+                        ))?;
+                    let layer = stream[pic_start..stream.len() - 4].to_vec();
+                    let recon = crate::decode_video_sequence(&stream)?
+                        .first()
+                        .map(|d| d.frame.clone())
+                        .ok_or(Error::InvalidBitstream(
+                            "encode_cbr_gop_sequence: I anchor decode produced no frame",
+                        ))?;
+                    Ok((layer, Some(recon)))
+                },
+            )?
             .expect("I emission returns a reconstruction");
 
         let mut prev_anchor = gop_start;
@@ -419,7 +428,7 @@ pub fn encode_cbr_gop_sequence(
             let p_frame = &frames[next_anchor];
             let fwd = forward_ref.clone();
             let backward_ref = w
-                .emit(&[], PictureKind::P, is_last, |q| {
+                .emit(&[], PictureKind::P, RemovalInterval::Frame, is_last, |q| {
                     let mut bw = BitWriter::new();
                     let recon = crate::p_picture_encoder::encode_p_picture(
                         &mut bw,
@@ -440,7 +449,7 @@ pub fn encode_cbr_gop_sequence(
                 let b_frame = &frames[b];
                 let fwd = &forward_ref;
                 let bwd = &backward_ref;
-                w.emit(&[], PictureKind::B, is_last, |q| {
+                w.emit(&[], PictureKind::B, RemovalInterval::Frame, is_last, |q| {
                     let mut bw = BitWriter::new();
                     crate::b_picture_encoder::encode_b_picture(
                         &mut bw,
@@ -616,11 +625,17 @@ pub fn encode_mpeg1_cbr_sequence(
         let is_last = coded == total;
         let i_frame = &frames[gop_start];
         let mut forward_ref = w
-            .emit(&gop_header, PictureKind::I, is_last, |q| {
-                let mut bw = BitWriter::new();
-                let recon = encode_mpeg1_intra_picture(&mut bw, i_frame, &params, 0, q)?;
-                Ok((bw.finish(), Some(recon)))
-            })?
+            .emit(
+                &gop_header,
+                PictureKind::I,
+                RemovalInterval::Frame,
+                is_last,
+                |q| {
+                    let mut bw = BitWriter::new();
+                    let recon = encode_mpeg1_intra_picture(&mut bw, i_frame, &params, 0, q)?;
+                    Ok((bw.finish(), Some(recon)))
+                },
+            )?
             .expect("I emission returns a reconstruction");
 
         let mut prev_anchor = gop_start;
@@ -632,7 +647,7 @@ pub fn encode_mpeg1_cbr_sequence(
             let p_frame = &frames[next_anchor];
             let fwd = forward_ref.clone();
             let backward_ref = w
-                .emit(&[], PictureKind::P, is_last, |q| {
+                .emit(&[], PictureKind::P, RemovalInterval::Frame, is_last, |q| {
                     let mut bw = BitWriter::new();
                     let recon = encode_mpeg1_p_picture(
                         &mut bw,
@@ -654,7 +669,7 @@ pub fn encode_mpeg1_cbr_sequence(
                 let b_frame = &frames[b];
                 let fwd = &forward_ref;
                 let bwd = &backward_ref;
-                w.emit(&[], PictureKind::B, is_last, |q| {
+                w.emit(&[], PictureKind::B, RemovalInterval::Frame, is_last, |q| {
                     let mut bw = BitWriter::new();
                     encode_mpeg1_b_picture(
                         &mut bw,
@@ -671,6 +686,315 @@ pub fn encode_mpeg1_cbr_sequence(
                     )?;
                     Ok((bw.finish(), None))
                 })?;
+            }
+
+            forward_ref = backward_ref;
+            prev_anchor = next_anchor;
+        }
+
+        gop_start = gop_end + 1;
+    }
+
+    Ok(CbrEncoded {
+        stream: w.out,
+        quantiser_scale_codes: w.quantisers,
+        stuffing_bytes: w.stuffing_bytes,
+    })
+}
+
+/// Encode a whole **display-order** frame sequence as a CBR interlaced
+/// MPEG-2 elementary stream coded entirely as §6.1.1.4.1 **field-picture
+/// pairs** — [`crate::encode_field_display_order_gop_sequence`] under
+/// Annex C VBV regulation.
+///
+/// Every **field picture** is a separate VBV picture removed at the
+/// C.11 **field-period** cadence (`t(n+1) - t(n) = T` where `T` is the
+/// inverse of twice the frame rate; the second field of a P/I frame
+/// follows at `2*T - T = T`), carrying its own real C.3.1 / §6.3.9
+/// `vbv_delay`, its own quantiser decision (the coarsening re-encode
+/// against the C.6 underflow bound), and its own C.5 zero stuffing.
+/// The §7.6.2.1 second-field-of-a-P-frame synthetic reference and the
+/// field syntax are exactly as in the plain field assembler.
+///
+/// # Errors
+/// As [`encode_cbr_gop_sequence`] plus the field-geometry constraints
+/// of [`crate::encode_field_display_order_gop_sequence`] (frame height
+/// a multiple of 32, `progressive_sequence = 0`, 4:2:0).
+pub fn encode_field_cbr_gop_sequence(
+    frames: &[FrameBuffer],
+    b_between: usize,
+    anchors_per_gop: usize,
+    frame_params: &IntraPictureParams,
+    cbr: &CbrConfig,
+    forward_f_code: u8,
+    backward_f_code: u8,
+) -> Result<CbrEncoded> {
+    use crate::field_picture_encoder::{
+        encode_field_b_picture, encode_field_intra_picture, encode_field_p_picture,
+        second_p_field_reference,
+    };
+    use crate::picture_header::PictureStructure;
+    use crate::video_sequence::extract_field;
+
+    if frames.is_empty() {
+        return Err(Error::InvalidBitstream(
+            "encode_field_cbr_gop_sequence: no frames to encode",
+        ));
+    }
+    if anchors_per_gop == 0 {
+        return Err(Error::InvalidBitstream(
+            "encode_field_cbr_gop_sequence: anchors_per_gop must be >= 1",
+        ));
+    }
+    if frame_params.progressive_sequence {
+        return Err(Error::InvalidBitstream(
+            "encode_field_cbr_gop_sequence: field pictures require progressive_sequence = 0 \
+             (§6.3.5)",
+        ));
+    }
+    if frame_params.height % 32 != 0 {
+        return Err(Error::InvalidBitstream(
+            "encode_field_cbr_gop_sequence: frame height must be a multiple of 32",
+        ));
+    }
+    if cbr.bit_rate_value == 0 || cbr.bit_rate_value > 0x3FFFF {
+        return Err(Error::InvalidBitstream(
+            "encode_field_cbr_gop_sequence: bit_rate_value out of the 18-bit §6.2.2.1 range",
+        ));
+    }
+    if cbr.vbv_buffer_size_value == 0 || cbr.vbv_buffer_size_value > 0x3FF {
+        return Err(Error::InvalidBitstream(
+            "encode_field_cbr_gop_sequence: vbv_buffer_size_value out of the 10-bit range",
+        ));
+    }
+    if !(1..=31).contains(&cbr.initial_quantiser_scale_code) {
+        return Err(Error::InvalidBitstream(
+            "encode_field_cbr_gop_sequence: initial_quantiser_scale_code out of range",
+        ));
+    }
+    for f in frames {
+        if f.width != frame_params.width || f.height != frame_params.height {
+            return Err(Error::InvalidBitstream(
+                "encode_field_cbr_gop_sequence: frame geometry mismatch",
+            ));
+        }
+    }
+
+    let field_params = IntraPictureParams {
+        height: frame_params.height / 2,
+        frame_pred_frame_dct: false,
+        progressive_sequence: true, // 16-aligned grid in field coordinates
+        ..*frame_params
+    };
+
+    let frame_rate = frame_rate_value(cbr.frame_rate_code)?;
+    let bit_rate = u64::from(cbr.bit_rate_value) * 400;
+    let buffer_bits = u64::from(cbr.vbv_buffer_size_value) * 16 * 1024;
+    let model = VbvCbrModel::new(&VbvParams {
+        bit_rate,
+        buffer_size_bits: buffer_bits,
+        frame_rate,
+    })?;
+    let step = b_between + 1;
+    // Per-FIELD budgets: half the frame-level type target.
+    let frame_targets = type_target_bits(bit_rate, frame_rate, b_between, anchors_per_gop);
+    let target_bits = [
+        frame_targets[0] / 2,
+        frame_targets[1] / 2,
+        frame_targets[2] / 2,
+    ];
+
+    let sequence_params = SequenceHeaderParams {
+        horizontal_size: frame_params.width as u16,
+        vertical_size: frame_params.height as u16,
+        frame_rate_code: cbr.frame_rate_code,
+        bit_rate_value: cbr.bit_rate_value,
+        vbv_buffer_size_value: cbr.vbv_buffer_size_value,
+        ..Default::default()
+    };
+    let mut head = BitWriter::new();
+    write_sequence_header(&mut head, &sequence_params);
+    // §6.3.5: field pictures occur only in interlaced sequences.
+    write_sequence_extension(&mut head, frame_params.chroma_format, false);
+
+    let mut w = CbrWriter {
+        out: head.finish(),
+        model,
+        frd: frame_rate.1,
+        target_bits,
+        q: [cbr.initial_quantiser_scale_code; 3],
+        quantisers: Vec::new(),
+        stuffing_bytes: 0,
+        started: false,
+        buffer_bits,
+        bit_rate,
+    };
+
+    // Two VBV pictures (fields) per coded frame; is_last on the very
+    // last field.
+    let total_fields = frames.len() * 2;
+    let mut coded_fields = 0usize;
+
+    let mut gop_start = 0usize;
+    while gop_start < frames.len() {
+        let gop_end = (gop_start + anchors_per_gop * step).min(frames.len() - 1);
+
+        let mut gop_bw = BitWriter::new();
+        write_gop_header(
+            &mut gop_bw,
+            &Mpeg2Gop {
+                time_code: TimeCode::from_display_index(
+                    gop_start as u64,
+                    sequence_params.frame_rate_code,
+                )?,
+                closed_gop: true,
+                broken_link: false,
+            },
+        );
+        let gop_header = gop_bw.finish();
+
+        // I frame: both fields intra.
+        let i_frame = &frames[gop_start];
+        let top_src = extract_field(i_frame, PictureStructure::TopField);
+        let bottom_src = extract_field(i_frame, PictureStructure::BottomField);
+        coded_fields += 1;
+        let top_recon = w
+            .emit(
+                &gop_header,
+                PictureKind::I,
+                RemovalInterval::Field,
+                coded_fields == total_fields,
+                |q| {
+                    let mut bw = BitWriter::new();
+                    let recon = encode_field_intra_picture(
+                        &mut bw,
+                        &top_src,
+                        &field_params,
+                        PictureStructure::TopField,
+                        0,
+                        q,
+                    )?;
+                    Ok((bw.finish(), Some(recon)))
+                },
+            )?
+            .expect("field emission returns a reconstruction");
+        coded_fields += 1;
+        let bottom_recon = w
+            .emit(
+                &[],
+                PictureKind::I,
+                RemovalInterval::Field,
+                coded_fields == total_fields,
+                |q| {
+                    let mut bw = BitWriter::new();
+                    let recon = encode_field_intra_picture(
+                        &mut bw,
+                        &bottom_src,
+                        &field_params,
+                        PictureStructure::BottomField,
+                        0,
+                        q,
+                    )?;
+                    Ok((bw.finish(), Some(recon)))
+                },
+            )?
+            .expect("field emission returns a reconstruction");
+        let mut forward_ref =
+            crate::frame_assembly::assemble_frame_from_fields(&top_recon, &bottom_recon)?;
+
+        let mut prev_anchor = gop_start;
+        while prev_anchor < gop_end {
+            let next_anchor = (prev_anchor + step).min(gop_end);
+            let tr = (next_anchor - gop_start) as u16;
+
+            // P frame: first field from the previous anchor, second
+            // field through the §7.6.2.1 synthetic reference.
+            let p_frame = &frames[next_anchor];
+            let top_src = extract_field(p_frame, PictureStructure::TopField);
+            let bottom_src = extract_field(p_frame, PictureStructure::BottomField);
+            let anchor = forward_ref.clone();
+            coded_fields += 1;
+            let top_recon = w
+                .emit(
+                    &[],
+                    PictureKind::P,
+                    RemovalInterval::Field,
+                    coded_fields == total_fields,
+                    |q| {
+                        let mut bw = BitWriter::new();
+                        let recon = encode_field_p_picture(
+                            &mut bw,
+                            &top_src,
+                            &anchor,
+                            &field_params,
+                            PictureStructure::TopField,
+                            tr,
+                            q,
+                            forward_f_code,
+                        )?;
+                        Ok((bw.finish(), Some(recon)))
+                    },
+                )?
+                .expect("field emission returns a reconstruction");
+            let second_ref =
+                second_p_field_reference(&top_recon, PictureStructure::TopField, &anchor)?;
+            coded_fields += 1;
+            let bottom_recon = w
+                .emit(
+                    &[],
+                    PictureKind::P,
+                    RemovalInterval::Field,
+                    coded_fields == total_fields,
+                    |q| {
+                        let mut bw = BitWriter::new();
+                        let recon = encode_field_p_picture(
+                            &mut bw,
+                            &bottom_src,
+                            &second_ref,
+                            &field_params,
+                            PictureStructure::BottomField,
+                            tr,
+                            q,
+                            forward_f_code,
+                        )?;
+                        Ok((bw.finish(), Some(recon)))
+                    },
+                )?
+                .expect("field emission returns a reconstruction");
+            let backward_ref =
+                crate::frame_assembly::assemble_frame_from_fields(&top_recon, &bottom_recon)?;
+
+            for b in (prev_anchor + 1)..next_anchor {
+                let tr = (b - gop_start) as u16;
+                let b_frame = &frames[b];
+                for structure in [PictureStructure::TopField, PictureStructure::BottomField] {
+                    let src = extract_field(b_frame, structure);
+                    let fwd = &forward_ref;
+                    let bwd = &backward_ref;
+                    coded_fields += 1;
+                    w.emit(
+                        &[],
+                        PictureKind::B,
+                        RemovalInterval::Field,
+                        coded_fields == total_fields,
+                        |q| {
+                            let mut bw = BitWriter::new();
+                            let recon = encode_field_b_picture(
+                                &mut bw,
+                                &src,
+                                fwd,
+                                bwd,
+                                &field_params,
+                                structure,
+                                tr,
+                                q,
+                                forward_f_code,
+                                backward_f_code,
+                            )?;
+                            Ok((bw.finish(), Some(recon)))
+                        },
+                    )?;
+                }
             }
 
             forward_ref = backward_ref;
