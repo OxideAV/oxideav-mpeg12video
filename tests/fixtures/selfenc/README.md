@@ -33,6 +33,8 @@ they pin two facts:
 | `selfenc-mpeg1-ippp-64x48.m1v` | `encode_mpeg1_display_order_sequence` | MPEG-1 I P P P chain in one GOP: §2.4.4.2 dead-zone residuals, Table B.2b modes with the intra fallback (frames 2–3 carry the stamp), `recon_*_prev` differential MVs |
 | `selfenc-mpeg1-ibbp2gop-64x48.m1v` | `encode_mpeg1_display_order_sequence` | MPEG-1 two-GOP I B B P \| I B B P: advancing GOP time codes, closed GOPs, §2.4.3.4 per-GOP `temporal_reference` reset, Table B.2c forward/backward/interpolated B modes |
 | `selfenc-mpeg1-qmat-48x32.m1v` | `encode_mpeg1_display_order_sequence` | MPEG-1 I B P with **downloadable §2.4.3.2 quantiser matrices** (intra ramp + all-20 non-intra loaded by the sequence header; both the forward quantiser and the decoder derive them from the header) |
+| `selfenc-cbr-64x48.m2v` | `encode_cbr_gop_sequence` | MPEG-2 **CBR** (Annex C): I B P B P \| I B P at 240 kbit/s, 65 536-bit VBV buffer — real §6.3.9 `vbv_delay` in every picture header, quantiser adaptation + zero stuffing holding the C.5/C.6 occupancy bounds (verified by `vbv::verify_cbr_stream`) |
+| `selfenc-mpeg1-cbr-64x48.m1v` | `encode_mpeg1_cbr_sequence` | MPEG-1 **CBR** (11172-2 Annex C): two-GOP I B B P \| I B B P at 240 kbit/s, 65 536-bit VBV buffer — real §2.4.3.4 `vbv_delay`, constrained-parameters flag set, same occupancy-bound verification |
 
 All MPEG-2 streams: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -59,6 +61,16 @@ edge-macroblock motion vectors, which the reference decoder flagged
 motion search now visits only vectors whose §7.6.4 sample span stays
 inside the coded picture, and the trace is clean.
 
+The two CBR streams were generated 2026-08-11 (same deterministic
+generator, streams 11–12) and validated with the same black-box
+reference decoder binary (v8.1.2): the strict error-detection pass
+reported nothing, and the committed `.ref.yuv` decodes agree with ours
+within the corpus |Δ| ≤ 3 contract. Their `vbv_delay` fields carry
+real Annex C values (not `0xFFFF`), and `tests/selfenc_conformance.rs`
+additionally holds both streams to the full Annex C occupancy /
+delay-consistency verification (`vbv::verify_cbr_stream`) against the
+`bit_rate` / `vbv_buffer_size` they declare.
+
 ## SHA-256
 
 ```
@@ -82,4 +94,8 @@ cca30f325557703935157d1c6188771e1237b3874fb091851cb64e4c0d784388  selfenc-mpeg1-
 e5d00c6f007bed3a0e5bfdf3a10875050aef68bced62c5dd04768defc6dc5d38  selfenc-mpeg1-ippp-64x48.m1v.ref.yuv
 9882e3a029dbdcb9d643fd21696b883d8287b976b8488887729045c831fc4687  selfenc-mpeg1-qmat-48x32.m1v
 4916b08fb15265aa3d795cfd37d63c0bbe870f126846cabe7a6509ec8a81ee77  selfenc-mpeg1-qmat-48x32.m1v.ref.yuv
+256f58029bc3cd91efac30d251e9210ac93b082d6ea10e61f65159889b48ff8c  selfenc-cbr-64x48.m2v
+2801a9b27965edff607d0b2b1f40e90b83cb13b50486809d4abc530875ce1dbf  selfenc-cbr-64x48.m2v.ref.yuv
+55fb5199add258199249ff2fab0d9646d8d35d6dfed58d6145e7972eb0572889  selfenc-mpeg1-cbr-64x48.m1v
+55126a0377ddbb05681ff7c9c5c66b20276fb9e7821ace9d3ebcc97f3ecc8d8a  selfenc-mpeg1-cbr-64x48.m1v.ref.yuv
 ```

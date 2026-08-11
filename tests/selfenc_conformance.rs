@@ -19,10 +19,12 @@
 //!    into "conformant garbage".
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
+use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_display_order_gop_sequence, encode_display_order_sequence,
-    encode_i_p_b, encode_i_p_chain, encode_intra_picture, encode_mpeg1_display_order_sequence,
-    encode_mpeg1_intra_stream, DecodedFrame, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
+    decode_video_sequence, encode_cbr_gop_sequence, encode_display_order_gop_sequence,
+    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_intra_picture,
+    encode_mpeg1_cbr_sequence, encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream,
+    CbrConfig, DecodedFrame, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
 };
 
 const MAX_ABS_DELTA: i32 = 3;
@@ -275,6 +277,56 @@ fn selfenc_mpeg1_two_gop_ibbp_is_pinned_and_reference_conformant() {
     );
     let inputs: Vec<&FrameBuffer> = display.iter().collect();
     assert_reference_conformant("selfenc-mpeg1-ibbp2gop-64x48", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_mpeg2_cbr_is_pinned_reference_and_vbv_conformant() {
+    let (stream, reference) = fixture("selfenc-cbr-64x48.m2v");
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 4)).collect();
+    let cbr = CbrConfig {
+        bit_rate_value: 600,
+        vbv_buffer_size_value: 4,
+        frame_rate_code: 3,
+        initial_quantiser_scale_code: 6,
+    };
+    let regenerated =
+        encode_cbr_gop_sequence(&display, 1, 2, params(64, 48), &cbr, 3, 3).expect("cbr re-encode");
+    assert_eq!(
+        regenerated.stream, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    // Annex C: the committed stream satisfies the bit_rate /
+    // vbv_buffer_size it declares, with C.3.1-consistent vbv_delay in
+    // every picture header.
+    let report = verify_cbr_stream(&stream, VbvStandard::Mpeg2).expect("VBV conformant");
+    assert_eq!(report.bit_rate, 240_000);
+    assert_eq!(report.buffer_size_bits, 65_536);
+    assert_eq!(report.pictures.len(), 8);
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-cbr-64x48", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_mpeg1_cbr_is_pinned_reference_and_vbv_conformant() {
+    let (stream, reference) = fixture("selfenc-mpeg1-cbr-64x48.m1v");
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 5)).collect();
+    let seq_cbr = Mpeg1SequenceParams {
+        bit_rate_value: 600,
+        vbv_buffer_size_value: 4,
+        ..mpeg1_seq(64, 48)
+    };
+    let regenerated =
+        encode_mpeg1_cbr_sequence(&display, 2, 1, &seq_cbr, 6, 3, 3).expect("mpeg1 cbr re-encode");
+    assert_eq!(
+        regenerated.stream, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let report = verify_cbr_stream(&stream, VbvStandard::Mpeg1).expect("VBV conformant");
+    assert_eq!(report.bit_rate, 240_000);
+    assert_eq!(report.buffer_size_bits, 65_536);
+    assert_eq!(report.pictures.len(), 8);
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-mpeg1-cbr-64x48", &stream, &reference, &inputs);
 }
 
 #[test]

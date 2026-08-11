@@ -69,6 +69,16 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `verify_cbr_stream` conformance (MPEG-1 header semantics), decode
   round-trips, adaptation, stuffing, and VBR/impossible-config
   rejection.
+- round 440: **two CBR streams join the pinned self-encoded corpus**
+  (`tests/fixtures/selfenc/`): `selfenc-cbr-64x48.m2v` (MPEG-2
+  I B P B P | I B P at 240 kbit/s, 65 536-bit VBV) and
+  `selfenc-mpeg1-cbr-64x48.m1v` (MPEG-1 two-GOP I B B P at the same
+  rate/buffer, constrained-parameters flag set) — both black-box
+  validated (strict error-detection pass clean, committed reference
+  decodes within the corpus |Δ| ≤ 3 contract), pinned bit-exactly by
+  `tests/selfenc_conformance.rs`, and additionally held to the full
+  Annex C occupancy / `vbv_delay`-consistency verification against
+  the declared `bit_rate` / `vbv_buffer_size`.
 - round 416: **conformant ISO/IEC 11172-2 (MPEG-1) encode path**
   (`mpeg1_encoder`) — the bit-exact inverse of the crate's §2.4
   decode pipeline:

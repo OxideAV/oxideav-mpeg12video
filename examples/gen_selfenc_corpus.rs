@@ -15,9 +15,10 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    encode_display_order_gop_sequence, encode_display_order_sequence, encode_i_p_b,
-    encode_i_p_chain, encode_intra_picture, encode_mpeg1_display_order_sequence,
-    encode_mpeg1_intra_stream, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
+    encode_cbr_gop_sequence, encode_display_order_gop_sequence, encode_display_order_sequence,
+    encode_i_p_b, encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence,
+    encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream, CbrConfig, FrameBuffer,
+    IntraPictureParams, Mpeg1SequenceParams,
 };
 
 /// Deterministic busy frame: diagonal luma gradient + 4×4 checker,
@@ -179,4 +180,36 @@ fn main() {
     let m1_qmat = encode_mpeg1_display_order_sequence(&display, 1, 1, &seq_qmat, 6, 3, 3)
         .expect("mpeg1 qmat encode");
     write("selfenc-mpeg1-qmat-48x32.m1v", &m1_qmat);
+
+    // ---- Annex C CBR (rate-controlled) streams --------------------
+
+    // 11. MPEG-2 CBR: 8 frames, I B P B P | I B P GOP structure at
+    //     240 kbit/s with a 65 536-bit VBV buffer — every picture
+    //     header carries the real §6.3.9 vbv_delay and the stream
+    //     satisfies the Annex C occupancy bounds (quantiser
+    //     adaptation + zero stuffing).
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 4)).collect();
+    let cbr = CbrConfig {
+        bit_rate_value: 600, // 240 kbit/s
+        vbv_buffer_size_value: 4,
+        frame_rate_code: 3,
+        initial_quantiser_scale_code: 6,
+    };
+    let m2_cbr =
+        encode_cbr_gop_sequence(&display, 1, 2, params(64, 48), &cbr, 3, 3).expect("cbr encode");
+    write("selfenc-cbr-64x48.m2v", &m2_cbr.stream);
+
+    // 12. MPEG-1 CBR: two-GOP I B B P | I B B P at 240 kbit/s with a
+    //     65 536-bit VBV buffer — real §2.4.3.4 vbv_delay values under
+    //     the 11172-2 Annex C model (inside the §2.4.3.2 constrained
+    //     bounds, so the flag is set).
+    let seq_cbr = Mpeg1SequenceParams {
+        bit_rate_value: 600,
+        vbv_buffer_size_value: 4,
+        ..mpeg1_seq(64, 48)
+    };
+    let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 5)).collect();
+    let m1_cbr =
+        encode_mpeg1_cbr_sequence(&display, 2, 1, &seq_cbr, 6, 3, 3).expect("mpeg1 cbr encode");
+    write("selfenc-mpeg1-cbr-64x48.m1v", &m1_cbr.stream);
 }
