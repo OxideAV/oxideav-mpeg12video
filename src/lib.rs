@@ -467,6 +467,7 @@ pub mod spatial_resampling;
 pub mod spatial_temporal_combine;
 #[doc(hidden)] // internal: encoder bitstream-writer stage
 pub mod stream_writer;
+pub mod vbv;
 pub mod video_sequence;
 
 // ---------------------------------------------------------------------

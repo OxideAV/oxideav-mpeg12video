@@ -8,6 +8,34 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 440: **exact Annex C Video Buffering Verifier** (`vbv`) — the
+  shared ISO/IEC 13818-2 Annex C (C.1–C.12) / ISO/IEC 11172-2 Annex C
+  (C.1.1–C.1.4) constant-bit-rate buffer model:
+  - `VbvCbrModel` — the C.3.1 / C.1.3 CBR state machine in exact
+    integer arithmetic (time sub-units of
+    `1 / (180 000 * frame_rate_numerator)` s, so the 1001-denominator
+    Table 6-4 rates, frame/field removal cadences and 90 kHz
+    `vbv_delay` ticks are all representable without rounding — Annex C
+    prescribes real-valued arithmetic): §6.3.9 / §2.4.3.4
+    `vbv_delay = 90 000 * B*(n) / R` computation, the C.5 / C.1.4
+    overflow and C.6 underflow checks at every removal, and encoder
+    planning bounds (`max_end_bits` for the underflow limit,
+    `min_end_bits` for the stuffing threshold before the next
+    examination).
+  - `verify_cbr_stream` — a whole-elementary-stream Annex C verifier:
+    parses the declared `bit_rate` / `vbv_buffer_size` / frame rate
+    (MPEG-1 header semantics or the MPEG-2 extension upper bits),
+    groups start codes into the C.5 / C.1.4 "picture data" spans
+    (preceding headers + picture + trailing stuffing, terminating
+    `sequence_end_code` included), seeds the model from picture 0's
+    coded `vbv_delay`, and holds every picture to the overflow /
+    underflow bounds and a C.3.1-consistent coded `vbv_delay`
+    (±1 tick of quantisation), with frame pictures on the C.9 / C.11
+    frame-period cadence and field pictures on the C.11 field-period
+    cadence (`repeat_first_field = 0` scope).
+  - `frame_rate_value` (the Table 6-4 / §2.4.3.2 rational rate table)
+    and `patch_vbv_delay` (in-place rewrite of the §6.2.3 / §2.4.3.4
+    16-bit field inside a finished picture layer).
 - round 416: **conformant ISO/IEC 11172-2 (MPEG-1) encode path**
   (`mpeg1_encoder`) — the bit-exact inverse of the crate's §2.4
   decode pipeline:
