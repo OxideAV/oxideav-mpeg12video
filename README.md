@@ -373,16 +373,80 @@ whole path against the crate's own §2.4 decode pipeline:
   headers/time codes, 100×62 geometry, wide motion at f_code 4, and
   the absence of any extension start code.
 
+Both encoders now have **Annex C rate control**, and the MPEG-2
+encoder codes **field pictures** end-to-end:
+
+- **CBR rate control (`rate_control` / `vbv`)** — the `vbv` module is
+  an *exact* implementation of the ISO/IEC 13818-2 Annex C (C.1–C.12)
+  / ISO/IEC 11172-2 Annex C (C.1.1–C.1.4) Video Buffering Verifier:
+  integer arithmetic in sub-units that keep every Table 6-4 rational
+  frame rate, frame/field removal cadence, and 90 kHz `vbv_delay`
+  tick exact (Annex C prescribes real-valued arithmetic), the
+  C.3.1 / §6.3.9 / §2.4.3.4 `vbv_delay = 90 000 · B*(n) / R`
+  computation, and the C.5 / C.6 occupancy bounds at every removal.
+  On top of it sit three VBV-regulated assemblers —
+  `encode_cbr_gop_sequence` (MPEG-2 frame pictures, C.9 cadence),
+  `encode_field_cbr_gop_sequence` (MPEG-2 field pictures, C.11
+  field-period cadence), and `encode_mpeg1_cbr_sequence` (11172-2,
+  §2.4.3.2 picture rate, constrained-parameters flag evaluated as in
+  the plain assembler) — which *satisfy* the `bit_rate` /
+  `vbv_buffer_size` their sequence headers declare: a picture that
+  exceeds the C.6 underflow bound is re-encoded at a coarser
+  quantiser, one that undershoots the C.5 overflow bound draws
+  zero-byte stuffing (§5.2.3 / §2.3 `next_start_code()` zero
+  stuffing), a soft per-GOP I/P/B budget feedback steers the running
+  per-type quantisers between the hard bounds, and every picture
+  header carries the real `vbv_delay` (never the `0xFFFF`
+  variable-rate sentinel). A whole-stream verifier
+  (`vbv::verify_cbr_stream`) re-derives the model from the coded
+  stream alone — declared parameters, per-picture removal cadence
+  from `picture_structure`, picture-data spans per the Annex C
+  definition — and holds it to the occupancy bounds plus
+  C.3.1-consistent coded delays (±1 tick of quantisation); the CBR
+  round-trip tests and the pinned CBR corpus streams all pass it.
+- **Field-picture inter encode (`field_picture_encoder`)** — the
+  encoder-side mirror of the §7.6.1 field-picture decode path:
+  `encode_field_intra_picture` / `encode_field_p_picture` /
+  `encode_field_b_picture` emit `picture_structure` = Top/Bottom
+  field pictures (§6.3.10 constants: `top_field_first = 0`,
+  `repeat_first_field = 0`, `frame_pred_frame_dct = 0`,
+  `progressive_frame = 0`) with `field_motion_type = 01` (Table 6-18
+  Field-based, no `dct_type` per §6.2.5.1), the §6.2.5.2
+  `motion_vertical_field_select` flag, and field-unit motion vectors
+  differentially coded against the §7.6.3.4 PMV (Table 7-9 both-slot
+  update). The motion search (`estimate_field_mv`) scores every
+  `(reference field parity, vector)` candidate by the SAD of the
+  exact §7.6.4 prediction under §7.6.3.8-legal spans; P pictures
+  carry the Table B-3 modes + intra fallback, B pictures the Table
+  B-4 forward/backward/interpolated modes with per-direction PMV
+  slots and field selects. `encode_field_display_order_gop_sequence`
+  assembles whole interlaced sequences as §6.1.1.4.1 field pairs
+  (top first, shared `temporal_reference`, closed GOPs) honouring the
+  **§7.6.2.1 second-field-of-a-P-frame rule** via the same synthetic
+  reference frame the decode loop builds. Reconstruction is
+  decoder-exact: `tests/encode_field_pictures.rs` pins sample-exact
+  I/P/B field-picture decodes against the encoder's reconstruction,
+  a cross-parity prediction proof (a one-frame-line shift predicts
+  through the opposite-parity field at a fraction of intra cost),
+  and whole-sequence decode through `decode_video_sequence`.
+
 Both encoders are **externally conformance-validated**: a pinned
-self-encoded corpus (`tests/fixtures/selfenc/` — ten streams: MPEG-2
-all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
+self-encoded corpus (`tests/fixtures/selfenc/` — thirteen streams:
+MPEG-2 all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
 motion-compensated chain with intra fallback, an I/B/P group, a
 7-frame IBBP display-order sequence, a two-GOP MPEG-2 stream with GOP
-headers, and four MPEG-1 streams — all-intra, one-GOP I P P P, a
-two-GOP I B B P | I B B P, and an I B P with downloadable §2.4.3.2
-quantiser matrices) decodes in a black-box reference decoder
-(strict error-detection mode clean) with its committed reference
-decode agreeing with ours at max |Δ| 2 (pure Annex A IDCT rounding).
+headers, an Annex C **CBR** MPEG-2 stream (240 kbit/s, 65 536-bit VBV,
+real `vbv_delay` values, verifier-checked), a **field-coded** I B P B P
+sequence (§6.1.1.4.1 field pairs, both `motion_vertical_field_select`
+parities, §7.6.2.1 second-P-field reference), and five MPEG-1 streams
+— all-intra, one-GOP I P P P, a two-GOP I B B P | I B B P, an I B P
+with downloadable §2.4.3.2 quantiser matrices, and an 11172-2 Annex C
+CBR two-GOP stream with the constrained-parameters flag set) decodes
+in a black-box reference decoder (strict error-detection mode clean;
+for the field-pair stream the strict mode flags packets while
+decoding all frames — the same documented behaviour as the
+`fieldpics` conformance fixture) with its committed reference decode
+agreeing with ours at max |Δ| 2 (pure Annex A IDCT rounding).
 `tests/selfenc_conformance.rs` pins every stream **bit-exactly**
 (regenerate-and-compare against the committed bytes) so any
 bit-moving encoder change must consciously refresh the corpus and
@@ -401,11 +465,12 @@ MPEG-1 `full_pel_*_vector = 1` emission is supported per direction
 vectors confined to integer-pel positions, the wire carrying the
 unshifted values the §2.4.4.2 / §2.4.4.3 final `recon <<= 1`
 restores; pinned by a sample-exact round-trip and a strict black-box
-decode). Field-picture / field-based inter encoding
-(`frame_pred_frame_dct = 0`), rate control (vbv_delay is emitted as
-the 0xFFFF variable-rate marker), D-picture encoding, and encoder
-runtime-registry wiring remain future work (the **decoder** is
-registry-wired — see **Runtime decoder** above).
+decode). Field-based prediction **inside frame pictures**
+(`frame_pred_frame_dct = 0` frame pictures with Table 6-17 motion
+types), dual-prime / 16×8-MC *encoding* (both are decoded),
+D-picture encoding, and encoder runtime-registry wiring remain
+future work (the **decoder** is registry-wired — see **Runtime
+decoder** above).
 
 ## Not yet supported
 
