@@ -36,6 +36,25 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   - `frame_rate_value` (the Table 6-4 / §2.4.3.2 rational rate table)
     and `patch_vbv_delay` (in-place rewrite of the §6.2.3 / §2.4.3.4
     16-bit field inside a finished picture layer).
+- round 440: **MPEG-2 CBR rate control** (`rate_control` /
+  `encode_cbr_gop_sequence`) — the VBV-regulated display-order GOP
+  assembler: the sequence header declares `bit_rate_value` /
+  `vbv_buffer_size_value` and the emitted stream *satisfies* them
+  against the exact Annex C model. The controller re-encodes a picture
+  at a coarser `quantiser_scale_code` while it exceeds the C.6
+  underflow bound, appends §5.2.3 zero-byte stuffing when a picture
+  undershoots the C.5 overflow bound for the next examination, steers
+  per-type (I/P/B) quantisers by a soft per-GOP bit-budget feedback
+  loop, and stamps the real C.3.1 / §6.3.9
+  `vbv_delay = 90 000 * B*(n) / R` into every picture header (never
+  the `0xFFFF` variable-rate sentinel). `tests/encode_cbr_roundtrip.rs`
+  pins: `verify_cbr_stream` conformance of the emitted streams
+  (occupancy bounds + delay consistency), decode round-trips with
+  bounded distortion, quantiser adaptation under rate pressure,
+  stuffing on near-flat content, single-frame / clamped-tail edge
+  cases, and rejection of unrepresentable configurations (`vbv_delay`
+  range, content that cannot fit the rate at `quantiser_scale_code`
+  31).
 - round 416: **conformant ISO/IEC 11172-2 (MPEG-1) encode path**
   (`mpeg1_encoder`) — the bit-exact inverse of the crate's §2.4
   decode pipeline:

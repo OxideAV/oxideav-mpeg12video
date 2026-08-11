@@ -442,6 +442,7 @@ pub mod pmv;
 pub mod quant_matrix_extension;
 #[doc(hidden)] // internal: MPEG-1 §2.4.2.7 quantizer_scale field
 pub mod quantizer_scale;
+pub mod rate_control;
 #[doc(hidden)] // internal: §6.2.2.4 extension parser
 pub mod sequence_display_extension;
 #[doc(hidden)] // internal: display-order verification driver
@@ -498,6 +499,7 @@ pub use mpeg1_stream_writer::{
 };
 pub use p_picture_encoder::encode_p_picture;
 pub use picture_header::PictureCodingType;
+pub use rate_control::{encode_cbr_gop_sequence, CbrConfig, CbrEncoded};
 pub use sequence_extension::ChromaFormat;
 pub use video_sequence::{
     decode_video_sequence, display_indices_from_coded_pictures,
