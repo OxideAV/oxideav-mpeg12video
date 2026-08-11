@@ -123,6 +123,15 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   reads each picture's `picture_structure` and applies the matching
   cadence. Pinned in `tests/encode_cbr_roundtrip.rs` (12 field
   pictures verify + decode to 6 assembled frames).
+- round 440: **a field-coded stream joins the pinned self-encoded
+  corpus** (`selfenc-fieldseq-48x64.m2v`): an I B P B P sequence coded
+  entirely as §6.1.1.4.1 field pairs (fields 48×32,
+  `motion_vertical_field_select` over both parities, §7.6.2.1
+  second-P-field reference, Table B-4 B-field modes) — black-box
+  default decode agrees with ours at max |Δ| = 1, pinned bit-exactly
+  by `tests/selfenc_conformance.rs` (the reference binary's strict
+  mode flags field-pair packets while decoding them, the same
+  documented behaviour as the `fieldpics-48x64` conformance fixture).
 - round 440: **two CBR streams join the pinned self-encoded corpus**
   (`tests/fixtures/selfenc/`): `selfenc-cbr-64x48.m2v` (MPEG-2
   I B P B P | I B P at 240 kbit/s, 65 536-bit VBV) and

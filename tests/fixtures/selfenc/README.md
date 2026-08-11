@@ -35,6 +35,7 @@ they pin two facts:
 | `selfenc-mpeg1-qmat-48x32.m1v` | `encode_mpeg1_display_order_sequence` | MPEG-1 I B P with **downloadable §2.4.3.2 quantiser matrices** (intra ramp + all-20 non-intra loaded by the sequence header; both the forward quantiser and the decoder derive them from the header) |
 | `selfenc-cbr-64x48.m2v` | `encode_cbr_gop_sequence` | MPEG-2 **CBR** (Annex C): I B P B P \| I B P at 240 kbit/s, 65 536-bit VBV buffer — real §6.3.9 `vbv_delay` in every picture header, quantiser adaptation + zero stuffing holding the C.5/C.6 occupancy bounds (verified by `vbv::verify_cbr_stream`) |
 | `selfenc-mpeg1-cbr-64x48.m1v` | `encode_mpeg1_cbr_sequence` | MPEG-1 **CBR** (11172-2 Annex C): two-GOP I B B P \| I B B P at 240 kbit/s, 65 536-bit VBV buffer — real §2.4.3.4 `vbv_delay`, constrained-parameters flag set, same occupancy-bound verification |
+| `selfenc-fieldseq-48x64.m2v` | `encode_field_display_order_gop_sequence` | MPEG-2 **field-coded** I B P B P (48×64, fields 48×32): §6.1.1.4.1 field pairs top-first with shared `temporal_reference`, `field_motion_type = 01` + `motion_vertical_field_select` over both parities, the §7.6.2.1 second-P-field synthetic reference, Table B-4 B-field modes, interlaced-phased content |
 
 All MPEG-2 streams: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -71,6 +72,13 @@ additionally holds both streams to the full Annex C occupancy /
 delay-consistency verification (`vbv::verify_cbr_stream`) against the
 `bit_rate` / `vbv_buffer_size` they declare.
 
+The field-coded stream (13) was generated and validated 2026-08-11
+the same way; its default black-box decode agrees with ours at max
+|Δ| = 1 (≤ 1.7 % samples). As with the `fieldpics-48x64` conformance
+fixture, the reference binary's strict error-detection mode flags
+field-picture-pair packets while still decoding every frame — the
+default decode is the committed reference.
+
 ## SHA-256
 
 ```
@@ -98,4 +106,6 @@ e5d00c6f007bed3a0e5bfdf3a10875050aef68bced62c5dd04768defc6dc5d38  selfenc-mpeg1-
 2801a9b27965edff607d0b2b1f40e90b83cb13b50486809d4abc530875ce1dbf  selfenc-cbr-64x48.m2v.ref.yuv
 55fb5199add258199249ff2fab0d9646d8d35d6dfed58d6145e7972eb0572889  selfenc-mpeg1-cbr-64x48.m1v
 55126a0377ddbb05681ff7c9c5c66b20276fb9e7821ace9d3ebcc97f3ecc8d8a  selfenc-mpeg1-cbr-64x48.m1v.ref.yuv
+88ddc2b1f6d30c33bcacfdaa0a9c118c32cacf8caa46bad0dd972ca8dbdf7dd4  selfenc-fieldseq-48x64.m2v
+49f48c79988118cedd095ea3159c354651b54744f2e9dded434cfc48e9f0b198  selfenc-fieldseq-48x64.m2v.ref.yuv
 ```

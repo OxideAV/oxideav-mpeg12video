@@ -16,9 +16,9 @@
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
     encode_cbr_gop_sequence, encode_display_order_gop_sequence, encode_display_order_sequence,
-    encode_i_p_b, encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence,
-    encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream, CbrConfig, FrameBuffer,
-    IntraPictureParams, Mpeg1SequenceParams,
+    encode_field_display_order_gop_sequence, encode_i_p_b, encode_i_p_chain, encode_intra_picture,
+    encode_mpeg1_cbr_sequence, encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream,
+    CbrConfig, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
 };
 
 /// Deterministic busy frame: diagonal luma gradient + 4×4 checker,
@@ -212,4 +212,48 @@ fn main() {
     let m1_cbr =
         encode_mpeg1_cbr_sequence(&display, 2, 1, &seq_cbr, 6, 3, 3).expect("mpeg1 cbr encode");
     write("selfenc-mpeg1-cbr-64x48.m1v", &m1_cbr.stream);
+
+    // ---- Field-picture (interlaced) stream ------------------------
+
+    // 13. MPEG-2 field-coded I B P B P sequence, 48x64 (fields 48x32):
+    //     §6.1.1.4.1 field pairs (top first), field_motion_type = 01
+    //     with motion_vertical_field_select over both parities, the
+    //     §7.6.2.1 second-P-field synthetic reference, Table B-4
+    //     B-field modes. Interlaced-phased content so the two fields
+    //     of a frame genuinely differ.
+    let field_frames: Vec<FrameBuffer> = (0..5)
+        .map(|t| {
+            let (w, h) = (48usize, 64usize);
+            let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+            for y in 0..h {
+                for x in 0..w {
+                    let v = 30 + ((x * 4 + y * 7 + t * 3) % 180);
+                    let line = if y % 2 == 0 { 12 } else { 0 };
+                    f.y.put_sample(x, y, (v + line).min(235) as u8);
+                }
+            }
+            for y in 0..h / 2 {
+                for x in 0..w / 2 {
+                    f.cb.put_sample(x, y, (90 + (x + t) % 80) as u8);
+                    f.cr.put_sample(x, y, (190u8).saturating_sub(((y + 2 * t) % 80) as u8));
+                }
+            }
+            f
+        })
+        .collect();
+    let field_params = IntraPictureParams {
+        width: 48,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+    let fieldseq =
+        encode_field_display_order_gop_sequence(&field_frames, 1, 2, &field_params, 6, 3, 3)
+            .expect("field sequence encode");
+    write("selfenc-fieldseq-48x64.m2v", &fieldseq);
 }

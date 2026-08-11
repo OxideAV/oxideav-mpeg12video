@@ -329,6 +329,60 @@ fn selfenc_mpeg1_cbr_is_pinned_reference_and_vbv_conformant() {
     assert_reference_conformant("selfenc-mpeg1-cbr-64x48", &stream, &reference, &inputs);
 }
 
+/// The interlaced field-sequence fixture's synthetic content — in
+/// lock-step with `examples/gen_selfenc_corpus.rs` stream 13.
+fn field_frame_at(t: usize) -> FrameBuffer {
+    let (w, h) = (48usize, 64usize);
+    let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+    for y in 0..h {
+        for x in 0..w {
+            let v = 30 + ((x * 4 + y * 7 + t * 3) % 180);
+            let line = if y % 2 == 0 { 12 } else { 0 };
+            f.y.put_sample(x, y, (v + line).min(235) as u8);
+        }
+    }
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            f.cb.put_sample(x, y, (90 + (x + t) % 80) as u8);
+            f.cr.put_sample(x, y, (190u8).saturating_sub(((y + 2 * t) % 80) as u8));
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_field_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-fieldseq-48x64.m2v");
+    let display: Vec<FrameBuffer> = (0..5).map(field_frame_at).collect();
+    let field_params = IntraPictureParams {
+        width: 48,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+    let regenerated = oxideav_mpeg12video::encode_field_display_order_gop_sequence(
+        &display,
+        1,
+        2,
+        &field_params,
+        6,
+        3,
+        3,
+    )
+    .expect("field sequence re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-fieldseq-48x64", &stream, &reference, &inputs);
+}
+
 #[test]
 fn selfenc_mpeg1_loaded_matrices_is_pinned_and_reference_conformant() {
     let (stream, reference) = fixture("selfenc-mpeg1-qmat-48x32.m1v");
