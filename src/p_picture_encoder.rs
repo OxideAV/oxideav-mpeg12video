@@ -105,7 +105,7 @@ pub(crate) fn wrap_delta(delta: i32, f_code: u8) -> Result<i32> {
 /// is the block's top-left in the frame plane; `(local_x, local_y)` is
 /// its top-left in the prediction plane. Edge reads of the source clamp
 /// to the nearest valid sample (the macroblock grid is padded to 16).
-fn gather_residual(
+pub(crate) fn gather_residual(
     cur_plane: &crate::frame_assembly::Plane,
     pred: &[u8],
     pred_w: usize,
@@ -216,7 +216,7 @@ pub(crate) fn write_inter_block_coeffs(bw: &mut BitWriter, qf: &[[i32; 8]; 8]) {
 /// Write the decoder-matching reconstruction of one inter macroblock
 /// into `recon`: `Saturate(f_pel + prediction)` per block, in frame-DCT
 /// (stride-1) order.
-fn reconstruct_inter_mb(
+pub(crate) fn reconstruct_inter_mb(
     recon: &mut FrameBuffer,
     mb_col: usize,
     mb_row: usize,
@@ -260,14 +260,14 @@ fn reconstruct_inter_mb(
 /// Per-component running intra DC predictor, used when a P-picture codes
 /// a macroblock intra (§7.2.1). Resets to the Table 7-2 seed.
 #[derive(Clone, Copy)]
-struct IntraDcPred {
+pub(crate) struct IntraDcPred {
     luma: i32,
     cb: i32,
     cr: i32,
 }
 
 impl IntraDcPred {
-    fn reset(intra_dc_precision: u8) -> Self {
+    pub(crate) fn reset(intra_dc_precision: u8) -> Self {
         let v = 128i32 << intra_dc_precision;
         Self {
             luma: v,
@@ -302,7 +302,7 @@ fn dc_table_component(c: ColourComponent) -> DcComponent {
 /// predictor equal to its own mean — a cheap proxy for the intra-coding
 /// cost. A macroblock the motion search predicts worse than this is
 /// better coded intra. Returns `(sad_to_mean)`.
-fn intra_activity(current: &FrameBuffer, mb_col: usize, mb_row: usize) -> u32 {
+pub(crate) fn intra_activity(current: &FrameBuffer, mb_col: usize, mb_row: usize) -> u32 {
     let plane = &current.y;
     let w = plane.width();
     let h = plane.height();
@@ -333,7 +333,7 @@ fn intra_activity(current: &FrameBuffer, mb_col: usize, mb_row: usize) -> u32 {
 /// block and reconstructs the samples into `recon`. The macroblock type
 /// (`00011`) and `macroblock_address_increment` are written by the
 /// caller; this writes only the block run.
-fn encode_intra_mb(
+pub(crate) fn encode_intra_mb(
     bw: &mut BitWriter,
     current: &FrameBuffer,
     recon: &mut FrameBuffer,

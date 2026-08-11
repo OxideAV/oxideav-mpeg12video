@@ -69,6 +69,50 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `verify_cbr_stream` conformance (MPEG-1 header semantics), decode
   round-trips, adaptation, stuffing, and VBR/impossible-config
   rejection.
+- round 440: **MPEG-2 field-picture inter encode**
+  (`field_picture_encoder`) — the encoder-side mirror of the crate's
+  §7.6.1 field-picture decode path (*"within a field picture all
+  predictions are field predictions"*):
+  - `encode_field_intra_picture` / `encode_field_p_picture` /
+    `encode_field_b_picture` — per-field-picture encoders emitting
+    `picture_structure` = Top/Bottom (Table 6-14) with the §6.3.10
+    field-picture constants (`top_field_first = 0`,
+    `repeat_first_field = 0`, `frame_pred_frame_dct = 0`,
+    `progressive_frame = 0`; new
+    `stream_writer::write_field_picture_coding_extension`),
+    `field_motion_type = 01` (Table 6-18 Field-based, no `dct_type`
+    per §6.2.5.1), the §6.2.5.2 `motion_vertical_field_select` flag,
+    and motion vectors coded directly in field-sample units against
+    the §7.6.3.4 PMV (§7.6.3.3 Table 7-9 both-slot copy). P pictures
+    carry the Table B-3 modes + intra fallback; B pictures the Table
+    B-4 forward/backward/interpolated modes with per-direction PMV
+    slots and field selects.
+  - `estimate_field_mv` — both-parity field motion search scoring
+    each `(reference field, vector)` candidate by the SAD of the
+    exact §7.6.4 field prediction, restricted to §7.6.3.8-legal spans
+    within the chosen reference field.
+  - `encode_field_display_order_gop_sequence` — whole-sequence
+    assembly as §6.1.1.4.1 field-picture pairs (top field first, both
+    fields sharing the frame's `temporal_reference`): interlaced
+    sequence declaration (`progressive_sequence = 0`), GOP structure
+    as the frame assembler, and the **§7.6.2.1
+    second-field-of-a-P-frame reference rule** via the same synthetic
+    reference frame the decode loop builds
+    (`second_p_field_reference`).
+  - Reconstruction is decoder-exact (the shared
+    `predict_field_picture_macroblock_planes` + residual add), pinned
+    by `tests/encode_field_pictures.rs`: per-picture sample-exact
+    decode-vs-encoder-reconstruction for I/P/B field pictures through
+    `decode_field_picture`, a cross-parity prediction proof (a
+    one-frame-line shift is predicted through the opposite-parity
+    reference field at a fraction of intra cost), whole-sequence
+    decode through `decode_video_sequence`, and geometry rejection
+    (height % 32, progressive-sequence exclusion §6.3.5). Black-box
+    cross-check: the reference decoder's default decode of an
+    encoded I/P/B field sequence agrees with ours at max |Δ| = 1
+    (its strict mode flags field-pair packets while decoding them —
+    the same documented behaviour as the fieldpics conformance
+    fixture).
 - round 440: **two CBR streams join the pinned self-encoded corpus**
   (`tests/fixtures/selfenc/`): `selfenc-cbr-64x48.m2v` (MPEG-2
   I B P B P | I B P at 240 kbit/s, 65 536-bit VBV) and

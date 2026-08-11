@@ -222,6 +222,57 @@ pub fn write_picture_coding_extension(bw: &mut BitWriter, p: &PictureCodingExten
     bw.align_to_byte();
 }
 
+/// Write a §6.2.3.1 `picture_coding_extension()` for a **field
+/// picture** (`picture_structure` = Top Field `01` / Bottom Field `10`
+/// per Table 6-14).
+///
+/// The §6.3.10 field-picture constraints are applied here rather than
+/// exposed as parameters: `top_field_first = 0` (*"in a field picture
+/// top_field_first shall have the value '0'"*), `repeat_first_field =
+/// 0` (*"in a field picture it shall be set to zero"*),
+/// `frame_pred_frame_dct = 0` (the flag only applies to frame
+/// pictures; a field picture always reads `field_motion_type` and has
+/// no frame/field DCT distinction, §6.2.5.1 / Table 6-19),
+/// `progressive_frame = 0` (field pictures only occur in interlaced
+/// sequences, §6.3.5), and `chroma_420_type = progressive_frame = 0`
+/// (§6.3.11).
+///
+/// # Panics
+/// Debug-asserts that `structure` is not [`PictureStructure::Frame`]
+/// (use [`write_picture_coding_extension`] for frame pictures).
+pub fn write_field_picture_coding_extension(
+    bw: &mut BitWriter,
+    p: &PictureCodingExtensionParams,
+    structure: crate::picture_header::PictureStructure,
+) {
+    use crate::picture_header::PictureStructure;
+    debug_assert_ne!(structure, PictureStructure::Frame);
+    let structure_code = match structure {
+        PictureStructure::TopField => 0b01,
+        PictureStructure::BottomField => 0b10,
+        PictureStructure::Frame => 0b11,
+    };
+    bw.write_u32(EXTENSION_START_CODE, 32);
+    bw.write_u32(PICTURE_CODING_EXTENSION_ID, 4);
+    bw.write_u32(u32::from(p.forward_f_code), 4); // f_code[0][0]
+    bw.write_u32(u32::from(p.forward_f_code), 4); // f_code[0][1]
+    bw.write_u32(u32::from(p.backward_f_code), 4); // f_code[1][0]
+    bw.write_u32(u32::from(p.backward_f_code), 4); // f_code[1][1]
+    bw.write_u32(u32::from(p.intra_dc_precision), 2);
+    bw.write_u32(structure_code, 2); // picture_structure (Table 6-14)
+    bw.write_bit(false); // top_field_first (§6.3.10: '0' in a field picture)
+    bw.write_bit(false); // frame_pred_frame_dct (frame pictures only)
+    bw.write_bit(false); // concealment_motion_vectors
+    bw.write_bit(p.q_scale_type);
+    bw.write_bit(p.intra_vlc_format);
+    bw.write_bit(p.alternate_scan);
+    bw.write_bit(false); // repeat_first_field (§6.3.10: zero in a field picture)
+    bw.write_bit(false); // chroma_420_type (= progressive_frame, §6.3.11)
+    bw.write_bit(false); // progressive_frame (interlaced sequence)
+    bw.write_bit(false); // composite_display_flag
+    bw.align_to_byte();
+}
+
 /// Write a §6.2.4 `slice()` header for the macroblock row `mb_row`
 /// (slice_vertical_position = `mb_row + 1`), for the baseline
 /// non-scalable, `vertical_size <= 2800` case (no

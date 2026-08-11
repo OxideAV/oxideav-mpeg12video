@@ -1146,7 +1146,7 @@ fn field_geometry(
 /// its parity; `prev_frame` is the full-height previous reference frame.
 /// The returned frame interleaves the two fields by parity (§3.131 /
 /// §3.13).
-fn reference_frame_for_second_p_field(
+pub(crate) fn reference_frame_for_second_p_field(
     first_field: &FrameBuffer,
     first_structure: PictureStructure,
     prev_frame: &FrameBuffer,
@@ -1168,7 +1168,7 @@ fn reference_frame_for_second_p_field(
 /// bottom field = odd frame lines (§3.13). Used to recover the previous
 /// frame's individual reference fields for §7.6.2.1 second-field
 /// prediction.
-fn extract_field(frame: &FrameBuffer, structure: PictureStructure) -> FrameBuffer {
+pub(crate) fn extract_field(frame: &FrameBuffer, structure: PictureStructure) -> FrameBuffer {
     let parity = match structure {
         PictureStructure::BottomField => 1usize,
         _ => 0usize,

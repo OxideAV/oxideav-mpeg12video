@@ -376,6 +376,7 @@ pub mod dequantize;
 pub mod dual_prime;
 #[doc(hidden)] // internal: §6.2.2.2 extension/user-data dispatcher
 pub mod extension_and_user_data;
+pub mod field_picture_encoder;
 #[doc(hidden)] // internal: §7.6.4 forming-predictions pel reader
 pub mod forming_predictions;
 #[doc(hidden)] // internal: encoder forward-DCT stage
@@ -479,6 +480,10 @@ pub use b_picture_encoder::encode_b_picture;
 pub use decoder::{
     frame_buffer_to_video_frame, make_decoder, Mpeg12Decoder, MPEG1_CODEC_ID_STR,
     MPEG2_CODEC_ID_STR,
+};
+pub use field_picture_encoder::{
+    encode_field_b_picture, encode_field_display_order_gop_sequence, encode_field_intra_picture,
+    encode_field_p_picture, estimate_field_mv, second_p_field_reference, FieldSearchResult,
 };
 pub use frame_assembly::{FrameBuffer, IntraPictureParams, Plane};
 pub use inter_encoder::{

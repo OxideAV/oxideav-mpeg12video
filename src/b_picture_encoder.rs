@@ -58,7 +58,7 @@ const CHROMA_MB: usize = 8;
 
 /// The chosen prediction direction for one B macroblock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BDirection {
+pub(crate) enum BDirection {
     Forward,
     Backward,
     Interpolated,
@@ -294,7 +294,7 @@ pub fn encode_b_picture(
 
 /// Emit the Table B-4 `macroblock_type` codeword for the chosen
 /// direction + coded flag (the baseline `macroblock_quant == 0` rows).
-fn write_b_macroblock_type(bw: &mut BitWriter, dir: BDirection, coded: bool) {
+pub(crate) fn write_b_macroblock_type(bw: &mut BitWriter, dir: BDirection, coded: bool) {
     let (code, bits): (u32, u32) = match (dir, coded) {
         (BDirection::Interpolated, false) => (0b10, 2),
         (BDirection::Interpolated, true) => (0b11, 2),
