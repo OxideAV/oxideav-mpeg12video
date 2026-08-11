@@ -23,7 +23,7 @@ use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
     decode_field_picture, decode_video_sequence, encode_field_b_picture,
     encode_field_display_order_gop_sequence, encode_field_intra_picture, encode_field_p_picture,
-    second_p_field_reference, FrameBuffer, IntraPictureParams, PictureCodingType,
+    FrameBuffer, IntraPictureParams, PictureCodingType,
 };
 
 use oxideav_mpeg12video::inter_reconstruction::ReferenceFrames;
@@ -212,7 +212,7 @@ fn p_field_picture_is_sample_exact_against_decoder() {
 #[test]
 fn b_field_picture_is_sample_exact_against_decoder() {
     // Anchors: two intra field pairs.
-    let mut assemble_anchor = |t: usize| {
+    let assemble_anchor = |t: usize| {
         let frame = frame_at(t, 0);
         let mut bw = BitWriter::new();
         let top = encode_field_intra_picture(

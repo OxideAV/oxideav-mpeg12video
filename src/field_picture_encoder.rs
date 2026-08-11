@@ -36,9 +36,9 @@
 //! forms ([`crate::forming_predictions::predict_field_block`]), visiting
 //! only vectors whose whole read span stays inside the reference field
 //! (§7.6.3.8). Each macroblock is reconstructed exactly as
-//! [`crate::decode_field_picture`] will reconstruct it (the shared
+//! [`crate::decode_field_picture`] will reconstruct it — the shared
 //! [`crate::inter_reconstruction::predict_field_picture_macroblock_planes`]
-//! + residual add), so the encoder carries decoder-exact reference
+//! plus residual add — so the encoder carries decoder-exact reference
 //! fields forward.
 //!
 //! ## Reference rules (§7.6.2.1)
@@ -54,6 +54,10 @@
 //!   selection addresses exactly the fields the standard names.
 
 #![allow(clippy::too_many_arguments)]
+// The Table B-3 `00011` Intra codeword is grouped to mirror the spec's
+// MSB-first table layout (`0001_1`) so an audit reads it against the
+// printed table; clippy's equal-size grouping would obscure that.
+#![allow(clippy::unusual_byte_groupings)]
 // The macroblock walk indexes prediction planes / block arrays by the
 // same loop variables the spec's pseudocode uses.
 #![allow(clippy::needless_range_loop)]
@@ -910,12 +914,12 @@ pub fn encode_field_display_order_gop_sequence(
 
     // Encode one frame as its top+bottom field-picture pair, returning
     // the assembled decoder-exact frame reconstruction.
-    let mut encode_frame_pair = |bw: &mut BitWriter,
-                                 frame: &FrameBuffer,
-                                 tr: u16,
-                                 kind: PictureCodingType,
-                                 fwd_anchor: Option<&FrameBuffer>,
-                                 bwd_anchor: Option<&FrameBuffer>|
+    let encode_frame_pair = |bw: &mut BitWriter,
+                             frame: &FrameBuffer,
+                             tr: u16,
+                             kind: PictureCodingType,
+                             fwd_anchor: Option<&FrameBuffer>,
+                             bwd_anchor: Option<&FrameBuffer>|
      -> Result<FrameBuffer> {
         let top_src = extract_field(frame, PictureStructure::TopField);
         let bottom_src = extract_field(frame, PictureStructure::BottomField);
