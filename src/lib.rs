@@ -499,7 +499,7 @@ pub use mpeg1_stream_writer::{
 };
 pub use p_picture_encoder::encode_p_picture;
 pub use picture_header::PictureCodingType;
-pub use rate_control::{encode_cbr_gop_sequence, CbrConfig, CbrEncoded};
+pub use rate_control::{encode_cbr_gop_sequence, encode_mpeg1_cbr_sequence, CbrConfig, CbrEncoded};
 pub use sequence_extension::ChromaFormat;
 pub use video_sequence::{
     decode_video_sequence, display_indices_from_coded_pictures,

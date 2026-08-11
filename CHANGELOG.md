@@ -55,6 +55,20 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   cases, and rejection of unrepresentable configurations (`vbv_delay`
   range, content that cannot fit the rate at `quantiser_scale_code`
   31).
+- round 440: **MPEG-1 CBR rate control** (`encode_mpeg1_cbr_sequence`)
+  — the ISO/IEC 11172-2 mirror: the same VBV-regulated GOP assembly
+  under the 11172-2 Annex C (C.1.1–C.1.4) model (removal every
+  §2.4.3.2 nominal picture interval), real §2.4.3.4 `vbv_delay` in
+  every picture header ("for constant bitrate operation, the
+  vbv_delay is used to set the initial occupancy of the decoder's
+  buffer"), §2.3 zero-byte stuffing before start codes against the
+  overflow bound, quantiser-coarsening re-encode against the
+  underflow bound, rejection of the `0x3FFFF` variable-bit-rate code,
+  and the §2.4.3.2 `constrained_parameters_flag` evaluated exactly as
+  in the plain assembler. `tests/encode_mpeg1_cbr_roundtrip.rs` pins
+  `verify_cbr_stream` conformance (MPEG-1 header semantics), decode
+  round-trips, adaptation, stuffing, and VBR/impossible-config
+  rejection.
 - round 416: **conformant ISO/IEC 11172-2 (MPEG-1) encode path**
   (`mpeg1_encoder`) — the bit-exact inverse of the crate's §2.4
   decode pipeline:

@@ -43,6 +43,7 @@ use oxideav_core::bits::BitWriter;
 
 use crate::frame_assembly::{FrameBuffer, IntraPictureParams};
 use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
+use crate::mpeg1_stream_writer::Mpeg1SequenceParams;
 use crate::stream_writer::{
     write_sequence_extension, write_sequence_header, SequenceHeaderParams, SEQUENCE_END_CODE,
 };
@@ -115,6 +116,30 @@ impl PictureKind {
 /// — a conventional anchor-heavy split; only the *ratios* matter, the
 /// hard Annex C bounds keep any mis-estimate legal.
 const TYPE_WEIGHT_X10: [u64; 3] = [40, 16, 9];
+
+/// Nominal per-type picture bit budgets from the GOP composition: a
+/// full GOP holds 1 I + `anchors` P + `anchors * b_between` B pictures
+/// over `1 + anchors * (b_between + 1)` frame periods of rate, split by
+/// [`TYPE_WEIGHT_X10`].
+fn type_target_bits(
+    bit_rate: u64,
+    frame_rate: (u32, u32),
+    b_between: usize,
+    anchors_per_gop: usize,
+) -> [u64; 3] {
+    let step = b_between + 1;
+    let gop_pictures = 1 + anchors_per_gop * step;
+    let per_pic_bits = bit_rate * u64::from(frame_rate.1) / u64::from(frame_rate.0);
+    let gop_bits = per_pic_bits * gop_pictures as u64;
+    let weight_sum = TYPE_WEIGHT_X10[0]
+        + TYPE_WEIGHT_X10[1] * anchors_per_gop as u64
+        + TYPE_WEIGHT_X10[2] * (anchors_per_gop * b_between) as u64;
+    [
+        gop_bits * TYPE_WEIGHT_X10[0] / weight_sum,
+        gop_bits * TYPE_WEIGHT_X10[1] / weight_sum,
+        gop_bits * TYPE_WEIGHT_X10[2] / weight_sum,
+    ]
+}
 
 /// The CBR writer state threaded through the coded-order emission.
 struct CbrWriter {
@@ -312,21 +337,8 @@ pub fn encode_cbr_gop_sequence(
         frame_rate,
     })?;
 
-    // Nominal per-type budgets from the GOP composition: a full GOP
-    // holds 1 I + anchors P + anchors * b_between B pictures over
-    // (1 + anchors * (b_between + 1)) frame periods of rate.
     let step = b_between + 1;
-    let gop_pictures = 1 + anchors_per_gop * step;
-    let per_pic_bits = bit_rate * u64::from(frame_rate.1) / u64::from(frame_rate.0);
-    let gop_bits = per_pic_bits * gop_pictures as u64;
-    let weight_sum = TYPE_WEIGHT_X10[0]
-        + TYPE_WEIGHT_X10[1] * anchors_per_gop as u64
-        + TYPE_WEIGHT_X10[2] * (anchors_per_gop * b_between) as u64;
-    let target_bits = [
-        gop_bits * TYPE_WEIGHT_X10[0] / weight_sum,
-        gop_bits * TYPE_WEIGHT_X10[1] / weight_sum,
-        gop_bits * TYPE_WEIGHT_X10[2] / weight_sum,
-    ];
+    let target_bits = type_target_bits(bit_rate, frame_rate, b_between, anchors_per_gop);
 
     let sequence_params = SequenceHeaderParams {
         horizontal_size: params.width as u16,
@@ -440,6 +452,222 @@ pub fn encode_cbr_gop_sequence(
                         q,
                         forward_f_code,
                         backward_f_code,
+                    )?;
+                    Ok((bw.finish(), None))
+                })?;
+            }
+
+            forward_ref = backward_ref;
+            prev_anchor = next_anchor;
+        }
+
+        gop_start = gop_end + 1;
+    }
+
+    Ok(CbrEncoded {
+        stream: w.out,
+        quantiser_scale_codes: w.quantisers,
+        stuffing_bytes: w.stuffing_bytes,
+    })
+}
+
+/// Encode a whole **display-order** frame sequence as a CBR
+/// ISO/IEC 11172-2 elementary stream — the MPEG-1 mirror of
+/// [`encode_cbr_gop_sequence`], with the same GOP structure as
+/// [`crate::encode_mpeg1_display_order_sequence`] (mandatory §2.4.2.4
+/// GOP layer, closed GOPs, per-GOP `temporal_reference` reset), under
+/// the 11172-2 Annex C (C.1.1–C.1.4) VBV regulation:
+///
+/// * `seq.bit_rate_value` / `seq.vbv_buffer_size_value` are declared
+///   **and satisfied**: pictures are re-encoded at a coarser
+///   `quantizer_scale` while they exceed the C.1.4 underflow bound
+///   (`d(n+1) <= B(n) + R/P`), and zero-byte stuffing before the next
+///   start code (legal per the §2.3 `next_start_code()` /
+///   `zero_byte` stuffing the §2.4.1 syntax admits) holds the C.1.4
+///   overflow bound;
+/// * every `picture_header()` carries the real §2.4.3.4
+///   `vbv_delay = 90 000 * B*(n) / R` — "for constant bitrate
+///   operation, the vbv_delay is used to set the initial occupancy of
+///   the decoder's buffer" — never the `0xFFFF` variable-rate value;
+/// * the `constrained_parameters_flag` is set exactly when the
+///   §2.4.3.2 bounds hold, as in the plain assembler.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] for an empty `frames`,
+/// `anchors_per_gop == 0`, a zero / `0x3FFFF` (VBR) `bit_rate_value`,
+/// a zero `vbv_buffer_size_value`, an unrepresentable `vbv_delay`
+/// range, or content that cannot fit the rate at `quantizer_scale`
+/// 31; propagates encode errors.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_mpeg1_cbr_sequence(
+    frames: &[FrameBuffer],
+    b_between: usize,
+    anchors_per_gop: usize,
+    seq: &Mpeg1SequenceParams,
+    initial_quantizer_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+) -> Result<CbrEncoded> {
+    use crate::mpeg1_encoder::{
+        encode_mpeg1_b_picture, encode_mpeg1_intra_picture, encode_mpeg1_p_picture, picture_params,
+    };
+    use crate::mpeg1_stream_writer::{
+        constrained_parameters_admissible, write_mpeg1_sequence_header,
+    };
+
+    if frames.is_empty() {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_cbr_sequence: no frames to encode",
+        ));
+    }
+    if anchors_per_gop == 0 {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_cbr_sequence: anchors_per_gop must be >= 1",
+        ));
+    }
+    if seq.bit_rate_value == 0 || seq.bit_rate_value >= 0x3_FFFF {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_cbr_sequence: bit_rate_value must be a real §2.4.3.2 rate \
+             (0x3FFFF is the variable-bit-rate code)",
+        ));
+    }
+    if seq.vbv_buffer_size_value == 0 || seq.vbv_buffer_size_value > 0x3FF {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_cbr_sequence: vbv_buffer_size_value out of the 10-bit §2.4.2.3 range",
+        ));
+    }
+    if !(1..=31).contains(&initial_quantizer_scale_code) {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_cbr_sequence: initial_quantizer_scale_code out of range (§2.4.2.7)",
+        ));
+    }
+    let params = picture_params(seq);
+    for f in frames {
+        if f.width != params.width || f.height != params.height {
+            return Err(Error::InvalidBitstream(
+                "encode_mpeg1_cbr_sequence: frame geometry does not match the sequence",
+            ));
+        }
+    }
+
+    // §2.4.3.2 picture-rate table (identical codes to Table 6-4).
+    let frame_rate = frame_rate_value(seq.picture_rate_code)?;
+    let bit_rate = u64::from(seq.bit_rate_value) * 400;
+    let buffer_bits = u64::from(seq.vbv_buffer_size_value) * 16 * 1024;
+    let model = VbvCbrModel::new(&VbvParams {
+        bit_rate,
+        buffer_size_bits: buffer_bits,
+        frame_rate,
+    })?;
+    let step = b_between + 1;
+    let target_bits = type_target_bits(bit_rate, frame_rate, b_between, anchors_per_gop);
+
+    // §2.4.3.2: constrained_parameters_flag exactly when the bounds
+    // hold for the f_codes this sequence actually codes.
+    let uses_b = b_between > 0 && frames.len() > 1;
+    let seq_effective = Mpeg1SequenceParams {
+        constrained_parameters_flag: constrained_parameters_admissible(
+            seq,
+            forward_f_code,
+            if uses_b { backward_f_code } else { 1 },
+        ),
+        ..*seq
+    };
+
+    let mut head = BitWriter::new();
+    write_mpeg1_sequence_header(&mut head, &seq_effective)?;
+
+    let mut w = CbrWriter {
+        out: head.finish(),
+        model,
+        frd: frame_rate.1,
+        target_bits,
+        q: [initial_quantizer_scale_code; 3],
+        quantisers: Vec::new(),
+        stuffing_bytes: 0,
+        started: false,
+        buffer_bits,
+        bit_rate,
+    };
+
+    // The coded-order GOP walk mirrors
+    // `encode_mpeg1_display_order_sequence`.
+    let total = frames.len();
+    let mut coded = 0usize;
+    let mut gop_start = 0usize;
+    while gop_start < total {
+        let gop_end = (gop_start + anchors_per_gop * step).min(total - 1);
+
+        let mut gop_bw = BitWriter::new();
+        write_gop_header(
+            &mut gop_bw,
+            &Mpeg2Gop {
+                time_code: TimeCode::from_display_index(
+                    gop_start as u64,
+                    seq_effective.picture_rate_code,
+                )?,
+                closed_gop: true,
+                broken_link: false,
+            },
+        );
+        let gop_header = gop_bw.finish();
+
+        coded += 1;
+        let is_last = coded == total;
+        let i_frame = &frames[gop_start];
+        let mut forward_ref = w
+            .emit(&gop_header, PictureKind::I, is_last, |q| {
+                let mut bw = BitWriter::new();
+                let recon = encode_mpeg1_intra_picture(&mut bw, i_frame, &params, 0, q)?;
+                Ok((bw.finish(), Some(recon)))
+            })?
+            .expect("I emission returns a reconstruction");
+
+        let mut prev_anchor = gop_start;
+        while prev_anchor < gop_end {
+            let next_anchor = (prev_anchor + step).min(gop_end);
+
+            coded += 1;
+            let is_last = coded == total;
+            let p_frame = &frames[next_anchor];
+            let fwd = forward_ref.clone();
+            let backward_ref = w
+                .emit(&[], PictureKind::P, is_last, |q| {
+                    let mut bw = BitWriter::new();
+                    let recon = encode_mpeg1_p_picture(
+                        &mut bw,
+                        p_frame,
+                        &fwd,
+                        &params,
+                        (next_anchor - gop_start) as u16,
+                        q,
+                        forward_f_code,
+                        false,
+                    )?;
+                    Ok((bw.finish(), Some(recon)))
+                })?
+                .expect("P emission returns a reconstruction");
+
+            for b in (prev_anchor + 1)..next_anchor {
+                coded += 1;
+                let is_last = coded == total;
+                let b_frame = &frames[b];
+                let fwd = &forward_ref;
+                let bwd = &backward_ref;
+                w.emit(&[], PictureKind::B, is_last, |q| {
+                    let mut bw = BitWriter::new();
+                    encode_mpeg1_b_picture(
+                        &mut bw,
+                        b_frame,
+                        fwd,
+                        bwd,
+                        &params,
+                        (b - gop_start) as u16,
+                        q,
+                        forward_f_code,
+                        backward_f_code,
+                        false,
+                        false,
                     )?;
                     Ok((bw.finish(), None))
                 })?;

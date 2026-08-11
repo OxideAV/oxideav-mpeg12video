@@ -928,7 +928,7 @@ pub fn encode_mpeg1_b_picture(
 
 /// Derive the [`Mpeg1PictureParams`] (default §2.4.3.2 matrices) for a
 /// sequence-parameter set.
-fn picture_params(seq: &Mpeg1SequenceParams) -> Mpeg1PictureParams {
+pub(crate) fn picture_params(seq: &Mpeg1SequenceParams) -> Mpeg1PictureParams {
     // §2.4.3.2: a loaded matrix payload is transmitted in zigzag
     // order; inverse-zigzag it into the raster W[m][n] the §2.4.4
     // arithmetic (and its forward inverse) consumes. The MPEG-1
