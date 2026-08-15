@@ -322,6 +322,22 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   by `tests/selfenc_conformance.rs`; the five pre-existing MPEG-2
   fixtures regenerate byte-identical (no encoder bit drift).
 
+### Fixed
+
+- round 443: **platform-deterministic DCT/IDCT cosine kernel** — the
+  §A cosine table was built at runtime with `f64::cos()`, whose
+  final-ulp rounding differs between platform math libraries, making
+  the **encoder's emitted bits host-dependent** whenever a quantised
+  coefficient landed on a rounding boundary (CI regenerated two
+  pinned corpus streams with different bytes on Linux/Windows). The
+  kernel is now the constant `idct::COS_TABLE` — the eight
+  `cos(kπ/16)` magnitudes as correctly-rounded `f64` constants —
+  shared by the forward DCT and the IDCT, so all transform arithmetic
+  uses exactly-rounded IEEE operations only. Thirteen corpus streams
+  regenerate byte-identical under the constant kernel; four moved by
+  boundary flips and were regenerated + re-black-box-validated
+  (max |Δ| = 1 against the committed reference decodes).
+
 ### Changed
 
 - Internal §6 syntax-walker / §7 reconstruction / encoder-stage plumbing
