@@ -803,34 +803,34 @@ fn encode_ff_intra_mb(
 
 /// The encoder-side mirror of the decoder's §7.6.3 predictor bank —
 /// [`crate::pmv::Pmv`] driven with exactly the §7.6.3.1 / §7.6.3.3
-/// arithmetic the slice walker runs.
-struct PmvMirror {
+/// arithmetic the slice walker runs. Shared with the field-picture
+/// adaptive encoders ([`crate::field_picture_encoder`]).
+pub(crate) struct PmvMirror {
     pmv: crate::pmv::Pmv,
 }
 
 impl PmvMirror {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             pmv: crate::pmv::Pmv::new(),
         }
     }
 
     /// §7.6.3.4 reset (slice start, intra macroblock).
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.pmv.reset();
     }
 
-    fn get(&self, r: usize, s: usize, t: usize) -> i32 {
+    pub(crate) fn get(&self, r: usize, s: usize, t: usize) -> i32 {
         self.pmv.values[r][s][t]
     }
 
-    fn set(&mut self, r: usize, s: usize, t: usize, v: i32) {
+    pub(crate) fn set(&mut self, r: usize, s: usize, t: usize, v: i32) {
         self.pmv.values[r][s][t] = v;
     }
 
-    /// Table 7-10 Frame-based / Dual-prime row: copy `PMV[0][s]` into
-    /// `PMV[1][s]`.
-    fn copy_r0_to_r1(&mut self, s: usize) {
+    /// Tables 7-10 / 7-11 copy row: copy `PMV[0][s]` into `PMV[1][s]`.
+    pub(crate) fn copy_r0_to_r1(&mut self, s: usize) {
         self.pmv.values[1][s] = self.pmv.values[0][s];
     }
 }

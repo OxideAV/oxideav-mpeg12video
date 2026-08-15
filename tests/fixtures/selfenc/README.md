@@ -39,6 +39,7 @@ they pin two facts:
 | `selfenc-framefield-64x64.m2v` | `encode_ff_display_order_gop_sequence` | MPEG-2 **frame-picture field-based** I B P B P (`frame_pred_frame_dct = 0`, interlaced sequence, §6.3.3 grid): per-macroblock Table 6-17 `frame_motion_type` with `Field-based` macroblocks (two field vectors + `motion_vertical_field_select` per direction, §7.6.3.1 vertical-half-pred PMV coding), per-macroblock `dct_type` **field DCT** (§6.1.3 stride-2 luma blocks), opposite-direction field pans so field prediction genuinely wins |
 | `selfenc-dualprime-64x64.m2v` | `encode_ff_display_order_gop_sequence` | MPEG-2 **dual-prime** I P P (`b_between = 0` per §7.6.3.6): Table 6-17 `Dual prime` macroblocks (one vector + Table B-11 `dmvector`, §7.6.7.4 four-field average) beside Frame-based and Field-based ones — noise on the I reference makes the two-field average the best predictor |
 | `selfenc-mpeg1-dpics-48x32.m1v` | `encode_mpeg1_d_sequence` | MPEG-1 **D-only sequence** (§2.4.1 / §2.4.3.4 `picture_coding_type = 4`): four dc intra-coded pictures in two GOPs — Table B.2d macroblock type, six DC-only blocks (no AC walk / `end_of_block`, §2.4.2.8), `end_of_macroblock` bits. **No `.ref.yuv`**: the black-box binary emits zero frames for type-4 pictures (the same limitation recorded for the `mpeg1-dpics` conformance fixture), so the stream is pinned bit-exactly and decoded sample-exactly against the encoder's own §2.4.4.1 reconstruction |
+| `selfenc-fieldmodes-64x64.m2v` | `encode_field_adaptive_display_order_gop_sequence` | MPEG-2 field-coded **adaptive-mode** I P P (`b_between = 0` per §7.6.3.6): per-macroblock Table 6-18 selection between simple field prediction, **§7.6.7.3 16×8 MC** (two `(vector, field-select)` region pairs) and **§7.6.3.6 dual-prime** (one vector + Table B-11 `dmvector`) — 18/9/5 macroblocks respectively, mixed inside single slices so the Table 7-11 predictor-update rows interact |
 
 All MPEG-2 streams: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -94,6 +95,13 @@ reference: the reference binary produced an empty decode
 `tests/selfenc_conformance.rs` pins it bit-exactly and holds
 `decode_video_sequence` to the encoder's own reconstruction instead.
 
+The adaptive field-mode stream (17) was generated and validated
+2026-08-15 the same way: its default black-box decode agrees with
+ours at max |Δ| = 1 (≤ 0.5 % samples); as with the other field-coded
+streams, the strict error-detection mode flags field-picture-pair
+packets while still decoding every frame — the default decode is the
+committed reference.
+
 ## SHA-256
 
 ```
@@ -128,4 +136,6 @@ e0530b6f8a6813cca2177aeaae81c07246233ee175a8a0ecb41d4f0c8b1eaaef  selfenc-framef
 0b16d17137e1c56e87eabb61a55a7b718049568bceb30af6dd7b0399e1d04f6c  selfenc-dualprime-64x64.m2v
 a3b37ed0c26dc39d8d7cdf840588812da2966cebe66107cebcebae04d85f922c  selfenc-dualprime-64x64.m2v.ref.yuv
 5943dc602e6ea74ae44ad605bfc3375bfae130b49d0ac7644cf724a12570ba1c  selfenc-mpeg1-dpics-48x32.m1v
+4e069813e25a72fb618857e48bc8f1a3a115ea466f714c8d2db5758eb28b1f6e  selfenc-fieldmodes-64x64.m2v
+98994f7267e799d5bef21e43933157fa72c5d745aca7bc43addd0abfc3315623  selfenc-fieldmodes-64x64.m2v.ref.yuv
 ```

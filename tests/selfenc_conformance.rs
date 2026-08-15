@@ -490,6 +490,81 @@ fn selfenc_dual_prime_sequence_is_pinned_and_reference_conformant() {
     assert_reference_conformant("selfenc-dualprime-64x64", &stream, &reference, &inputs);
 }
 
+/// Stream 17's synthetic content: column-constant base, per-field
+/// decorrelated noise on the I fields only (frame 0), a clean copy
+/// (frame 1, dual-prime denoising target), and opposite-direction
+/// 16-frame-line bands (frame 2, 16×8-MC target).
+fn fieldmodes_frame_at(t: usize) -> FrameBuffer {
+    let fa_noise = |x: usize, y: usize, seed: usize| -> i32 {
+        let h = x
+            .wrapping_mul(31)
+            .wrapping_add(y.wrapping_mul(97))
+            .wrapping_add(seed.wrapping_mul(131));
+        ((h % 17) as i32) - 8
+    };
+    let (w, h) = (64usize, 64usize);
+    let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+    for y in 0..h {
+        for x in 0..w {
+            let dx: i32 = if t == 2 {
+                if (y / 16) % 2 == 0 {
+                    4
+                } else {
+                    -4
+                }
+            } else {
+                0
+            };
+            let sx = (x as i32 - dx).clamp(0, w as i32 - 1) as usize;
+            let base = 90 + ((sx * 7) % 100) as i32;
+            let v = if t == 0 {
+                base + fa_noise(x, y / 2, 1 + (y % 2))
+            } else {
+                base
+            };
+            f.y.put_sample(x, y, v.clamp(0, 255) as u8);
+        }
+    }
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            f.cb.put_sample(x, y, 128);
+            f.cr.put_sample(x, y, 128);
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_field_modes_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-fieldmodes-64x64.m2v");
+    let display: Vec<FrameBuffer> = (0..3).map(fieldmodes_frame_at).collect();
+    let fa_params = IntraPictureParams {
+        width: 64,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+    let (regenerated, stats) =
+        oxideav_mpeg12video::encode_field_adaptive_display_order_gop_sequence(
+            &display, 0, 2, &fa_params, 6, 3, 3, true,
+        )
+        .expect("adaptive field re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    // The stream genuinely exercises the Table 6-18 mode surface.
+    assert!(stats.sixteen_by_eight > 0, "16x8 coded: {stats:?}");
+    assert!(stats.dual_prime > 0, "dual-prime coded: {stats:?}");
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-fieldmodes-64x64", &stream, &reference, &inputs);
+}
+
 /// Stream 16's synthetic content — the D-picture staircase.
 fn d_frame_at(t: usize) -> FrameBuffer {
     let (w, h) = (48usize, 32usize);

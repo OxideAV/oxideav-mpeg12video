@@ -385,4 +385,79 @@ fn main() {
     let d_stream = encode_mpeg1_d_sequence(&d_frames, &mpeg1_seq(48, 32), 8, 2)
         .expect("mpeg1 d sequence encode");
     write("selfenc-mpeg1-dpics-48x32.m1v", &d_stream);
+
+    // ---- Adaptive field-picture stream (16x8 MC + dual-prime) -----
+
+    // 17. MPEG-2 field-coded I P P (64x64, fields 64x32, b_between = 0
+    //     so §7.6.3.6 admits dual-prime): the I fields carry
+    //     deterministic per-sample noise over a column-constant base,
+    //     P1 is the clean base (the §7.6.7.4 dual-prime average halves
+    //     the reference noise), and P2 shifts alternating 16-frame-line
+    //     bands in opposite directions (motion two §7.6.7.3 16x8
+    //     region vectors capture but one field vector cannot).
+    let fa_noise = |x: usize, y: usize, seed: usize| -> i32 {
+        let h = x
+            .wrapping_mul(31)
+            .wrapping_add(y.wrapping_mul(97))
+            .wrapping_add(seed.wrapping_mul(131));
+        ((h % 17) as i32) - 8
+    };
+    let fa_frames: Vec<FrameBuffer> = (0..3)
+        .map(|t| {
+            let (w, h) = (64usize, 64usize);
+            let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+            for y in 0..h {
+                for x in 0..w {
+                    let dx: i32 = if t == 2 {
+                        if (y / 16) % 2 == 0 {
+                            4
+                        } else {
+                            -4
+                        }
+                    } else {
+                        0
+                    };
+                    let sx = (x as i32 - dx).clamp(0, w as i32 - 1) as usize;
+                    let base = 90 + ((sx * 7) % 100) as i32;
+                    // Per-field decorrelated noise: field-line coordinate
+                    // + per-parity seed (frame-coordinate noise from this
+                    // linear hash correlates the two fields, defeating the
+                    // dual-prime average).
+                    let v = if t == 0 {
+                        base + fa_noise(x, y / 2, 1 + (y % 2))
+                    } else {
+                        base
+                    };
+                    f.y.put_sample(x, y, v.clamp(0, 255) as u8);
+                }
+            }
+            for y in 0..h / 2 {
+                for x in 0..w / 2 {
+                    f.cb.put_sample(x, y, 128);
+                    f.cr.put_sample(x, y, 128);
+                }
+            }
+            f
+        })
+        .collect();
+    let fa_params = IntraPictureParams {
+        width: 64,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+    let (fa_stream, fa_stats) =
+        oxideav_mpeg12video::encode_field_adaptive_display_order_gop_sequence(
+            &fa_frames, 0, 2, &fa_params, 6, 3, 3, true,
+        )
+        .expect("adaptive field sequence encode");
+    eprintln!("adaptive field stats: {fa_stats:?}");
+    assert!(fa_stats.sixteen_by_eight > 0, "16x8 must fire in stream 17");
+    assert!(fa_stats.dual_prime > 0, "dual-prime must fire in stream 17");
+    write("selfenc-fieldmodes-64x64.m2v", &fa_stream);
 }

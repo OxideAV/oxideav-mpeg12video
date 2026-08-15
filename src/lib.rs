@@ -485,8 +485,11 @@ pub use decoder::{
 };
 pub use encoder::{make_encoder, Mpeg12Encoder};
 pub use field_picture_encoder::{
-    encode_field_b_picture, encode_field_display_order_gop_sequence, encode_field_intra_picture,
-    encode_field_p_picture, estimate_field_mv, second_p_field_reference, FieldSearchResult,
+    encode_field_adaptive_display_order_gop_sequence, encode_field_b_picture,
+    encode_field_b_picture_adaptive, encode_field_display_order_gop_sequence,
+    encode_field_intra_picture, encode_field_p_picture, encode_field_p_picture_adaptive,
+    estimate_field_mv, estimate_field_region_mv, second_p_field_reference, FieldModeStats,
+    FieldSearchResult,
 };
 pub use frame_assembly::{FrameBuffer, IntraPictureParams, Plane};
 pub use frame_field_encoder::{
