@@ -99,8 +99,6 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use core::f64::consts::PI;
-
 /// IDCT coefficient-input lower bound — the §7.4.3 / §A 12-bit signed
 /// minimum that `F[v][u]` may take after the dequantiser's saturation
 /// step.
@@ -119,24 +117,106 @@ pub const F_OUTPUT_MIN: i32 = -256;
 /// for `f[y][x]` *before* the prediction-add step in §7.6.8.
 pub const F_OUTPUT_MAX: i32 = 255;
 
-/// Lazy-initialised table of `cos((2*x + 1) * u * π / 16)` for
-/// `x, u ∈ 0..8` — the 8×8 cosine kernel used by the §A 2-D IDCT
-/// formula. Pre-computed once on first call so the IDCT inner loops
-/// avoid repeated `cos()` calls. A `const fn` cannot evaluate
-/// `f64::cos`, so the table is built behind a `OnceLock` rather than
-/// declared `static`.
+/// The §A 8×8 cosine kernel `cos((2x + 1) · u · π / 16)` for
+/// `x, u ∈ 0..8`, as the **correctly-rounded `f64`** of each exact
+/// cosine value (computed once at 60-digit precision and rounded to
+/// nearest; the shortest-round-trip decimal literals below parse to
+/// exactly those doubles).
+///
+/// A runtime `f64::cos()` call must not be used here: transcendental
+/// functions are *not* specified to the last ulp by IEEE 754, so
+/// different platform math libraries return values differing in the
+/// final bit — which makes DCT/IDCT output (and therefore the
+/// **encoder's emitted bits**) platform-dependent whenever a quantised
+/// coefficient lands on a rounding boundary. Every entry is one of the
+/// eight magnitudes `cos(kπ/16), k ∈ 0..8` with the appropriate sign,
+/// laid out in the direct `[x][u]` order the §A summations index.
+pub(crate) const COS_TABLE: [[f64; 8]; 8] = [
+    [
+        1.0,
+        0.980_785_280_403_230_4,          // cos(π/16)
+        0.923_879_532_511_286_7,          // cos(2π/16)
+        0.831_469_612_302_545_2,          // cos(3π/16)
+        core::f64::consts::FRAC_1_SQRT_2, // cos(4π/16)
+        0.555_570_233_019_602_2,          // cos(5π/16)
+        0.382_683_432_365_089_8,          // cos(6π/16)
+        0.195_090_322_016_128_28,         // cos(7π/16)
+    ],
+    [
+        1.0,
+        0.831_469_612_302_545_2,
+        0.382_683_432_365_089_8,
+        -0.195_090_322_016_128_28,
+        -core::f64::consts::FRAC_1_SQRT_2,
+        -0.980_785_280_403_230_4,
+        -0.923_879_532_511_286_7,
+        -0.555_570_233_019_602_2,
+    ],
+    [
+        1.0,
+        0.555_570_233_019_602_2,
+        -0.382_683_432_365_089_8,
+        -0.980_785_280_403_230_4,
+        -core::f64::consts::FRAC_1_SQRT_2,
+        0.195_090_322_016_128_28,
+        0.923_879_532_511_286_7,
+        0.831_469_612_302_545_2,
+    ],
+    [
+        1.0,
+        0.195_090_322_016_128_28,
+        -0.923_879_532_511_286_7,
+        -0.555_570_233_019_602_2,
+        core::f64::consts::FRAC_1_SQRT_2,
+        0.831_469_612_302_545_2,
+        -0.382_683_432_365_089_8,
+        -0.980_785_280_403_230_4,
+    ],
+    [
+        1.0,
+        -0.195_090_322_016_128_28,
+        -0.923_879_532_511_286_7,
+        0.555_570_233_019_602_2,
+        core::f64::consts::FRAC_1_SQRT_2,
+        -0.831_469_612_302_545_2,
+        -0.382_683_432_365_089_8,
+        0.980_785_280_403_230_4,
+    ],
+    [
+        1.0,
+        -0.555_570_233_019_602_2,
+        -0.382_683_432_365_089_8,
+        0.980_785_280_403_230_4,
+        -core::f64::consts::FRAC_1_SQRT_2,
+        -0.195_090_322_016_128_28,
+        0.923_879_532_511_286_7,
+        -0.831_469_612_302_545_2,
+    ],
+    [
+        1.0,
+        -0.831_469_612_302_545_2,
+        0.382_683_432_365_089_8,
+        0.195_090_322_016_128_28,
+        -core::f64::consts::FRAC_1_SQRT_2,
+        0.980_785_280_403_230_4,
+        -0.923_879_532_511_286_7,
+        0.555_570_233_019_602_2,
+    ],
+    [
+        1.0,
+        -0.980_785_280_403_230_4,
+        0.923_879_532_511_286_7,
+        -0.831_469_612_302_545_2,
+        core::f64::consts::FRAC_1_SQRT_2,
+        -0.555_570_233_019_602_2,
+        0.382_683_432_365_089_8,
+        -0.195_090_322_016_128_28,
+    ],
+];
+
+/// The shared cosine kernel (see [`COS_TABLE`]).
 fn cos_table_ref() -> &'static [[f64; 8]; 8] {
-    use std::sync::OnceLock;
-    static TABLE: OnceLock<[[f64; 8]; 8]> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut t = [[0.0f64; 8]; 8];
-        for x in 0..8usize {
-            for u in 0..8usize {
-                t[x][u] = ((2.0 * x as f64 + 1.0) * u as f64 * PI / 16.0).cos();
-            }
-        }
-        t
-    })
+    &COS_TABLE
 }
 
 /// The §A `C(u)` orthonormality scale factor: `1/√2` for `u = 0`, `1`

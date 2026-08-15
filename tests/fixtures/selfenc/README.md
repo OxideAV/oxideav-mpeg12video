@@ -102,21 +102,46 @@ streams, the strict error-detection mode flags field-picture-pair
 packets while still decoding every frame — the default decode is the
 committed reference.
 
+2026-08-15 (later the same day): the DCT/IDCT cosine kernel was
+changed from a runtime `cos()` build to the correctly-rounded
+constant table (`idct::COS_TABLE`) — platform math libraries differ
+in the final ulp of `cos()`, which had made four streams'
+emitted bits host-dependent. Four fixtures were regenerated under the
+constant kernel (`selfenc-intra-100x62.m2v`,
+`selfenc-mpeg1-cbr-64x48.m1v`, `selfenc-dualprime-64x64.m2v`,
+`selfenc-fieldmodes-64x64.m2v`) and re-validated with the same
+black-box binary: strict passes as before, committed reference
+decodes agree with ours at max |Δ| = 1. The other thirteen streams
+regenerate byte-identical under the constant kernel.
+
 ## SHA-256
 
 ```
+256f58029bc3cd91efac30d251e9210ac93b082d6ea10e61f65159889b48ff8c  selfenc-cbr-64x48.m2v
+2801a9b27965edff607d0b2b1f40e90b83cb13b50486809d4abc530875ce1dbf  selfenc-cbr-64x48.m2v.ref.yuv
+df8d6ddc8b618b1e00ac8c9cd353a9f886873d171fe5d3624ed6c7b61c40ae6f  selfenc-dualprime-64x64.m2v
+20943bb163043076e4528816d0a48fd13adb9c318540d49e4f9ff44e28d03f4e  selfenc-dualprime-64x64.m2v.ref.yuv
+b365a287d0e07a8b05c90452fc18cf3c96a31c20a39a26a155ffa02bae3d6d4f  selfenc-fieldmodes-64x64.m2v
+873e8ebb37efc6a0215efa8ec0f4aeef761c3939ee12fde17531dfe0a48cf81d  selfenc-fieldmodes-64x64.m2v.ref.yuv
+88ddc2b1f6d30c33bcacfdaa0a9c118c32cacf8caa46bad0dd972ca8dbdf7dd4  selfenc-fieldseq-48x64.m2v
+49f48c79988118cedd095ea3159c354651b54744f2e9dded434cfc48e9f0b198  selfenc-fieldseq-48x64.m2v.ref.yuv
+83d055022c723fc196665130c6aecb1e227615a7c27aa0efa356bf71bff7b88d  selfenc-framefield-64x64.m2v
+e0530b6f8a6813cca2177aeaae81c07246233ee175a8a0ecb41d4f0c8b1eaaef  selfenc-framefield-64x64.m2v.ref.yuv
 44457fbcd42c4807ccbfb9b6f0fa19f00d7638c6b7a35fb6c50f930738120a15  selfenc-gops-48x32.m2v
 3d3d17f9eecf84f7f7d17cea53b54d98e2a22728d36abe32a6cb76d5a3ce65a2  selfenc-gops-48x32.m2v.ref.yuv
 1cbab03cac938f844beb3f44c94bfbafd92b81f4488357380768c11f7646dacf  selfenc-ibbp-64x48.m2v
 a73304570cf5d6bdfb51ce98b510e8cdd6aa8a5966bdc5527912fdfc409b714b  selfenc-ibbp-64x48.m2v.ref.yuv
-26b59ac6f2bb945ea00b8da23681a48edea9a29941b4215d788f853afb36c052  selfenc-intra-100x62.m2v
-dcc4d8bcae15b9c34a7b7eb1e53268952c2c9cb9a0672e0d73ff483290de9079  selfenc-intra-100x62.m2v.ref.yuv
+7cd62cb2a628b0dc1a198498dabdc278ffbba604e0ae91d3893477f7205b94e2  selfenc-intra-100x62.m2v
+16e690e4f2ad453b8cee201571572f76aa4f429c05d31bbd91ba08e20e24b57e  selfenc-intra-100x62.m2v.ref.yuv
 98e3c4d2ac26100d433440dba07c884bdd83d4caa5a2f1cdbc195c029c1039ae  selfenc-intra-64x48.m2v
 a2d0e500ff46de2018139533a3e3303787bd6f4bb583b2fc9cf9db11659470a8  selfenc-intra-64x48.m2v.ref.yuv
 863953e946bec0b5dfe5dcdbbbe9ab5ab2ab58afa64c401a17b26a101fa42500  selfenc-ipb-64x48.m2v
 8bdf3a4ab5e7d18c1c76894ac59b8c44e291ec2ab2483db6fcf3157b62560d51  selfenc-ipb-64x48.m2v.ref.yuv
 97c04629edc150195bee32df8f26acbcdde0e4fb01b1cad6e2859effa70950e8  selfenc-ipchain-64x48.m2v
 e6b5468feda0d1d5e2db5e359ec420a433cfc99cbd98fe366b7869c3acebc279  selfenc-ipchain-64x48.m2v.ref.yuv
+ca7e7bff3046608508796f19c147b4985ce0b7c9d8134d53c4972a6bec39ee96  selfenc-mpeg1-cbr-64x48.m1v
+88f9728a7053358ee278a78a6274403536dce5b2eed6e5148aeea9d5af147b4c  selfenc-mpeg1-cbr-64x48.m1v.ref.yuv
+5943dc602e6ea74ae44ad605bfc3375bfae130b49d0ac7644cf724a12570ba1c  selfenc-mpeg1-dpics-48x32.m1v
 cca30f325557703935157d1c6188771e1237b3874fb091851cb64e4c0d784388  selfenc-mpeg1-ibbp2gop-64x48.m1v
 2604ebe4a8a840bd9038672fcd3c00cc75ce9d161dd5351588adbcd4b624bfff  selfenc-mpeg1-ibbp2gop-64x48.m1v.ref.yuv
 042ec6ddd5ab85d98d06cd37e0373f99375d505c52213a06cef02ac95d2f66dd  selfenc-mpeg1-intra-64x48.m1v
@@ -125,17 +150,4 @@ cca30f325557703935157d1c6188771e1237b3874fb091851cb64e4c0d784388  selfenc-mpeg1-
 e5d00c6f007bed3a0e5bfdf3a10875050aef68bced62c5dd04768defc6dc5d38  selfenc-mpeg1-ippp-64x48.m1v.ref.yuv
 9882e3a029dbdcb9d643fd21696b883d8287b976b8488887729045c831fc4687  selfenc-mpeg1-qmat-48x32.m1v
 4916b08fb15265aa3d795cfd37d63c0bbe870f126846cabe7a6509ec8a81ee77  selfenc-mpeg1-qmat-48x32.m1v.ref.yuv
-256f58029bc3cd91efac30d251e9210ac93b082d6ea10e61f65159889b48ff8c  selfenc-cbr-64x48.m2v
-2801a9b27965edff607d0b2b1f40e90b83cb13b50486809d4abc530875ce1dbf  selfenc-cbr-64x48.m2v.ref.yuv
-55fb5199add258199249ff2fab0d9646d8d35d6dfed58d6145e7972eb0572889  selfenc-mpeg1-cbr-64x48.m1v
-55126a0377ddbb05681ff7c9c5c66b20276fb9e7821ace9d3ebcc97f3ecc8d8a  selfenc-mpeg1-cbr-64x48.m1v.ref.yuv
-88ddc2b1f6d30c33bcacfdaa0a9c118c32cacf8caa46bad0dd972ca8dbdf7dd4  selfenc-fieldseq-48x64.m2v
-49f48c79988118cedd095ea3159c354651b54744f2e9dded434cfc48e9f0b198  selfenc-fieldseq-48x64.m2v.ref.yuv
-83d055022c723fc196665130c6aecb1e227615a7c27aa0efa356bf71bff7b88d  selfenc-framefield-64x64.m2v
-e0530b6f8a6813cca2177aeaae81c07246233ee175a8a0ecb41d4f0c8b1eaaef  selfenc-framefield-64x64.m2v.ref.yuv
-0b16d17137e1c56e87eabb61a55a7b718049568bceb30af6dd7b0399e1d04f6c  selfenc-dualprime-64x64.m2v
-a3b37ed0c26dc39d8d7cdf840588812da2966cebe66107cebcebae04d85f922c  selfenc-dualprime-64x64.m2v.ref.yuv
-5943dc602e6ea74ae44ad605bfc3375bfae130b49d0ac7644cf724a12570ba1c  selfenc-mpeg1-dpics-48x32.m1v
-4e069813e25a72fb618857e48bc8f1a3a115ea466f714c8d2db5758eb28b1f6e  selfenc-fieldmodes-64x64.m2v
-98994f7267e799d5bef21e43933157fa72c5d745aca7bc43addd0abfc3315623  selfenc-fieldmodes-64x64.m2v.ref.yuv
 ```

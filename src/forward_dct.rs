@@ -42,23 +42,12 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use core::f64::consts::PI;
-
-/// Lazy-initialised `cos((2*x + 1) * u * π / 16)` table for `x, u ∈
-/// 0..8`. Identical kernel to the IDCT's `COS_TABLE`; cached once on
-/// first call.
+/// The shared `cos((2*x + 1) * u * π / 16)` kernel for `x, u ∈ 0..8`
+/// — the IDCT's correctly-rounded constant [`crate::idct::COS_TABLE`]
+/// (a runtime `f64::cos()` would make the forward transform, and
+/// therefore the encoder's emitted bits, platform-dependent).
 fn cos_table_ref() -> &'static [[f64; 8]; 8] {
-    use std::sync::OnceLock;
-    static TABLE: OnceLock<[[f64; 8]; 8]> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut t = [[0.0f64; 8]; 8];
-        for x in 0..8usize {
-            for u in 0..8usize {
-                t[x][u] = ((2.0 * x as f64 + 1.0) * u as f64 * PI / 16.0).cos();
-            }
-        }
-        t
-    })
+    &crate::idct::COS_TABLE
 }
 
 /// The §A `C(u)` orthonormality scale: `1/√2` for `u = 0`, `1`
