@@ -16,9 +16,10 @@
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
     encode_cbr_gop_sequence, encode_display_order_gop_sequence, encode_display_order_sequence,
-    encode_field_display_order_gop_sequence, encode_i_p_b, encode_i_p_chain, encode_intra_picture,
-    encode_mpeg1_cbr_sequence, encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream,
-    CbrConfig, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
+    encode_ff_display_order_gop_sequence, encode_field_display_order_gop_sequence, encode_i_p_b,
+    encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence, encode_mpeg1_d_sequence,
+    encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream, CbrConfig, FrameBuffer,
+    IntraPictureParams, Mpeg1SequenceParams,
 };
 
 /// Deterministic busy frame: diagonal luma gradient + 4×4 checker,
@@ -256,4 +257,132 @@ fn main() {
         encode_field_display_order_gop_sequence(&field_frames, 1, 2, &field_params, 6, 3, 3)
             .expect("field sequence encode");
     write("selfenc-fieldseq-48x64.m2v", &fieldseq);
+
+    // ---- Frame-picture field-based (frame_pred_frame_dct = 0) ----
+
+    let ff_params = IntraPictureParams {
+        width: 64,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+
+    // 14. Interlaced frame-picture sequence I B P B P (64x64): each
+    //     frame's two fields translate in opposite directions, so the
+    //     per-macroblock Table 6-17 decision codes Field-based
+    //     macroblocks (two field vectors with their own
+    //     motion_vertical_field_select) beside Frame-based ones, and
+    //     the alternating-field detail exercises the per-macroblock
+    //     dct_type (field DCT) decision.
+    let ff_frames: Vec<FrameBuffer> = (0..5)
+        .map(|t| {
+            let (w, h) = (64usize, 64usize);
+            let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+            for y in 0..h {
+                // Top field pans right, bottom field pans left.
+                let dx = if y % 2 == 0 {
+                    2 * t as i32
+                } else {
+                    -2 * (t as i32)
+                };
+                for x in 0..w {
+                    let sx = (x as i32 - dx).rem_euclid(w as i32) as usize;
+                    let v = 40 + ((sx * 5 + (y / 2) * 9) % 160);
+                    let line = if y % 2 == 0 { 10 } else { 0 };
+                    f.y.put_sample(x, y, (v + line).min(235) as u8);
+                }
+            }
+            for y in 0..h / 2 {
+                for x in 0..w / 2 {
+                    f.cb.put_sample(x, y, (100 + (x + 2 * t) % 72) as u8);
+                    f.cr.put_sample(x, y, (180u8).saturating_sub(((y + 3 * t) % 72) as u8));
+                }
+            }
+            f
+        })
+        .collect();
+    let (ff_stream, ff_stats) =
+        encode_ff_display_order_gop_sequence(&ff_frames, 1, 2, &ff_params, 6, 3, 3, false)
+            .expect("frame-field sequence encode");
+    eprintln!("frame-field stats: {ff_stats:?}");
+    assert!(ff_stats.field_mc > 0, "field MC must fire in stream 14");
+    assert!(ff_stats.field_dct > 0, "field DCT must fire in stream 14");
+    write("selfenc-framefield-64x64.m2v", &ff_stream);
+
+    // 15. Dual-prime I P P (64x64, no B-pictures per §7.6.3.6): the I
+    //     reference carries deterministic per-sample noise over a
+    //     column-constant base, the P targets are the clean base — the
+    //     §7.6.7.4 two-field average halves the reference noise, so
+    //     Table 6-17 Dual-prime wins on most macroblocks.
+    let noise = |x: usize, y: usize, seed: usize| -> i32 {
+        let h = x
+            .wrapping_mul(31)
+            .wrapping_add(y.wrapping_mul(97))
+            .wrapping_add(seed.wrapping_mul(131));
+        ((h % 17) as i32) - 8
+    };
+    let dp_frames: Vec<FrameBuffer> = (0..3)
+        .map(|t| {
+            let (w, h) = (64usize, 64usize);
+            let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+            for y in 0..h {
+                for x in 0..w {
+                    let base = 90 + ((x * 7) % 100) as i32;
+                    let v = if t == 0 { base + noise(x, y, 1) } else { base };
+                    f.y.put_sample(x, y, v.clamp(0, 255) as u8);
+                }
+            }
+            for y in 0..h / 2 {
+                for x in 0..w / 2 {
+                    f.cb.put_sample(x, y, 128);
+                    f.cr.put_sample(x, y, 128);
+                }
+            }
+            f
+        })
+        .collect();
+    let (dp_stream, dp_stats) =
+        encode_ff_display_order_gop_sequence(&dp_frames, 0, 2, &ff_params, 6, 3, 3, true)
+            .expect("dual-prime sequence encode");
+    eprintln!("dual-prime stats: {dp_stats:?}");
+    assert!(dp_stats.dual_prime > 0, "dual-prime must fire in stream 15");
+    write("selfenc-dualprime-64x64.m2v", &dp_stream);
+
+    // ---- ISO/IEC 11172-2 D-picture stream -------------------------
+
+    // 16. MPEG-1 D-only sequence (§2.4.1): four dc intra-coded
+    //     pictures, two per GOP. No black-box reference decode exists
+    //     — the reference binary refuses picture_coding_type 4 (the
+    //     same limitation as the hand-built mpeg1-dpics conformance
+    //     fixture) — so this stream is pinned bit-exactly and decoded
+    //     sample-exactly against the encoder's own §2.4.4.1
+    //     reconstruction instead.
+    let d_frames: Vec<FrameBuffer> = (0..4)
+        .map(|t| {
+            let (w, h) = (48usize, 32usize);
+            let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+            for y in 0..h {
+                for x in 0..w {
+                    let mb = (y / 16) * w.div_ceil(16) + x / 16;
+                    let v = 40 + 23 * (mb % 8) + 7 * t + (x + y) % 5;
+                    f.y.put_sample(x, y, v.min(235) as u8);
+                }
+            }
+            for y in 0..h / 2 {
+                for x in 0..w / 2 {
+                    f.cb.put_sample(x, y, (90 + x + 3 * t).min(240) as u8);
+                    f.cr.put_sample(x, y, (170usize.saturating_sub(y + 2 * t)).max(16) as u8);
+                }
+            }
+            f
+        })
+        .collect();
+    let d_stream = encode_mpeg1_d_sequence(&d_frames, &mpeg1_seq(48, 32), 8, 2)
+        .expect("mpeg1 d sequence encode");
+    write("selfenc-mpeg1-dpics-48x32.m1v", &d_stream);
 }

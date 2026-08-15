@@ -36,6 +36,9 @@ they pin two facts:
 | `selfenc-cbr-64x48.m2v` | `encode_cbr_gop_sequence` | MPEG-2 **CBR** (Annex C): I B P B P \| I B P at 240 kbit/s, 65 536-bit VBV buffer — real §6.3.9 `vbv_delay` in every picture header, quantiser adaptation + zero stuffing holding the C.5/C.6 occupancy bounds (verified by `vbv::verify_cbr_stream`) |
 | `selfenc-mpeg1-cbr-64x48.m1v` | `encode_mpeg1_cbr_sequence` | MPEG-1 **CBR** (11172-2 Annex C): two-GOP I B B P \| I B B P at 240 kbit/s, 65 536-bit VBV buffer — real §2.4.3.4 `vbv_delay`, constrained-parameters flag set, same occupancy-bound verification |
 | `selfenc-fieldseq-48x64.m2v` | `encode_field_display_order_gop_sequence` | MPEG-2 **field-coded** I B P B P (48×64, fields 48×32): §6.1.1.4.1 field pairs top-first with shared `temporal_reference`, `field_motion_type = 01` + `motion_vertical_field_select` over both parities, the §7.6.2.1 second-P-field synthetic reference, Table B-4 B-field modes, interlaced-phased content |
+| `selfenc-framefield-64x64.m2v` | `encode_ff_display_order_gop_sequence` | MPEG-2 **frame-picture field-based** I B P B P (`frame_pred_frame_dct = 0`, interlaced sequence, §6.3.3 grid): per-macroblock Table 6-17 `frame_motion_type` with `Field-based` macroblocks (two field vectors + `motion_vertical_field_select` per direction, §7.6.3.1 vertical-half-pred PMV coding), per-macroblock `dct_type` **field DCT** (§6.1.3 stride-2 luma blocks), opposite-direction field pans so field prediction genuinely wins |
+| `selfenc-dualprime-64x64.m2v` | `encode_ff_display_order_gop_sequence` | MPEG-2 **dual-prime** I P P (`b_between = 0` per §7.6.3.6): Table 6-17 `Dual prime` macroblocks (one vector + Table B-11 `dmvector`, §7.6.7.4 four-field average) beside Frame-based and Field-based ones — noise on the I reference makes the two-field average the best predictor |
+| `selfenc-mpeg1-dpics-48x32.m1v` | `encode_mpeg1_d_sequence` | MPEG-1 **D-only sequence** (§2.4.1 / §2.4.3.4 `picture_coding_type = 4`): four dc intra-coded pictures in two GOPs — Table B.2d macroblock type, six DC-only blocks (no AC walk / `end_of_block`, §2.4.2.8), `end_of_macroblock` bits. **No `.ref.yuv`**: the black-box binary emits zero frames for type-4 pictures (the same limitation recorded for the `mpeg1-dpics` conformance fixture), so the stream is pinned bit-exactly and decoded sample-exactly against the encoder's own §2.4.4.1 reconstruction |
 
 All MPEG-2 streams: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -79,6 +82,18 @@ fixture, the reference binary's strict error-detection mode flags
 field-picture-pair packets while still decoding every frame — the
 default decode is the committed reference.
 
+The frame-picture field-based stream (14) and the dual-prime stream
+(15) were generated and validated 2026-08-15 with the same black-box
+reference decoder binary (v8.1.2): the strict error-detection pass
+(`-err_detect explode`) reported nothing for either stream, and the
+committed `.ref.yuv` decodes agree with ours at max |Δ| = 2
+(≤ 2.1 % samples, stream 14) and max |Δ| = 1 (≤ 0.8 %, stream 15).
+The MPEG-1 D-picture stream (16, same date) has no black-box
+reference: the reference binary produced an empty decode
+(zero frames) for `picture_coding_type == 4`, so
+`tests/selfenc_conformance.rs` pins it bit-exactly and holds
+`decode_video_sequence` to the encoder's own reconstruction instead.
+
 ## SHA-256
 
 ```
@@ -108,4 +123,9 @@ e5d00c6f007bed3a0e5bfdf3a10875050aef68bced62c5dd04768defc6dc5d38  selfenc-mpeg1-
 55126a0377ddbb05681ff7c9c5c66b20276fb9e7821ace9d3ebcc97f3ecc8d8a  selfenc-mpeg1-cbr-64x48.m1v.ref.yuv
 88ddc2b1f6d30c33bcacfdaa0a9c118c32cacf8caa46bad0dd972ca8dbdf7dd4  selfenc-fieldseq-48x64.m2v
 49f48c79988118cedd095ea3159c354651b54744f2e9dded434cfc48e9f0b198  selfenc-fieldseq-48x64.m2v.ref.yuv
+83d055022c723fc196665130c6aecb1e227615a7c27aa0efa356bf71bff7b88d  selfenc-framefield-64x64.m2v
+e0530b6f8a6813cca2177aeaae81c07246233ee175a8a0ecb41d4f0c8b1eaaef  selfenc-framefield-64x64.m2v.ref.yuv
+0b16d17137e1c56e87eabb61a55a7b718049568bceb30af6dd7b0399e1d04f6c  selfenc-dualprime-64x64.m2v
+a3b37ed0c26dc39d8d7cdf840588812da2966cebe66107cebcebae04d85f922c  selfenc-dualprime-64x64.m2v.ref.yuv
+5943dc602e6ea74ae44ad605bfc3375bfae130b49d0ac7644cf724a12570ba1c  selfenc-mpeg1-dpics-48x32.m1v
 ```
