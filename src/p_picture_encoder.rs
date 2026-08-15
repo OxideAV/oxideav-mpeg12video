@@ -154,6 +154,12 @@ impl InterBlock {
     pub(crate) fn qf_ref(&self) -> Option<&[[i32; 8]; 8]> {
         self.qf.as_ref()
     }
+
+    /// The reconstructed spatial-domain residual (`f_pel`) the decoder
+    /// will add to the prediction — all zero for an uncoded block.
+    pub(crate) fn f_pel_ref(&self) -> &[[i16; 8]; 8] {
+        &self.f_pel
+    }
 }
 
 /// Forward-quantise one non-intra residual block and reconstruct it.
@@ -275,14 +281,14 @@ impl IntraDcPred {
             cr: v,
         }
     }
-    fn get(&self, c: ColourComponent) -> i32 {
+    pub(crate) fn get(&self, c: ColourComponent) -> i32 {
         match c {
             ColourComponent::Y => self.luma,
             ColourComponent::Cb => self.cb,
             ColourComponent::Cr => self.cr,
         }
     }
-    fn set(&mut self, c: ColourComponent, value: i32) {
+    pub(crate) fn set(&mut self, c: ColourComponent, value: i32) {
         match c {
             ColourComponent::Y => self.luma = value,
             ColourComponent::Cb => self.cb = value,

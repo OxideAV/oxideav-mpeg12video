@@ -384,6 +384,7 @@ pub mod forward_dct;
 #[doc(hidden)] // internal: encoder forward-quantiser stage
 pub mod forward_quant;
 pub mod frame_assembly;
+pub mod frame_field_encoder;
 #[doc(hidden)] // internal: §6.2.2.6 GOP-header parser
 pub mod gop_header;
 #[doc(hidden)] // internal: §A 8x8 IDCT stage
@@ -486,6 +487,10 @@ pub use field_picture_encoder::{
     encode_field_p_picture, estimate_field_mv, second_p_field_reference, FieldSearchResult,
 };
 pub use frame_assembly::{FrameBuffer, IntraPictureParams, Plane};
+pub use frame_field_encoder::{
+    encode_ff_b_picture, encode_ff_display_order_gop_sequence, encode_ff_intra_picture,
+    encode_ff_p_picture, estimate_field_in_frame_mv, FrameFieldStats,
+};
 pub use inter_encoder::{
     encode_display_order_gop_sequence, encode_display_order_sequence, encode_i_p_b,
     encode_i_p_chain, encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block,
