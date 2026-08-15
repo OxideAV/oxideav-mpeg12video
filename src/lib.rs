@@ -374,6 +374,7 @@ pub mod decoder;
 pub mod dequantize;
 #[doc(hidden)] // internal: §7.6.3.6 dual-prime vector arithmetic
 pub mod dual_prime;
+pub mod encoder;
 #[doc(hidden)] // internal: §6.2.2.2 extension/user-data dispatcher
 pub mod extension_and_user_data;
 pub mod field_picture_encoder;
@@ -482,6 +483,7 @@ pub use decoder::{
     frame_buffer_to_video_frame, make_decoder, Mpeg12Decoder, MPEG1_CODEC_ID_STR,
     MPEG2_CODEC_ID_STR,
 };
+pub use encoder::{make_encoder, Mpeg12Encoder};
 pub use field_picture_encoder::{
     encode_field_b_picture, encode_field_display_order_gop_sequence, encode_field_intra_picture,
     encode_field_p_picture, estimate_field_mv, second_p_field_reference, FieldSearchResult,
@@ -848,14 +850,19 @@ impl From<inter_reconstruction::InterError> for Error {
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// Install the MPEG-1 (`"mpeg1video"`) and MPEG-2 (`"mpeg2video"`)
-/// video decoders into `reg`.
+/// video decoders **and encoders** into `reg`.
 ///
-/// Both ids resolve to [`decoder::make_decoder`], which drives the
-/// whole-elementary-stream reconstruction pipeline
+/// Both ids resolve their decoder to [`decoder::make_decoder`], which
+/// drives the whole-elementary-stream reconstruction pipeline
 /// ([`video_sequence::decode_video_sequence`]) behind the packet-based
 /// [`oxideav_core::Decoder`] contract (see the [`decoder`] module docs
-/// for the framing model). The tag sets are the FourCC / Matroska
-/// codec ids the container crates map onto these two ids
+/// for the framing model), and their encoder to
+/// [`encoder::make_encoder`], which drives the display-order GOP
+/// assemblers ([`encode_display_order_gop_sequence`] /
+/// [`encode_mpeg1_display_order_sequence`]) behind the frame-to-packet
+/// [`oxideav_core::Encoder`] contract (see the [`encoder`] module docs
+/// for the framing model and options). The tag sets are the FourCC /
+/// Matroska codec ids the container crates map onto these two ids
 /// (`V_MPEG1` / `V_MPEG2` in Matroska; `mp1v` / `mp2v` / `mpg1` /
 /// `mpg2` / `hdv2` / `m2v1` FourCCs).
 pub fn register_codecs(reg: &mut CodecRegistry) {
@@ -867,6 +874,7 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
         CodecInfo::new(CodecId::new(decoder::MPEG1_CODEC_ID_STR))
             .capabilities(mpeg1_caps)
             .decoder(decoder::make_decoder)
+            .encoder(encoder::make_encoder)
             .tags([
                 CodecTag::fourcc(b"mp1v"),
                 CodecTag::fourcc(b"mpg1"),
@@ -883,6 +891,7 @@ pub fn register_codecs(reg: &mut CodecRegistry) {
         CodecInfo::new(CodecId::new(decoder::MPEG2_CODEC_ID_STR))
             .capabilities(mpeg2_caps)
             .decoder(decoder::make_decoder)
+            .encoder(encoder::make_encoder)
             .tags([
                 CodecTag::fourcc(b"mp2v"),
                 CodecTag::fourcc(b"mpg2"),
