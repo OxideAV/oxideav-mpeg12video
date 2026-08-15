@@ -1106,6 +1106,210 @@ pub fn encode_mpeg1_display_order_sequence(
     Ok(stream)
 }
 
+/// Encode one MPEG-1 **D** picture (dc intra-coded,
+/// `picture_coding_type == 4`, §2.4.3.4) from `frame`, appending the
+/// picture layer to `bw`.
+///
+/// Per §2.4.2.7 / §2.4.2.8 the D-picture macroblock layer is maximally
+/// lean, and this encoder emits exactly what
+/// [`crate::mpeg1_picture::decode_mpeg1_d_picture`] parses:
+///
+/// * every macroblock coded (`macroblock_address_increment = 1`;
+///   §2.4.4.4 forbids skips in an all-intra picture) with the single
+///   Table B.2d `macroblock_type` codeword `'1'`;
+/// * six DC-only 4:2:0 blocks — the Tables B.5a / B.5b
+///   `dct_dc_size_*` prelude plus differential, **no** AC run-level
+///   walk and **no** `end_of_block` (both are gated by
+///   `if (picture_coding_type != 4)` in §2.4.2.8);
+/// * the 1-bit `end_of_macroblock` marker `'1'` (§2.4.3.6).
+///
+/// Each block's DC target is the §2.4.4.1 quantised block mean
+/// (`Round(F[0][0] / 8)`), coded differentially against the exact
+/// `dct_dc_*_past` chain the decoder runs (including the
+/// `macroblock_address - past_intra_address > 1` reset branch, which
+/// inside a D-picture only fires at slice start). The picture header
+/// carries no f_code fields (§2.4.2.5 gates them on P/B types).
+///
+/// Returns the §2.4.4.1 reconstruction — every 8×8 block a flat plane
+/// at its dequantised DC — exactly as the decoder will produce it.
+/// D-pictures are never used as prediction references (§2.4.1 confines
+/// them to D-only sequences), so the return value serves round-trip
+/// verification rather than reference chaining.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] on geometry mismatch or an out-of-range
+/// `quantizer_scale_code`.
+pub fn encode_mpeg1_d_picture(
+    bw: &mut BitWriter,
+    frame: &FrameBuffer,
+    params: &Mpeg1PictureParams,
+    temporal_reference: u16,
+    quantizer_scale_code: u8,
+) -> Result<FrameBuffer> {
+    if frame.width != params.width || frame.height != params.height {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_d_picture: frame dimensions do not match params",
+        ));
+    }
+    check_quantizer_scale(quantizer_scale_code)?;
+
+    // D-pictures carry no f_code fields; the writer's P/B-gated
+    // arguments are unused.
+    write_mpeg1_picture_header(
+        bw,
+        temporal_reference,
+        PictureCodingType::DcIntra,
+        false,
+        7,
+        false,
+        7,
+    )?;
+
+    let mut recon = FrameBuffer::new(params.width, params.height, ChromaFormat::Yuv420);
+    let mb_w = params.mb_width();
+    for mb_row in 0..mb_height(params) {
+        write_slice_header(bw, mb_row as u32, quantizer_scale_code);
+        // §2.4.4.1: the DC chain resets at slice start.
+        let mut predictors = IntraDcPredictors::at_slice_start();
+        for mb_col in 0..mb_w {
+            let address = (mb_row * mb_w + mb_col) as i32;
+            // macroblock_address_increment = 1 (Table B.1 `1`).
+            bw.write_bit(true);
+            // macroblock_type: the single Table B.2d codeword `1`.
+            bw.write_bit(true);
+
+            for i in 0..NBLOCKS {
+                let placement = block_placement(i, ChromaFormat::Yuv420, mb_col, mb_row, false)
+                    .ok_or(Error::InvalidBitstream(
+                        "encode_mpeg1_d_picture: invalid block index",
+                    ))?;
+                let component = block_component(i, ChromaFormat::Yuv420).ok_or(
+                    Error::InvalidBitstream("encode_mpeg1_d_picture: invalid block component"),
+                )?;
+                let raw = gather_block(frame, component, placement.base_x, placement.base_y);
+                let f = fdct_8x8(&raw);
+
+                // §2.4.4.1: the decoder forms dct_recon[0][0] =
+                // base + dct_zz[0] * 8, with `base` the per-component
+                // `dct_dc_*_past` predictor (or the 128*8 reset). The
+                // chain lives on the multiple-of-8 reconstruction
+                // lattice, so base/8 is exact; F[0][0] of 8-bit samples
+                // is non-negative (8 × block mean).
+                let kind = intra_block_kind(i as u8)?;
+                let base = dc_base(kind, &predictors, address);
+                debug_assert_eq!(base % 8, 0);
+                let dc_target = (f[0][0] + 4) / 8;
+                let diff = (dc_target - base / 8).clamp(-255, 255);
+                encode_dc_coefficient(bw, dc_component_for(i), diff);
+                // §2.4.2.8: no dct_coeff_next walk, no end_of_block.
+
+                // Reconstruct with the decoder's own §2.4.4.1 arithmetic
+                // over the DC-only dct_zz (advancing the predictor chain).
+                let mut dct_zz = [0i32; 64];
+                dct_zz[0] = diff;
+                let dct_recon = dequantize_intra_block(
+                    &dct_zz,
+                    quantizer_scale_code,
+                    &params.intra_quant,
+                    kind,
+                    &mut predictors,
+                    address,
+                )?;
+                let f_pel = idct_8x8_from_i32(&dct_recon);
+                place_intra_block(&mut recon, placement, &f_pel);
+            }
+            finalise_intra_macroblock(&mut predictors, address);
+
+            // §2.4.2.7: end_of_macroblock — "a bit which is set to 1".
+            bw.write_bit(true);
+        }
+        bw.align_to_byte_zero();
+    }
+    Ok(recon)
+}
+
+/// Encode a whole **D-only sequence** (§2.4.1: *"D pictures shall not
+/// be mixed with other picture types"*): `sequence_header()` →
+/// `group_of_pictures()` layers of dc intra-coded pictures →
+/// `sequence_end_code`, with every picture a
+/// [`encode_mpeg1_d_picture`] D-picture.
+///
+/// D-pictures are never referenced and display in coded order, so the
+/// display-order / coded-order distinction vanishes: picture `n` of
+/// each GOP carries `temporal_reference = n` (reset per GOP,
+/// §2.4.3.4). Each GOP holds `pictures_per_gop` pictures (the final
+/// GOP takes the remainder) and its §2.4.3.3 time code counts from the
+/// GOP's first picture; `closed_gop = 1` (no picture references
+/// anything) and `broken_link = 0`. The `constrained_parameters_flag`
+/// is evaluated with f_code 1 — a D-only sequence codes no motion
+/// vectors.
+///
+/// Returns the elementary stream; decoding it through
+/// [`crate::decode_video_sequence`] reproduces the per-picture
+/// reconstructions [`encode_mpeg1_d_picture`] returns, sample-exactly.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] for an empty `frames`,
+/// `pictures_per_gop == 0`, geometry mismatches, or an out-of-range
+/// `quantizer_scale_code`; propagates encode errors.
+pub fn encode_mpeg1_d_sequence(
+    frames: &[FrameBuffer],
+    seq: &Mpeg1SequenceParams,
+    quantizer_scale_code: u8,
+    pictures_per_gop: usize,
+) -> Result<Vec<u8>> {
+    if frames.is_empty() {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_d_sequence: no frames to encode",
+        ));
+    }
+    if pictures_per_gop == 0 {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_d_sequence: pictures_per_gop must be >= 1",
+        ));
+    }
+    check_quantizer_scale(quantizer_scale_code)?;
+    let params = picture_params(seq);
+    for f in frames {
+        if f.width != params.width || f.height != params.height {
+            return Err(Error::InvalidBitstream(
+                "encode_mpeg1_d_sequence: frame geometry does not match the sequence",
+            ));
+        }
+    }
+
+    // §2.4.3.2 bounds with f_code 1 on both directions (no vectors are
+    // coded in a D-only sequence).
+    let seq_effective = Mpeg1SequenceParams {
+        constrained_parameters_flag: constrained_parameters_admissible(seq, 1, 1),
+        ..*seq
+    };
+
+    let mut bw = BitWriter::new();
+    write_mpeg1_sequence_header(&mut bw, &seq_effective)?;
+
+    for (gop_index, gop_frames) in frames.chunks(pictures_per_gop).enumerate() {
+        write_gop_header(
+            &mut bw,
+            &Mpeg2Gop {
+                time_code: TimeCode::from_display_index(
+                    (gop_index * pictures_per_gop) as u64,
+                    seq_effective.picture_rate_code,
+                )?,
+                closed_gop: true,
+                broken_link: false,
+            },
+        );
+        for (n, frame) in gop_frames.iter().enumerate() {
+            encode_mpeg1_d_picture(&mut bw, frame, &params, n as u16, quantizer_scale_code)?;
+        }
+    }
+
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+    Ok(stream)
+}
+
 /// Encode a single all-intra MPEG-1 stream (sequence header, one GOP,
 /// one I-picture, sequence end code) — the `frames.len() == 1`
 /// degenerate of [`encode_mpeg1_display_order_sequence`].
