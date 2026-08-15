@@ -431,22 +431,30 @@ encoder codes **field pictures** end-to-end:
   and whole-sequence decode through `decode_video_sequence`.
 
 Both encoders are **externally conformance-validated**: a pinned
-self-encoded corpus (`tests/fixtures/selfenc/` — thirteen streams:
+self-encoded corpus (`tests/fixtures/selfenc/` — seventeen streams:
 MPEG-2 all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
 motion-compensated chain with intra fallback, an I/B/P group, a
 7-frame IBBP display-order sequence, a two-GOP MPEG-2 stream with GOP
 headers, an Annex C **CBR** MPEG-2 stream (240 kbit/s, 65 536-bit VBV,
 real `vbv_delay` values, verifier-checked), a **field-coded** I B P B P
 sequence (§6.1.1.4.1 field pairs, both `motion_vertical_field_select`
-parities, §7.6.2.1 second-P-field reference), and five MPEG-1 streams
-— all-intra, one-GOP I P P P, a two-GOP I B B P | I B B P, an I B P
-with downloadable §2.4.3.2 quantiser matrices, and an 11172-2 Annex C
-CBR two-GOP stream with the constrained-parameters flag set) decodes
-in a black-box reference decoder (strict error-detection mode clean;
-for the field-pair stream the strict mode flags packets while
-decoding all frames — the same documented behaviour as the
-`fieldpics` conformance fixture) with its committed reference decode
-agreeing with ours at max |Δ| 2 (pure Annex A IDCT rounding).
+parities, §7.6.2.1 second-P-field reference), an **adaptive
+field-mode** I P P mixing simple / 16×8 / dual-prime macroblocks in
+the same slices, an interlaced **frame-picture field-based** I B P B P
+(`frame_pred_frame_dct = 0`, field MC + field DCT), a frame-picture
+**dual-prime** I P P, six MPEG-1 streams — all-intra, one-GOP
+I P P P, a two-GOP I B B P | I B B P, an I B P with downloadable
+§2.4.3.2 quantiser matrices, an 11172-2 Annex C CBR two-GOP stream
+with the constrained-parameters flag set, and a **D-only** sequence
+(the one stream with no black-box reference: the reference binary
+emits zero frames for `picture_coding_type == 4`, so it is pinned
+bit-exactly and decoded sample-exactly against the encoder's own
+reconstruction)) decodes in a black-box reference decoder (strict
+error-detection mode clean; for the field-pair streams the strict
+mode flags packets while decoding all frames — the same documented
+behaviour as the `fieldpics` conformance fixture) with its committed
+reference decode agreeing with ours at max |Δ| 2 (pure Annex A IDCT
+rounding).
 `tests/selfenc_conformance.rs` pins every stream **bit-exactly**
 (regenerate-and-compare against the committed bytes) so any
 bit-moving encoder change must consciously refresh the corpus and
@@ -460,17 +468,80 @@ MPEG-2 encoders declare `progressive_sequence = 1` (+ §6.3.10
 MPEG-1 streams declare (and satisfy) the §2.4.3.2
 constrained-parameters bounds.
 
+The whole remaining §7.6 motion-compensation **encode** surface
+landed in round 443:
+
+- **Frame-picture field-based encode (`frame_field_encoder`)** — the
+  `frame_pred_frame_dct = 0` frame-picture path:
+  `encode_ff_intra_picture` / `encode_ff_p_picture` /
+  `encode_ff_b_picture` and the interlaced display-order assembler
+  `encode_ff_display_order_gop_sequence`
+  (`progressive_sequence = 0`, §6.3.3 `2*Ceil(h/32)` grid). Per
+  macroblock the encoder chooses the Table 6-17 `frame_motion_type`
+  — **Frame-based** (one frame vector), **Field-based** (two field
+  vectors, each with its own §6.2.5.2 `motion_vertical_field_select`
+  parity, found by a both-parity 16×8 field-in-frame search over
+  §7.6.3.8-legal spans), or **Dual-prime** (§7.6.3.6: one vector +
+  Table B-11 `dmvector`, searched over the exact §7.6.7.4
+  four-field-average prediction; P pictures with `b_between = 0`
+  only) — plus the intra fallback, and picks the `dct_type` (field
+  DCT, §6.1.3 stride-2 luma organisation) by **exact wire-bit cost**
+  of both quantised organisations. Motion vectors mirror §7.6.3.1 /
+  §7.6.3.3 exactly against the crate's own `Pmv` bank (field
+  vectors in frame pictures code the vertical against `PMV DIV 2`
+  and write back `2 * vector'`; the Table 7-10 update rows are
+  applied per macroblock), and every macroblock is reconstructed by
+  the decode-side §7.6 drivers, so decodes are sample-exact against
+  the encoder's reconstruction (`tests/encode_frame_field.rs`).
+  `FrameFieldStats` surfaces the per-macroblock decisions.
+- **Adaptive field-picture modes** —
+  `encode_field_p_picture_adaptive` /
+  `encode_field_b_picture_adaptive` /
+  `encode_field_adaptive_display_order_gop_sequence` emit the full
+  Table 6-18 `field_motion_type` surface per macroblock: simple
+  field prediction (`01`), **16×8 MC** (`10`, §7.6.7.3 — an
+  independent `(vector, field-select)` per 16×8 region), and
+  **dual-prime** (`11`, P-only, §7.6.3.6), with the Table 7-11
+  predictor-update rows mirrored exactly and reconstruction through
+  the decode-side drivers (`tests/encode_field_adaptive.rs`;
+  `FieldModeStats`).
+- **MPEG-1 D-picture encode** — `encode_mpeg1_d_picture` /
+  `encode_mpeg1_d_sequence` (§2.4.3.4 `picture_coding_type = 4`,
+  §2.4.1 D-only sequences): Table B.2d macroblock type, six DC-only
+  blocks against the exact §2.4.4.1 `dct_dc_*_past` chain (no AC
+  walk / `end_of_block`, §2.4.2.8), `end_of_macroblock` bits, GOP
+  layers with per-GOP `temporal_reference` reset — round-tripped
+  sample-exactly through `decode_mpeg1_d_picture` and
+  `decode_video_sequence` (`tests/encode_d_pictures.rs`).
+
 MPEG-1 `full_pel_*_vector = 1` emission is supported per direction
 (`write_mpeg1_picture_header` + the P/B encoders' `full_pel_*` flags:
 vectors confined to integer-pel positions, the wire carrying the
 unshifted values the §2.4.4.2 / §2.4.4.3 final `recon <<= 1`
 restores; pinned by a sample-exact round-trip and a strict black-box
-decode). Field-based prediction **inside frame pictures**
-(`frame_pred_frame_dct = 0` frame pictures with Table 6-17 motion
-types), dual-prime / 16×8-MC *encoding* (both are decoded),
-D-picture encoding, and encoder runtime-registry wiring remain
-future work (the **decoder** is registry-wired — see **Runtime
-decoder** above).
+decode).
+
+## Runtime encoder
+
+`register` installs `oxideav_core::Encoder` factories under both the
+`mpeg1video` and `mpeg2video` codec ids beside the decoders (the
+direct `encoder::make_encoder` factory is exported too). The
+`encoder::Mpeg12Encoder` adapter drives the display-order GOP
+assemblers behind the frame-to-packet `Encoder` contract, mirroring
+the runtime decoder's whole-elementary-stream framing: display-order
+frames buffered via `send_frame` are assembled at `flush()` into one
+keyframe-flagged packet carrying the finished elementary stream
+(`NeedMore` before the flush, `Eof` after the drain). Four optional
+`CodecParameters` options — `quantiser_scale_code`, `b_between`,
+`anchors_per_gop`, `f_code` — are range-validated at construction.
+`tests/runtime_encoder.rs` proves registry resolution under both ids,
+round-trips through both decode paths, and the 11172-2 classification
+of the `mpeg1video` output (no extension start codes).
+
+The encoders remain 4:2:0-only with default quantiser matrices and
+the linear quantiser scale (`alternate_scan` / `intra_vlc_format`
+are not emitted); skipped-macroblock emission, concealment motion
+vectors, and the scalable profiles are not encoded.
 
 ## Not yet supported
 

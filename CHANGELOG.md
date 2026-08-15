@@ -8,6 +8,107 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 443: **frame-picture field-based encode**
+  (`frame_field_encoder`) — the `frame_pred_frame_dct = 0`
+  frame-picture encode path (§6.3.17.1), the encoder-side mirror of the
+  decode drivers:
+  - `encode_ff_p_picture` — per macroblock the encoder scores Table
+    6-17 **Frame-based** (one frame vector), **Field-based** (two
+    field vectors, each with its own §6.2.5.2
+    `motion_vertical_field_select` parity, found by the both-parity
+    16×8 field-in-frame search `estimate_field_in_frame_mv` over
+    §7.6.3.8-legal spans) and — behind the §7.6.3.6 no-B gate —
+    **Dual-prime** (shared base vector + 9-combo Table B-11
+    `dmvector` search over the exact §7.6.7.4 four-field-average
+    prediction, all four read spans checked), keeps the
+    bit-cost-biased SAD winner, and falls back to intra
+    (Table B-3 `00011` + transmitted `dct_type`).
+  - `encode_ff_b_picture` — six candidates (frame/field ×
+    fwd/bwd/interp), Table B-4 modes, forward vectors before backward,
+    per-direction PMV slots. `encode_ff_intra_picture` — every
+    macroblock transmits `dct_type`.
+  - **per-macroblock `dct_type` by exact wire-bit cost**: the
+    luminance residual is quantised in both §6.1.3 organisations
+    (frame stride 1 / field stride 2 via `block_placement`) and the
+    cheaper §7.2.2 coding wins; 4:2:0 chroma stays frame-organised.
+  - motion-vector coding mirrors §7.6.3.1 / §7.6.3.3 exactly against
+    the crate's own `Pmv` bank: field vectors in frame pictures code
+    the vertical against `PMV DIV 2` and write back `2 * vector'`;
+    the Table 7-10 rows (Frame-based / Dual-prime copy `r0 → r1`,
+    Field-based "(none)", intra reset) are applied per macroblock.
+  - reconstruction runs through the decode-side §7.6 drivers
+    (`reconstruct_inter_macroblock` /
+    `reconstruct_field_based_macroblock` /
+    `reconstruct_frame_dual_prime_macroblock`) fed the encoder's
+    residual `f_pel` blocks, so references are the decoder's exact
+    frames.
+  - `encode_ff_display_order_gop_sequence` — whole interlaced
+    sequences (`progressive_sequence = 0`, §6.3.3 `2*Ceil(h/32)`
+    grid, GOP structure, per-GOP `temporal_reference` reset);
+    dual-prime only at `b_between = 0`. `FrameFieldStats` surfaces
+    the per-macroblock decisions. `tests/encode_frame_field.rs` pins
+    sample-exact decodes (field-based P, mixed frame+field PMV
+    interplay in one slice, field-DCT I, dual-prime P, field-based B
+    with display reorder), the decisions firing on crafted interlaced
+    content, and the interlaced 48-line grid.
+- round 443: **adaptive field-picture encode — per-macroblock 16×8 MC
+  and dual-prime** (`encode_field_p_picture_adaptive` /
+  `encode_field_b_picture_adaptive` /
+  `encode_field_adaptive_display_order_gop_sequence`): the Table 6-18
+  `field_motion_type` surface emitted adaptively — simple field
+  prediction (`01`), §7.6.7.3 **16×8 MC** (`10`, independent
+  `(vector, field-select)` per 16×8 region via
+  `estimate_field_region_mv`) and §7.6.3.6 **dual-prime** (`11`, one
+  vector + `dmvector`, P-only, `b_between = 0`), with the full
+  Table 7-11 predictor-row interplay mirrored (simple copies
+  `r0 → r1`, 16×8 updates both `r` slots with no copy, dual-prime
+  copies the forward pair, intra resets) and reconstruction through
+  the decode-side drivers. `FieldModeStats` surfaces the decisions;
+  `tests/encode_field_adaptive.rs` pins sample-exact 16×8 P / B and
+  field dual-prime P decodes plus the §7.6.3.6 rejection.
+- round 443: **MPEG-1 D-picture encode** (`encode_mpeg1_d_picture` /
+  `encode_mpeg1_d_sequence`) — the §2.4.3.4 dc intra-coded picture
+  type, the bit-exact inverse of `decode_mpeg1_d_picture`: Table B.2d
+  `macroblock_type` `'1'`, six DC-only blocks per macroblock (Tables
+  B.5a/B.5b prelude + differential against the exact §2.4.4.1
+  `dct_dc_*_past` chain; no AC walk, no `end_of_block` per the
+  §2.4.2.8 `picture_coding_type != 4` gates), the `end_of_macroblock`
+  `'1'` bit, every macroblock coded (§2.4.4.4), no f_code fields in
+  the picture header. The D-only sequence assembler (§2.4.1) emits
+  GOP layers with per-GOP `temporal_reference` reset; coded order ==
+  display order. `tests/encode_d_pictures.rs` pins sample-exact
+  round-trips through both `decode_mpeg1_d_picture` and
+  `decode_video_sequence`.
+- round 443: **runtime encoder registry wiring** (`encoder` module) —
+  `register` now installs `oxideav_core::Encoder` factories under both
+  the `mpeg1video` and `mpeg2video` codec ids beside the decoders
+  (direct `encoder::make_encoder` factory kept per the dual-API
+  convention). `Mpeg12Encoder` adapts the display-order GOP
+  assemblers to the frame-to-packet contract, mirroring the runtime
+  decoder's whole-elementary-stream framing: buffered display-order
+  frames are assembled at `flush()` into one keyframe-flagged packet
+  (`NeedMore` before the flush, `Eof` after the drain); four
+  range-validated options (`quantiser_scale_code`, `b_between`,
+  `anchors_per_gop`, `f_code`). `tests/runtime_encoder.rs` pins
+  registry resolution, round-trips through both decode paths, the
+  11172-2 classification of the `mpeg1video` output, and
+  option/geometry/lifecycle guards.
+- round 443: **four streams join the pinned self-encoded corpus**
+  (now seventeen): `selfenc-framefield-64x64.m2v` (interlaced
+  frame-picture I B P B P, Field-based macroblocks + field DCT —
+  black-box validated, strict pass clean, max |Δ| = 2),
+  `selfenc-dualprime-64x64.m2v` (I P P mixing Frame/Field/Dual-prime
+  macroblocks — strict pass clean, max |Δ| = 1),
+  `selfenc-fieldmodes-64x64.m2v` (field-coded I P P mixing simple /
+  16×8 / dual-prime macroblocks in the same slices — default decode
+  max |Δ| = 1; the strict pass flags field-pair packets while
+  decoding every frame, as with the other field-coded fixtures), and
+  `selfenc-mpeg1-dpics-48x32.m1v` (MPEG-1 D-only sequence — **no**
+  black-box reference exists: the reference binary emits zero frames
+  for `picture_coding_type == 4`, so it is pinned bit-exactly and
+  decoded sample-exactly against the encoder's own reconstruction).
+  All thirteen pre-existing streams regenerate byte-identical.
+
 - round 440: **exact Annex C Video Buffering Verifier** (`vbv`) — the
   shared ISO/IEC 13818-2 Annex C (C.1–C.12) / ISO/IEC 11172-2 Annex C
   (C.1.1–C.1.4) constant-bit-rate buffer model:
