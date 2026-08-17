@@ -52,11 +52,11 @@ use crate::mpeg2_dct_coeff::{
 };
 use crate::mpeg2_dequantize::{
     intra_dc_mult, quantiser_scale, select_weighting_matrix_index, BlockCoding, Component,
-    DEFAULT_INTRA_WEIGHT,
 };
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::picture_header::PictureCodingType;
+use crate::quant_matrix_extension::{write_quant_matrix_extension, QuantMatrixExtension};
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
     write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
@@ -151,6 +151,7 @@ fn encode_intra_block(
     pred: &mut DcPredictorState,
     table: TableSelection,
     alternate_scan: bool,
+    weight: &[[u8; 8]; 8],
 ) {
     // 1. Gather the raw 8-bit samples. Unlike many codecs, the MPEG-2
     // intra path does NOT level-shift before the DCT: the §7.4.1
@@ -164,11 +165,13 @@ fn encode_intra_block(
     // 2. Forward DCT.
     let f = fdct_8x8(&raw);
 
-    // 3. Forward-quantise (intra; default weights).
+    // 3. Forward-quantise (intra) against the active §7.4.2.1
+    // weighting matrix (w = 0 luminance / w = 2 chrominance at
+    // 4:2:2 / 4:4:4 — the caller resolves Table 7-5).
     let qf = forward_quantise_block(
         &f,
         BlockCoding::Intra,
-        &DEFAULT_INTRA_WEIGHT,
+        weight,
         quantiser_scale_value,
         intra_dc_mult_value,
     );
@@ -226,6 +229,36 @@ pub fn encode_intra_picture(
     temporal_reference: u16,
     quantiser_scale_code: u8,
 ) -> Result<Vec<u8>> {
+    encode_intra_picture_with_matrices(
+        frame,
+        params,
+        temporal_reference,
+        quantiser_scale_code,
+        &QuantMatrixExtension::default(),
+    )
+}
+
+/// [`encode_intra_picture`] with §6.3.11 **downloadable quantiser
+/// matrices**: the `intra` / `non_intra` payloads are emitted through
+/// the sequence header's `load_*_quantiser_matrix` slots (replacing
+/// the luminance matrix and — at 4:2:2 / 4:4:4 — the chrominance one
+/// too), while the `chroma_intra` / `chroma_non_intra` payloads travel
+/// in a `quant_matrix_extension()` written between the
+/// `picture_coding_extension()` and the first slice (they have no
+/// sequence-header slot). The forward quantiser uses exactly the
+/// Table 7-5 matrix bank the decoder resolves from those downloads.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] on out-of-range parameters or a payload
+/// violating §6.3.11 (zero byte, intra first value != 8, chroma
+/// downloads at 4:2:0).
+pub fn encode_intra_picture_with_matrices(
+    frame: &FrameBuffer,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    quantiser_scale_code: u8,
+    matrices: &QuantMatrixExtension,
+) -> Result<Vec<u8>> {
     if frame.width != params.width || frame.height != params.height {
         return Err(Error::InvalidBitstream(
             "encode_intra_picture: frame dimensions do not match params",
@@ -233,9 +266,11 @@ pub fn encode_intra_picture(
     }
     let q_value = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let dc_mult = intra_dc_mult(params.intra_dc_precision)?;
-    // The default-intra weighting matrix index (§7.4.2.1) is 0 for intra
-    // blocks regardless of chroma format; we use DEFAULT_INTRA_WEIGHT
-    // directly and only sanity-check the selector resolves to 0.
+    matrices.validate_for_emission(params.chroma_format)?;
+    // The Table 7-5 matrix bank the decoder will hold after the
+    // downloads below; the forward quantiser must use the same one.
+    let matrix_state = matrices.resolved_state(params.chroma_format);
+    // §7.4.2.1 selector sanity: luminance intra is always w == 0.
     debug_assert_eq!(
         select_weighting_matrix_index(
             BlockCoding::Intra,
@@ -253,6 +288,8 @@ pub fn encode_intra_picture(
         &SequenceHeaderParams {
             horizontal_size: params.width as u16,
             vertical_size: params.height as u16,
+            intra_quantiser_matrix: matrices.intra,
+            non_intra_quantiser_matrix: matrices.non_intra,
             ..Default::default()
         },
     );
@@ -282,6 +319,22 @@ pub fn encode_intra_picture(
             ..Default::default()
         },
     );
+    // §6.2.3.2: chroma-specific matrix downloads have no sequence-
+    // header slot — they travel in a quant_matrix_extension() between
+    // the picture_coding_extension() and the first slice. The luma
+    // slots already rode the sequence header, so only the chroma pair
+    // is re-declared here.
+    if matrices.has_chroma_downloads() {
+        write_quant_matrix_extension(
+            &mut bw,
+            &QuantMatrixExtension {
+                intra: None,
+                non_intra: None,
+                chroma_intra: matrices.chroma_intra,
+                chroma_non_intra: matrices.chroma_non_intra,
+            },
+        );
+    }
 
     let mb_width = params.mb_width();
     let mb_height = params.mb_height();
@@ -309,6 +362,13 @@ pub fn encode_intra_picture(
                 let component = block_component(i, params.chroma_format).ok_or(
                     Error::InvalidBitstream("encode_intra_picture: invalid block component"),
                 )?;
+                // Table 7-5: luminance intra → w 0; chrominance intra
+                // shares it at 4:2:0 and uses w 2 at 4:2:2 / 4:4:4 —
+                // resolved_state already collapsed the 4:2:0 case.
+                let weight = match component {
+                    ColourComponent::Y => &matrix_state.intra_luma,
+                    ColourComponent::Cb | ColourComponent::Cr => &matrix_state.intra_chroma,
+                };
                 encode_intra_block(
                     &mut bw,
                     frame,
@@ -320,6 +380,7 @@ pub fn encode_intra_picture(
                     &mut pred,
                     TableSelection::from_context(params.intra_vlc_format, true),
                     params.alternate_scan,
+                    weight,
                 );
             }
         }

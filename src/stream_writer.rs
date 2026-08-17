@@ -38,10 +38,14 @@ const PICTURE_CODING_EXTENSION_ID: u32 = 0b1000;
 /// ID = 0001`).
 const SEQUENCE_EXTENSION_ID: u32 = 0b0001;
 
-/// Parameters for a §6.2.2.1 `sequence_header()` write. Only the
-/// baseline fields an encoder varies are exposed; the quantiser
-/// matrices are left at their defaults (both `load_*_quantiser_matrix`
-/// flags `0`).
+/// Parameters for a §6.2.2.1 `sequence_header()` write.
+///
+/// The two optional quantiser-matrix payloads mirror the header's
+/// `load_intra_quantiser_matrix` / `load_non_intra_quantiser_matrix`
+/// slots (64 zigzag-ordered bytes each, §6.3.11 — a sequence-header
+/// download replaces the luminance matrix *and*, at 4:2:2 / 4:4:4, the
+/// matching chrominance matrix; chroma-specific tables travel only in
+/// a `quant_matrix_extension()`). `None` leaves the §6.3.7 defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct SequenceHeaderParams {
     /// `horizontal_size_value` (lower 12 bits of the picture width).
@@ -56,6 +60,11 @@ pub struct SequenceHeaderParams {
     pub bit_rate_value: u32,
     /// `vbv_buffer_size_value` (10 bits).
     pub vbv_buffer_size_value: u16,
+    /// `intra_quantiser_matrix[64]` download (§6.3.11 zigzag order),
+    /// emitted when `Some`.
+    pub intra_quantiser_matrix: Option<crate::quant_matrix_extension::QuantiserMatrixPayload>,
+    /// `non_intra_quantiser_matrix[64]` download, emitted when `Some`.
+    pub non_intra_quantiser_matrix: Option<crate::quant_matrix_extension::QuantiserMatrixPayload>,
 }
 
 impl Default for SequenceHeaderParams {
@@ -67,12 +76,15 @@ impl Default for SequenceHeaderParams {
             frame_rate_code: 0b0011,
             bit_rate_value: 2500,
             vbv_buffer_size_value: 112,
+            intra_quantiser_matrix: None,
+            non_intra_quantiser_matrix: None,
         }
     }
 }
 
-/// Write a §6.2.2.1 `sequence_header()` with both quantiser-matrix load
-/// flags clear (the §6.3.7 defaults apply).
+/// Write a §6.2.2.1 `sequence_header()`; each quantiser-matrix load
+/// flag is set exactly when the matching payload is `Some` (the §6.3.7
+/// defaults apply otherwise).
 pub fn write_sequence_header(bw: &mut BitWriter, p: &SequenceHeaderParams) {
     bw.write_u32(SEQUENCE_HEADER_CODE, 32);
     bw.write_u32(u32::from(p.horizontal_size), 12);
@@ -83,8 +95,24 @@ pub fn write_sequence_header(bw: &mut BitWriter, p: &SequenceHeaderParams) {
     bw.write_bit(true); // marker_bit
     bw.write_u32(u32::from(p.vbv_buffer_size_value), 10);
     bw.write_bit(false); // constrained_parameters_flag
-    bw.write_bit(false); // load_intra_quantiser_matrix
-    bw.write_bit(false); // load_non_intra_quantiser_matrix
+    match &p.intra_quantiser_matrix {
+        Some(m) => {
+            bw.write_bit(true); // load_intra_quantiser_matrix
+            for &b in &m.bytes {
+                bw.write_u32(u32::from(b), 8);
+            }
+        }
+        None => bw.write_bit(false),
+    }
+    match &p.non_intra_quantiser_matrix {
+        Some(m) => {
+            bw.write_bit(true); // load_non_intra_quantiser_matrix
+            for &b in &m.bytes {
+                bw.write_u32(u32::from(b), 8);
+            }
+        }
+        None => bw.write_bit(false),
+    }
     bw.align_to_byte();
 }
 

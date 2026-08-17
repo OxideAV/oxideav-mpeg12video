@@ -102,6 +102,37 @@ pub fn encode_b_picture(
     forward_f_code: u8,
     backward_f_code: u8,
 ) -> Result<()> {
+    encode_b_picture_with_matrices(
+        bw,
+        current,
+        forward,
+        backward,
+        params,
+        temporal_reference,
+        quantiser_scale_code,
+        forward_f_code,
+        backward_f_code,
+        &crate::quant_matrix_extension::QuantiserMatrixState::defaults(),
+    )
+}
+
+/// [`encode_b_picture`] quantising against an explicit §6.3.11
+/// [`crate::quant_matrix_extension::QuantiserMatrixState`] (Table 7-5:
+/// `w = 1` luminance / `w = 3` chrominance non-intra at 4:2:2 /
+/// 4:4:4). The caller must have emitted the matching downloads.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_b_picture_with_matrices(
+    bw: &mut BitWriter,
+    current: &FrameBuffer,
+    forward: &FrameBuffer,
+    backward: &FrameBuffer,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    matrix_state: &crate::quant_matrix_extension::QuantiserMatrixState,
+) -> Result<()> {
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let fwd_range = max_search_range(forward_f_code).min(16);
     let bwd_range = max_search_range(backward_f_code).min(16);
@@ -240,7 +271,13 @@ pub fn encode_b_picture(
                         residual[r][c] = (cur - prd) as i16;
                     }
                 }
-                let block = quantise_inter_block(&residual, qscale);
+                // Table 7-5: non-intra luminance → w 1, non-intra
+                // chrominance → w 3 (mirrors w 1 at 4:2:0).
+                let weight = match component {
+                    ColourComponent::Y => &matrix_state.non_intra_luma,
+                    ColourComponent::Cb | ColourComponent::Cr => &matrix_state.non_intra_chroma,
+                };
+                let block = quantise_inter_block(&residual, qscale, weight);
                 coded_flags[i] = block.is_coded();
                 blocks.push(block);
             }

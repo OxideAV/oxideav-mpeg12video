@@ -578,6 +578,41 @@ pub fn encode_display_order_gop_sequence(
     forward_f_code: u8,
     backward_f_code: u8,
 ) -> Result<Vec<u8>> {
+    encode_display_order_gop_sequence_with_matrices(
+        frames,
+        b_between,
+        anchors_per_gop,
+        params,
+        quantiser_scale_code,
+        forward_f_code,
+        backward_f_code,
+        &crate::quant_matrix_extension::QuantMatrixExtension::default(),
+    )
+}
+
+/// [`encode_display_order_gop_sequence`] with §6.3.11 **downloadable
+/// quantiser matrices**: the `intra` / `non_intra` payloads ride the
+/// sequence header's `load_*_quantiser_matrix` slots, the
+/// `chroma_intra` / `chroma_non_intra` payloads (4:2:2 / 4:4:4 only —
+/// they have no sequence-header slot) ride a
+/// `quant_matrix_extension()` inside every GOP's I picture, and each
+/// picture encoder quantises against exactly the Table 7-5 bank the
+/// decoder resolves from those downloads.
+///
+/// # Errors
+/// As [`encode_display_order_gop_sequence`], plus
+/// [`Error::InvalidBitstream`] for a payload violating §6.3.11.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_display_order_gop_sequence_with_matrices(
+    frames: &[crate::frame_assembly::FrameBuffer],
+    b_between: usize,
+    anchors_per_gop: usize,
+    params: IntraPictureParams,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    matrices: &crate::quant_matrix_extension::QuantMatrixExtension,
+) -> Result<Vec<u8>> {
     use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
 
     if frames.is_empty() {
@@ -590,10 +625,14 @@ pub fn encode_display_order_gop_sequence(
             "encode_display_order_gop_sequence: anchors_per_gop must be >= 1",
         ));
     }
+    matrices.validate_for_emission(params.chroma_format)?;
+    let matrix_state = matrices.resolved_state(params.chroma_format);
 
     let sequence_params = SequenceHeaderParams {
         horizontal_size: params.width as u16,
         vertical_size: params.height as u16,
+        intra_quantiser_matrix: matrices.intra,
+        non_intra_quantiser_matrix: matrices.non_intra,
         ..Default::default()
     };
 
@@ -624,12 +663,17 @@ pub fn encode_display_order_gop_sequence(
 
         // The GOP's I anchor (temporal_reference = 0): encode via the
         // intra encoder and splice out its picture layer, decoding it
-        // back for the decoder's exact reference.
-        let i_stream = crate::intra_encoder::encode_intra_picture(
+        // back for the decoder's exact reference. The intra encoder
+        // carries the chroma matrix downloads inside its picture layer
+        // (quant_matrix_extension after the picture coding extension),
+        // so the splice preserves them — every GOP's I picture
+        // re-declares the chroma tables, which §6.3.11 allows.
+        let i_stream = crate::intra_encoder::encode_intra_picture_with_matrices(
             &frames[gop_start],
             params,
             0,
             quantiser_scale_code,
+            matrices,
         )?;
         let mut forward_ref = crate::decode_video_sequence(&i_stream)?
             .first()
@@ -648,7 +692,7 @@ pub fn encode_display_order_gop_sequence(
         let mut prev_anchor = gop_start;
         while prev_anchor < gop_end {
             let next_anchor = (prev_anchor + step).min(gop_end);
-            let backward_ref = crate::p_picture_encoder::encode_p_picture(
+            let backward_ref = crate::p_picture_encoder::encode_p_picture_with_matrices(
                 &mut bw,
                 &frames[next_anchor],
                 &forward_ref,
@@ -656,9 +700,10 @@ pub fn encode_display_order_gop_sequence(
                 (next_anchor - gop_start) as u16,
                 quantiser_scale_code,
                 forward_f_code,
+                &matrix_state,
             )?;
             for b in (prev_anchor + 1)..next_anchor {
-                crate::b_picture_encoder::encode_b_picture(
+                crate::b_picture_encoder::encode_b_picture_with_matrices(
                     &mut bw,
                     &frames[b],
                     &forward_ref,
@@ -668,6 +713,7 @@ pub fn encode_display_order_gop_sequence(
                     quantiser_scale_code,
                     forward_f_code,
                     backward_f_code,
+                    &matrix_state,
                 )?;
             }
             forward_ref = backward_ref;

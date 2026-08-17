@@ -249,6 +249,93 @@ impl QuantMatrixExtension {
     }
 }
 
+impl QuantMatrixExtension {
+    /// Writer-side §6.3.11 validation for an extension the **encoder**
+    /// is about to emit (the parse path enforces the same rules while
+    /// reading):
+    ///
+    /// * every loaded matrix byte is non-zero;
+    /// * an intra-kind payload's first (zigzag) byte is `8`;
+    /// * the chroma slots are not loaded when `chroma_format == 4:2:0`.
+    pub fn validate_for_emission(&self, chroma_format: ChromaFormat) -> Result<()> {
+        let check = |payload: &Option<QuantiserMatrixPayload>, kind: MatrixKind| -> Result<()> {
+            let Some(p) = payload else { return Ok(()) };
+            if p.bytes.contains(&0) {
+                return Err(Error::InvalidBitstream(
+                    "quantiser matrix payload: every value shall be non-zero (§6.3.11)",
+                ));
+            }
+            if kind == MatrixKind::Intra && p.bytes[0] != 8 {
+                return Err(Error::InvalidBitstream(
+                    "intra quantiser matrix payload: the first (zigzag) value shall be 8 (§6.3.11)",
+                ));
+            }
+            Ok(())
+        };
+        check(&self.intra, MatrixKind::Intra)?;
+        check(&self.non_intra, MatrixKind::NonIntra)?;
+        if matches!(chroma_format, ChromaFormat::Yuv420)
+            && (self.chroma_intra.is_some() || self.chroma_non_intra.is_some())
+        {
+            return Err(Error::InvalidBitstream(
+                "load_chroma_*_quantiser_matrix: shall be '0' when chroma_format == 4:2:0 (§6.3.11)",
+            ));
+        }
+        check(&self.chroma_intra, MatrixKind::Intra)?;
+        check(&self.chroma_non_intra, MatrixKind::NonIntra)?;
+        Ok(())
+    }
+
+    /// The [`QuantiserMatrixState`] a decoder holds right after a fresh
+    /// `sequence_header_code` (§6.3.7 defaults) followed by these
+    /// downloads — the matrices the encoder must therefore quantise
+    /// against.
+    pub fn resolved_state(&self, chroma_format: ChromaFormat) -> QuantiserMatrixState {
+        let mut state = QuantiserMatrixState::defaults();
+        self.apply(&mut state, chroma_format);
+        state
+    }
+
+    /// Whether either chroma-specific slot is loaded (these can only
+    /// travel in a `quant_matrix_extension()`, never in the sequence
+    /// header — §6.2.2.1 carries just the two luma-and-chroma slots).
+    pub fn has_chroma_downloads(&self) -> bool {
+        self.chroma_intra.is_some() || self.chroma_non_intra.is_some()
+    }
+}
+
+/// Write a §6.2.3.2 `quant_matrix_extension()`: extension start code,
+/// the Table 6-2 `0011` identifier, then the four
+/// `load_*_quantiser_matrix` flag / payload pairs in §6.3.11 syntax
+/// order (payloads are the 64 zigzag-ordered bytes as staged in each
+/// [`QuantiserMatrixPayload`]). Ends byte-aligned (the four flags plus
+/// the 512-bit payloads always sum to a whole number of bytes, as the
+/// parse side asserts).
+///
+/// Callers validate with
+/// [`QuantMatrixExtension::validate_for_emission`] first.
+pub fn write_quant_matrix_extension(
+    bw: &mut oxideav_core::bits::BitWriter,
+    ext: &QuantMatrixExtension,
+) {
+    bw.write_u32(EXTENSION_START_CODE, 32);
+    bw.write_u32(QUANT_MATRIX_EXTENSION_ID, 4);
+    let mut slot = |payload: &Option<QuantiserMatrixPayload>| match payload {
+        Some(p) => {
+            bw.write_bit(true);
+            for &b in &p.bytes {
+                bw.write_u32(u32::from(b), 8);
+            }
+        }
+        None => bw.write_bit(false),
+    };
+    slot(&ext.intra);
+    slot(&ext.non_intra);
+    slot(&ext.chroma_intra);
+    slot(&ext.chroma_non_intra);
+    bw.align_to_byte();
+}
+
 /// Internal selector for the two byte-value rules of §6.3.11.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MatrixKind {

@@ -63,13 +63,13 @@ use crate::mpeg2_dct_coeff::{
     encode_dct_coeff, encode_end_of_block, CoefficientPosition, TableSelection,
 };
 use crate::mpeg2_dequantize::{
-    intra_dc_mult, inverse_quantise_block, quantiser_scale, BlockCoding, DEFAULT_INTRA_WEIGHT,
-    DEFAULT_NON_INTRA_WEIGHT,
+    intra_dc_mult, inverse_quantise_block, quantiser_scale, BlockCoding,
 };
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::picture_header::PictureCodingType;
 use crate::pmv::vector_range;
+use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_slice_header,
     PictureCodingExtensionParams,
@@ -160,16 +160,17 @@ impl InterBlock {
     }
 }
 
-/// Forward-quantise one non-intra residual block and reconstruct it.
-pub(crate) fn quantise_inter_block(residual: &[[i16; 8]; 8], qscale: u8) -> InterBlock {
+/// Forward-quantise one non-intra residual block against the active
+/// §7.4.2.1 weighting matrix (`w = 1` luminance / `w = 3` chrominance
+/// at 4:2:2 / 4:4:4 — the caller resolves Table 7-5) and reconstruct
+/// it exactly as the decoder will.
+pub(crate) fn quantise_inter_block(
+    residual: &[[i16; 8]; 8],
+    qscale: u8,
+    weight: &[[u8; 8]; 8],
+) -> InterBlock {
     let f = fdct_8x8(residual);
-    let qf = forward_quantise_block(
-        &f,
-        BlockCoding::NonIntra,
-        &DEFAULT_NON_INTRA_WEIGHT,
-        qscale,
-        1,
-    );
+    let qf = forward_quantise_block(&f, BlockCoding::NonIntra, weight, qscale, 1);
     let any = qf.iter().any(|row| row.iter().any(|&c| c != 0));
     if !any {
         return InterBlock {
@@ -178,13 +179,7 @@ pub(crate) fn quantise_inter_block(residual: &[[i16; 8]; 8], qscale: u8) -> Inte
         };
     }
     // Reconstruct exactly as the decoder will: inverse-quantise + IDCT.
-    let dequant = inverse_quantise_block(
-        &qf,
-        BlockCoding::NonIntra,
-        &DEFAULT_NON_INTRA_WEIGHT,
-        qscale,
-        1,
-    );
+    let dequant = inverse_quantise_block(&qf, BlockCoding::NonIntra, weight, qscale, 1);
     let f_pel = idct_8x8_from_i32(&dequant);
     InterBlock {
         qf: Some(qf),
@@ -362,6 +357,7 @@ pub(crate) fn encode_intra_mb(
     chroma_format: crate::sequence_extension::ChromaFormat,
     table: TableSelection,
     alternate_scan: bool,
+    matrix_state: &QuantiserMatrixState,
 ) {
     let scan = inverse_scan_table(alternate_scan);
     for i in 0..nblocks {
@@ -372,6 +368,12 @@ pub(crate) fn encode_intra_mb(
             ColourComponent::Y => &current.y,
             ColourComponent::Cb => &current.cb,
             ColourComponent::Cr => &current.cr,
+        };
+        // Table 7-5: intra luminance → w 0, intra chrominance → w 2
+        // (the state's chroma slot mirrors the luma one at 4:2:0).
+        let weight = match component {
+            ColourComponent::Y => &matrix_state.intra_luma,
+            ColourComponent::Cb | ColourComponent::Cr => &matrix_state.intra_chroma,
         };
         // Gather the raw 8x8 block (clamp at edges).
         let mut raw = [[0i16; 8]; 8];
@@ -385,13 +387,7 @@ pub(crate) fn encode_intra_mb(
             }
         }
         let f = fdct_8x8(&raw);
-        let qf = forward_quantise_block(
-            &f,
-            BlockCoding::Intra,
-            &DEFAULT_INTRA_WEIGHT,
-            qscale,
-            dc_mult,
-        );
+        let qf = forward_quantise_block(&f, BlockCoding::Intra, weight, qscale, dc_mult);
 
         // DC differential.
         let qfs0 = qf[0][0];
@@ -419,13 +415,7 @@ pub(crate) fn encode_intra_mb(
         encode_end_of_block(bw, table);
 
         // Reconstruct: inverse-quantise + IDCT → absolute samples.
-        let dequant = inverse_quantise_block(
-            &qf,
-            BlockCoding::Intra,
-            &DEFAULT_INTRA_WEIGHT,
-            qscale,
-            dc_mult,
-        );
+        let dequant = inverse_quantise_block(&qf, BlockCoding::Intra, weight, qscale, dc_mult);
         let f_pel = idct_8x8_from_i32(&dequant);
         let plane = match component {
             ColourComponent::Y => &mut recon.y,
@@ -459,6 +449,36 @@ pub fn encode_p_picture(
     temporal_reference: u16,
     quantiser_scale_code: u8,
     forward_f_code: u8,
+) -> Result<FrameBuffer> {
+    encode_p_picture_with_matrices(
+        bw,
+        current,
+        reference,
+        params,
+        temporal_reference,
+        quantiser_scale_code,
+        forward_f_code,
+        &QuantiserMatrixState::defaults(),
+    )
+}
+
+/// [`encode_p_picture`] quantising against an explicit §6.3.11
+/// [`QuantiserMatrixState`] — the Table 7-5 bank the surrounding
+/// stream's downloads left active (`w = 1` luminance non-intra,
+/// `w = 3` chrominance non-intra at 4:2:2 / 4:4:4, and the intra pair
+/// for the intra-fallback macroblocks). The caller is responsible for
+/// having emitted the matching downloads; the reconstruction returned
+/// here is decoder-exact only under that state.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_p_picture_with_matrices(
+    bw: &mut BitWriter,
+    current: &FrameBuffer,
+    reference: &FrameBuffer,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    matrix_state: &QuantiserMatrixState,
 ) -> Result<FrameBuffer> {
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let f_horiz = forward_f_code;
@@ -549,6 +569,7 @@ pub fn encode_p_picture(
                     chroma_format,
                     TableSelection::from_context(params.intra_vlc_format, true),
                     params.alternate_scan,
+                    matrix_state,
                 );
                 // §7.6.3.4: an intra macroblock (no concealment vectors)
                 // resets the motion-vector predictors.
@@ -598,7 +619,13 @@ pub fn encode_p_picture(
                     local_x,
                     local_y,
                 );
-                let block = quantise_inter_block(&residual, qscale);
+                // Table 7-5: non-intra luminance → w 1, non-intra
+                // chrominance → w 3 (mirrors w 1 at 4:2:0).
+                let weight = match component {
+                    ColourComponent::Y => &matrix_state.non_intra_luma,
+                    ColourComponent::Cb | ColourComponent::Cr => &matrix_state.non_intra_chroma,
+                };
+                let block = quantise_inter_block(&residual, qscale, weight);
                 coded_flags[i] = block.qf.is_some();
                 blocks.push(block);
             }
@@ -687,7 +714,11 @@ mod tests {
 
     #[test]
     fn quantise_inter_block_flat_zero_residual_is_uncoded() {
-        let b = quantise_inter_block(&[[0i16; 8]; 8], 8);
+        let b = quantise_inter_block(
+            &[[0i16; 8]; 8],
+            8,
+            &crate::mpeg2_dequantize::DEFAULT_NON_INTRA_WEIGHT,
+        );
         assert!(b.qf.is_none());
         assert_eq!(b.f_pel, [[0i16; 8]; 8]);
     }
@@ -700,7 +731,11 @@ mod tests {
                 residual[v][u] = (((v * 8 + u) as i16 * 7) % 100) - 50;
             }
         }
-        let b = quantise_inter_block(&residual, 4);
+        let b = quantise_inter_block(
+            &residual,
+            4,
+            &crate::mpeg2_dequantize::DEFAULT_NON_INTRA_WEIGHT,
+        );
         assert!(b.qf.is_some(), "structured residual must be coded");
     }
 

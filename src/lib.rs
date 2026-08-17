@@ -478,7 +478,7 @@ pub mod video_sequence;
 // Stable crate-root surface: whole-stream decode, encoder entry points,
 // registry glue, and the frame/error types their signatures expose.
 // ---------------------------------------------------------------------
-pub use b_picture_encoder::encode_b_picture;
+pub use b_picture_encoder::{encode_b_picture, encode_b_picture_with_matrices};
 pub use decoder::{
     frame_buffer_to_video_frame, make_decoder, Mpeg12Decoder, MPEG1_CODEC_ID_STR,
     MPEG2_CODEC_ID_STR,
@@ -497,12 +497,12 @@ pub use frame_field_encoder::{
     encode_ff_p_picture, estimate_field_in_frame_mv, FrameFieldStats,
 };
 pub use inter_encoder::{
-    encode_display_order_gop_sequence, encode_display_order_sequence, encode_i_p_b,
-    encode_i_p_chain, encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block,
-    encode_p_copy_picture,
+    encode_display_order_gop_sequence, encode_display_order_gop_sequence_with_matrices,
+    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p,
+    encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
 };
 pub use inter_reconstruction::InterError;
-pub use intra_encoder::encode_intra_picture;
+pub use intra_encoder::{encode_intra_picture, encode_intra_picture_with_matrices};
 pub use mpeg1_encoder::{
     encode_mpeg1_b_picture, encode_mpeg1_d_picture, encode_mpeg1_d_sequence,
     encode_mpeg1_display_order_sequence, encode_mpeg1_intra_picture, encode_mpeg1_intra_stream,
@@ -513,7 +513,7 @@ pub use mpeg1_stream_writer::{
     constrained_parameters_admissible, write_mpeg1_picture_header, write_mpeg1_sequence_header,
     Mpeg1SequenceParams, CPB_MAX_BIT_RATE_VALUE, CPB_MAX_VBV_BUFFER_SIZE_VALUE,
 };
-pub use p_picture_encoder::encode_p_picture;
+pub use p_picture_encoder::{encode_p_picture, encode_p_picture_with_matrices};
 pub use picture_header::PictureCodingType;
 pub use rate_control::{
     encode_cbr_gop_sequence, encode_field_cbr_gop_sequence, encode_mpeg1_cbr_sequence, CbrConfig,

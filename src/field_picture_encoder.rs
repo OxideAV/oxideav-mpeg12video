@@ -78,13 +78,14 @@ use crate::inter_reconstruction::{
 use crate::motion_estimation::max_search_range;
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::ColourComponent;
-use crate::mpeg2_dequantize::{intra_dc_mult, quantiser_scale};
+use crate::mpeg2_dequantize::{intra_dc_mult, quantiser_scale, DEFAULT_NON_INTRA_WEIGHT};
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::p_picture_encoder::{
     encode_intra_mb, gather_residual, intra_activity, quantise_inter_block, reconstruct_inter_mb,
     wrap_delta, write_inter_block_coeffs, IntraDcPred,
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
+use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::sequence_extension::ChromaFormat;
 use crate::stream_writer::{
     write_field_picture_coding_extension, write_picture_header, write_sequence_extension,
@@ -385,6 +386,7 @@ pub fn encode_field_intra_picture(
                 params.chroma_format,
                 crate::mpeg2_dct_coeff::TableSelection::TableZero,
                 false,
+                &QuantiserMatrixState::defaults(),
             );
         }
         bw.align_to_byte_zero();
@@ -490,6 +492,7 @@ pub fn encode_field_p_picture(
                     params.chroma_format,
                     crate::mpeg2_dct_coeff::TableSelection::TableZero,
                     false,
+                    &QuantiserMatrixState::defaults(),
                 );
                 // §7.6.3.4: an intra macroblock resets the predictors.
                 pmv = (0, 0);
@@ -543,7 +546,7 @@ pub fn encode_field_p_picture(
                     placement.base_x - mb_origin_x,
                     placement.base_y - mb_origin_y,
                 );
-                let block = quantise_inter_block(&residual, qscale);
+                let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
                 if block.is_coded() {
                     cbp |= 1 << (5 - i);
                 }
@@ -760,7 +763,7 @@ pub fn encode_field_b_picture(
                     placement.base_x - mb_origin_x,
                     placement.base_y - mb_origin_y,
                 );
-                let block = quantise_inter_block(&residual, qscale);
+                let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
                 if block.is_coded() {
                     cbp |= 1 << (5 - i);
                 }
@@ -1347,7 +1350,7 @@ fn quantise_field_mb(
             placement.base_x - origin_x,
             placement.base_y - origin_y,
         );
-        let block = quantise_inter_block(&residual, qscale);
+        let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
         if block.is_coded() {
             cbp |= 1 << (5 - i);
         }
@@ -1572,6 +1575,7 @@ pub fn encode_field_p_picture_adaptive(
                     params.chroma_format,
                     crate::mpeg2_dct_coeff::TableSelection::TableZero,
                     false,
+                    &QuantiserMatrixState::defaults(),
                 );
                 pmv.reset();
                 past_intra_address = mb_address;

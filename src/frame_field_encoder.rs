@@ -98,6 +98,7 @@ use crate::mpeg2_dct_coeff::{
 };
 use crate::mpeg2_dequantize::{
     intra_dc_mult, inverse_quantise_block, quantiser_scale, BlockCoding, DEFAULT_INTRA_WEIGHT,
+    DEFAULT_NON_INTRA_WEIGHT,
 };
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
@@ -573,7 +574,7 @@ fn quantise_mb_residuals(
         };
         let residual =
             gather_residual_placed(cur_plane, pred, pred_w, placement, origin_x, origin_y);
-        let block = quantise_inter_block(&residual, qscale);
+        let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
         if block.is_coded() {
             cbp |= 1 << (5 - i);
         }
