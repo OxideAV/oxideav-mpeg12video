@@ -664,3 +664,114 @@ fn selfenc_ipb_group_is_pinned_and_reference_conformant() {
         &[&i_frame, &b_frame, &p_frame],
     );
 }
+
+// ---- 4:2:2 profile streams (round 447) ---------------------------
+
+/// 4:2:2 params matching `gen_selfenc_corpus`'s `params_422`.
+fn params_422(width: usize, height: usize) -> IntraPictureParams {
+    IntraPictureParams {
+        chroma_format: ChromaFormat::Yuv422,
+        ..params(width, height)
+    }
+}
+
+/// Deterministic 4:2:2 frame — must stay in lock-step with
+/// `gen_selfenc_corpus::frame_422_at`.
+fn frame_422_at(width: usize, height: usize, dx: usize, stamp: bool) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv422);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + dx;
+            let g = 24 + ((sx * 3 + y * 5) % 192);
+            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            f.y.put_sample(x, y, (g + c).min(235) as u8);
+        }
+    }
+    if stamp {
+        for y in 8..20.min(height) {
+            for x in 8..20.min(width) {
+                f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+            }
+        }
+    }
+    for y in 0..height {
+        for x in 0..width / 2 {
+            f.cb.put_sample(x, y, (64 + (x * 2 + y * 7 + dx / 2) % 128) as u8);
+            f.cr.put_sample(
+                x,
+                y,
+                (192u8).saturating_sub(((x * 3 + y * 5 + dx / 2) % 128) as u8),
+            );
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_422_ibbp_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-422-ibbp-64x48.m2v");
+    let display: Vec<FrameBuffer> = (0..5)
+        .map(|t| frame_422_at(64, 48, 2 * t, t >= 3))
+        .collect();
+    let regenerated =
+        encode_display_order_gop_sequence(&display, 1, 4, params_422(64, 48), 6, 3, 3)
+            .expect("4:2:2 gop re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-422-ibbp-64x48", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_422_full_flags_is_pinned_and_reference_conformant() {
+    use oxideav_mpeg12video::encode_display_order_gop_sequence_with_matrices;
+    use oxideav_mpeg12video::quant_matrix_extension::{
+        QuantMatrixExtension, QuantiserMatrixPayload,
+    };
+
+    let (stream, reference) = fixture("selfenc-422-full-64x48.m2v");
+    let display: Vec<FrameBuffer> = (0..5)
+        .map(|t| frame_422_at(64, 48, 2 * t, t >= 3))
+        .collect();
+    let full_params = IntraPictureParams {
+        intra_dc_precision: 2,
+        intra_vlc_format: true,
+        alternate_scan: true,
+        q_scale_type: true,
+        ..params_422(64, 48)
+    };
+    let mut intra_zz = [0u8; 64];
+    intra_zz[0] = 8;
+    for (i, v) in intra_zz.iter_mut().enumerate().skip(1) {
+        *v = 14 + (i as u8 % 10);
+    }
+    let matrices = QuantMatrixExtension {
+        intra: Some(QuantiserMatrixPayload { bytes: intra_zz }),
+        non_intra: Some(QuantiserMatrixPayload { bytes: [18u8; 64] }),
+        chroma_intra: Some({
+            let mut zz = [24u8; 64];
+            zz[0] = 8;
+            QuantiserMatrixPayload { bytes: zz }
+        }),
+        chroma_non_intra: Some(QuantiserMatrixPayload { bytes: [22u8; 64] }),
+    };
+    let regenerated = encode_display_order_gop_sequence_with_matrices(
+        &display,
+        1,
+        4,
+        full_params,
+        8,
+        3,
+        3,
+        &matrices,
+    )
+    .expect("4:2:2 full-flag re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-422-full-64x48", &stream, &reference, &inputs);
+}

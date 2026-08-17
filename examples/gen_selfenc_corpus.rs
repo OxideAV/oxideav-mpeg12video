@@ -13,9 +13,11 @@
 //!
 //! Usage: `gen_selfenc_corpus <out-dir>`
 
+use oxideav_mpeg12video::quant_matrix_extension::{QuantMatrixExtension, QuantiserMatrixPayload};
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    encode_cbr_gop_sequence, encode_display_order_gop_sequence, encode_display_order_sequence,
+    encode_cbr_gop_sequence, encode_display_order_gop_sequence,
+    encode_display_order_gop_sequence_with_matrices, encode_display_order_sequence,
     encode_ff_display_order_gop_sequence, encode_field_display_order_gop_sequence, encode_i_p_b,
     encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence, encode_mpeg1_d_sequence,
     encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream, CbrConfig, FrameBuffer,
@@ -460,4 +462,101 @@ fn main() {
     assert!(fa_stats.sixteen_by_eight > 0, "16x8 must fire in stream 17");
     assert!(fa_stats.dual_prime > 0, "dual-prime must fire in stream 17");
     write("selfenc-fieldmodes-64x64.m2v", &fa_stream);
+
+    // ---- 4:2:2 profile streams (round 447) ------------------------
+
+    // 18. 4:2:2 I B P B P (single GOP): Figure 6-11 eight-block
+    //     macroblocks, §6.2.5.3 coded_block_pattern_1, §7.6.3.7
+    //     horizontal-only chroma MV scaling, High@Main
+    //     profile_and_level_indication. Vertical chroma detail so a
+    //     4:2:0 collapse would show; the stamp from display frame 3
+    //     fires the P intra fallback.
+    let f422: Vec<FrameBuffer> = (0..5)
+        .map(|t| frame_422_at(64, 48, 2 * t, t >= 3))
+        .collect();
+    let m422 = encode_display_order_gop_sequence(&f422, 1, 4, params_422(64, 48), 6, 3, 3)
+        .expect("4:2:2 gop encode");
+    write("selfenc-422-ibbp-64x48.m2v", &m422);
+
+    // 19. 4:2:2 I B P B P with the full r447 flag set — Table B-15
+    //     intra AC (intra_vlc_format), §7.3 alternate scan, Table 7-6
+    //     non-linear quantiser scale, 10-bit intra DC — plus §6.3.11
+    //     downloadable matrices: luminance intra/non-intra loads in
+    //     the sequence header and chroma intra/non-intra tables in a
+    //     quant_matrix_extension() inside the I picture.
+    let full_params = IntraPictureParams {
+        intra_dc_precision: 2,
+        intra_vlc_format: true,
+        alternate_scan: true,
+        q_scale_type: true,
+        ..params_422(64, 48)
+    };
+    let mut intra_zz = [0u8; 64];
+    intra_zz[0] = 8;
+    for (i, v) in intra_zz.iter_mut().enumerate().skip(1) {
+        *v = 14 + (i as u8 % 10);
+    }
+    let matrices = QuantMatrixExtension {
+        intra: Some(QuantiserMatrixPayload { bytes: intra_zz }),
+        non_intra: Some(QuantiserMatrixPayload { bytes: [18u8; 64] }),
+        chroma_intra: Some({
+            let mut zz = [24u8; 64];
+            zz[0] = 8;
+            QuantiserMatrixPayload { bytes: zz }
+        }),
+        chroma_non_intra: Some(QuantiserMatrixPayload { bytes: [22u8; 64] }),
+    };
+    let m422_full = encode_display_order_gop_sequence_with_matrices(
+        &f422,
+        1,
+        4,
+        full_params,
+        8,
+        3,
+        3,
+        &matrices,
+    )
+    .expect("4:2:2 full-flag encode");
+    write("selfenc-422-full-64x48.m2v", &m422_full);
+}
+
+/// 4:2:2 params: progressive frame pictures, Figure 6-11 macroblocks.
+fn params_422(width: usize, height: usize) -> IntraPictureParams {
+    IntraPictureParams {
+        chroma_format: ChromaFormat::Yuv422,
+        ..params(width, height)
+    }
+}
+
+/// Deterministic 4:2:2 frame: diagonal luma gradient + checker shifted
+/// by `dx`, full-height chroma with per-row detail, optional
+/// high-contrast stamp (P intra fallback).
+fn frame_422_at(width: usize, height: usize, dx: usize, stamp: bool) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv422);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + dx;
+            let g = 24 + ((sx * 3 + y * 5) % 192);
+            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            f.y.put_sample(x, y, (g + c).min(235) as u8);
+        }
+    }
+    if stamp {
+        for y in 8..20.min(height) {
+            for x in 8..20.min(width) {
+                f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+            }
+        }
+    }
+    for y in 0..height {
+        for x in 0..width / 2 {
+            f.cb.put_sample(x, y, (64 + (x * 2 + y * 7 + dx / 2) % 128) as u8);
+            f.cr.put_sample(
+                x,
+                y,
+                (192u8).saturating_sub(((x * 3 + y * 5 + dx / 2) % 128) as u8),
+            );
+        }
+    }
+    f
 }
