@@ -17,7 +17,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_intra_picture, FrameBuffer, IntraPictureParams,
+    decode_video_sequence, encode_display_order_gop_sequence, encode_i_p_b, encode_i_then_p,
+    encode_intra_picture, encode_p_picture, FrameBuffer, IntraPictureParams,
 };
 
 fn params_422(width: usize, height: usize) -> IntraPictureParams {
@@ -155,6 +156,149 @@ fn intra_422_encode_is_reconstruction_idempotent() {
             assert_eq!(a.cb.get(x, y), b.cb.get(x, y), "cb ({x},{y})");
             assert_eq!(a.cr.get(x, y), b.cr.get(x, y), "cr ({x},{y})");
         }
+    }
+}
+
+/// Decode the I anchor the inter assemblers will predict from.
+fn decoded_anchor(f: &FrameBuffer, p: IntraPictureParams, q: u8) -> FrameBuffer {
+    let i_stream = encode_intra_picture(f, p, 0, q).expect("encode I");
+    decode_video_sequence(&i_stream).expect("decode I")[0]
+        .frame
+        .clone()
+}
+
+fn assert_planes_equal(a: &FrameBuffer, b: &FrameBuffer, w: usize, h: usize) {
+    for y in 0..h {
+        for x in 0..w {
+            assert_eq!(a.y.get(x, y), b.y.get(x, y), "luma ({x},{y})");
+        }
+        for x in 0..w / 2 {
+            assert_eq!(a.cb.get(x, y), b.cb.get(x, y), "cb ({x},{y})");
+            assert_eq!(a.cr.get(x, y), b.cr.get(x, y), "cr ({x},{y})");
+        }
+    }
+}
+
+#[test]
+fn p_422_mc_copy_is_a_fixed_point() {
+    // A P target equal to the decoded 4:2:2 anchor must reproduce it
+    // sample-for-sample: the (0,0) prediction is exact so every block
+    // (including chroma blocks 6/7) quantises to zero.
+    let f = frame_422(64, 48, 0);
+    let p = params_422(64, 48);
+    let anchor = decoded_anchor(&f, p, 6);
+    let stream = encode_i_then_p(&f, &anchor, p, 6, 2).expect("encode I+P");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 2);
+    assert_planes_equal(&frames[0].frame, &frames[1].frame, 64, 48);
+}
+
+#[test]
+fn p_422_translation_is_decoder_exact_against_encoder_recon() {
+    // A pure translation target: the decoded P frame must equal the
+    // reconstruction encode_p_picture returned (decoder-exactness of
+    // the eight-block residual path + §7.6.3.7 4:2:2 chroma scaling).
+    let f0 = frame_422(64, 48, 0);
+    let f1 = frame_422(64, 48, 4);
+    let p = params_422(64, 48);
+    let anchor = decoded_anchor(&f0, p, 6);
+    // Parallel encode into a scratch writer to recover the encoder's
+    // reconstruction (encode_i_then_p drives the same call).
+    let mut scratch = oxideav_core::bits::BitWriter::new();
+    let recon = encode_p_picture(&mut scratch, &f1, &anchor, p, 1, 6, 2).expect("encode P");
+    let stream = encode_i_then_p(&f0, &f1, p, 6, 2).expect("encode I+P");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 2);
+    assert_planes_equal(&frames[1].frame, &recon, 64, 48);
+    assert!(mae(&f1.y, &frames[1].frame.y, 64, 48) < 4.0, "luma MAE");
+    assert!(mae(&f1.cb, &frames[1].frame.cb, 32, 48) < 5.0, "cb MAE");
+}
+
+#[test]
+fn p_422_chroma_extension_only_blocks_are_transmitted() {
+    // Perturb ONLY the bottom-half chroma rows of each macroblock
+    // (Figure 6-11 blocks 6/7 territory) of a decoded anchor. Luma and
+    // the top chroma blocks predict exactly at (0,0), so any coded
+    // macroblock carries cbp420 == 0 with a non-zero
+    // coded_block_pattern_1 — the §6.2.5.3 4:2:2 extension path.
+    let f = frame_422(64, 48, 0);
+    let p = params_422(64, 48);
+    let anchor = decoded_anchor(&f, p, 6);
+    let mut target = anchor.clone();
+    for y in 0..48 {
+        if y % 16 < 8 {
+            continue; // top chroma block rows stay bit-identical
+        }
+        for x in 0..32 {
+            let v = target.cb.get(x, y).unwrap();
+            target.cb.put_sample(x, y, v.saturating_add(24));
+        }
+    }
+    let mut scratch = oxideav_core::bits::BitWriter::new();
+    let recon = encode_p_picture(&mut scratch, &target, &anchor, p, 1, 6, 2).expect("encode P");
+    let stream = encode_i_then_p(&f, &target, p, 6, 2).expect("encode I+P");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 2);
+    let out = &frames[1].frame;
+    // Decoder-exact against the encoder's reconstruction.
+    assert_planes_equal(out, &recon, 64, 48);
+    // The perturbation must actually survive the wire: the decoded
+    // bottom chroma rows moved toward the target, away from the anchor.
+    let mut moved = 0usize;
+    for y in (8..48).filter(|y| y % 16 >= 8) {
+        for x in 0..32 {
+            let dec = i32::from(out.cb.get(x, y).unwrap());
+            let anc = i32::from(anchor.cb.get(x, y).unwrap());
+            if (dec - anc) > 8 {
+                moved += 1;
+            }
+        }
+    }
+    assert!(
+        moved > 300,
+        "bottom-chroma-block residuals must be transmitted (moved {moved})"
+    );
+    // Top chroma rows stayed put (their blocks were uncoded).
+    for y in (0..48).filter(|y| y % 16 < 8) {
+        for x in 0..32 {
+            assert_eq!(out.cb.get(x, y), anchor.cb.get(x, y), "top cb ({x},{y})");
+        }
+    }
+}
+
+#[test]
+fn ipb_422_group_decodes_in_display_order() {
+    let f0 = frame_422(48, 32, 0);
+    let f1 = frame_422(48, 32, 2);
+    let f2 = frame_422(48, 32, 4);
+    let p = params_422(48, 32);
+    let stream = encode_i_p_b(&f0, &f1, &f2, p, 6, 2, 2).expect("encode IPB");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 3);
+    for (i, want) in [&f0, &f1, &f2].into_iter().enumerate() {
+        let out = &frames[i].frame;
+        assert_eq!(out.chroma_format, ChromaFormat::Yuv422);
+        assert!(mae(&want.y, &out.y, 48, 32) < 5.0, "frame {i} luma MAE");
+        assert!(mae(&want.cb, &out.cb, 24, 32) < 6.0, "frame {i} cb MAE");
+    }
+}
+
+#[test]
+fn gop_422_display_order_sequence_roundtrips() {
+    // Two GOPs of I B P B P structure at 4:2:2 through the full
+    // display-order assembler (GOP headers, temporal_reference reset).
+    let frames_in: Vec<FrameBuffer> = (0..7).map(|k| frame_422(64, 48, k)).collect();
+    let p = params_422(64, 48);
+    let stream =
+        encode_display_order_gop_sequence(&frames_in, 1, 2, p, 6, 3, 3).expect("encode GOPs");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 7);
+    for (i, want) in frames_in.iter().enumerate() {
+        let out = &frames[i].frame;
+        assert_eq!(out.chroma_format, ChromaFormat::Yuv422);
+        assert!(mae(&want.y, &out.y, 64, 48) < 5.0, "frame {i} luma MAE");
+        assert!(mae(&want.cb, &out.cb, 32, 48) < 6.0, "frame {i} cb MAE");
+        assert!(mae(&want.cr, &out.cr, 32, 48) < 6.0, "frame {i} cr MAE");
     }
 }
 

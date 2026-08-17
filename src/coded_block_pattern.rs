@@ -474,6 +474,84 @@ pub fn encode_cbp420(bw: &mut oxideav_core::bits::BitWriter, cbp: u8) {
     bw.write_u32(u32::from(row.code), u32::from(row.bits));
 }
 
+/// Emit a whole §6.2.5.3 `coded_block_pattern()` for a **non-intra**
+/// macroblock with `macroblock_pattern == 1`: the Table B-9
+/// `coded_block_pattern_420` VLC for blocks `0..=5`, then the 4:2:2
+/// two-bit `coded_block_pattern_1` (blocks 6..=7, mask bit `7 - i`) or
+/// the 4:4:4 six-bit `coded_block_pattern_2` per §6.3.17.4.
+///
+/// `coded[i]` says whether block `i` (Figures 6-10/6-11/6-12 numbering)
+/// carries coded coefficients; its length must equal the chroma
+/// format's block count (6 / 8 / 12).
+///
+/// Errors:
+/// * an all-clear `coded` — a macroblock with no coded block is
+///   signalled through `macroblock_pattern == 0`, never through an
+///   empty pattern (and the `cbp == 0` codeword carries the Table B-9
+///   NOTE "shall not be used with 4:2:0 chrominance structure");
+/// * a 4:4:4 pattern with block 6 or 7 set: the printed §6.3.17.4
+///   derivation drives only `pattern_code[8..12]` from
+///   `coded_block_pattern_2` (mask bits `11 - i`, i.e. bits 3..0),
+///   leaving non-intra blocks 6 and 7 with no wire representation, so
+///   the encoder refuses to emit a pattern it cannot signal (callers
+///   drop those residuals or code the macroblock intra).
+pub fn encode_coded_block_pattern(
+    bw: &mut oxideav_core::bits::BitWriter,
+    coded: &[bool],
+    chroma_format: ChromaFormat,
+) -> crate::Result<()> {
+    let nblocks = crate::mpeg2_macroblock_blocks::block_count(chroma_format);
+    debug_assert_eq!(coded.len(), nblocks, "coded[] must cover every block");
+    if coded.iter().all(|&b| !b) {
+        return Err(Error::InvalidBitstream(
+            "coded_block_pattern: empty pattern — signal macroblock_pattern = 0 instead (§6.3.17.4)",
+        ));
+    }
+    let mut cbp = 0u8;
+    for (i, &c) in coded.iter().enumerate().take(6) {
+        if c {
+            cbp |= 1 << (5 - i);
+        }
+    }
+    match chroma_format {
+        ChromaFormat::Yuv420 => {
+            if cbp == 0 {
+                return Err(Error::InvalidBitstream(
+                    "coded_block_pattern: cbp 0 shall not be used with 4:2:0 (Table B-9 NOTE)",
+                ));
+            }
+            encode_cbp420(bw, cbp);
+        }
+        ChromaFormat::Yuv422 => {
+            // §6.3.17.4: pattern_code[i] for i in 6..8 reads
+            // coded_block_pattern_1 bit (7 - i) — block 6 → bit 1,
+            // block 7 → bit 0.
+            let cbp1 = (u32::from(coded[6]) << 1) | u32::from(coded[7]);
+            encode_cbp420(bw, cbp);
+            bw.write_u32(cbp1, 2);
+        }
+        ChromaFormat::Yuv444 => {
+            if coded[6] || coded[7] {
+                return Err(Error::InvalidBitstream(
+                    "coded_block_pattern: 4:4:4 blocks 6/7 have no non-intra wire representation (§6.3.17.4)",
+                ));
+            }
+            // §6.3.17.4: pattern_code[i] for i in 8..12 reads
+            // coded_block_pattern_2 bit (11 - i) — bits 3..0; bits 5
+            // and 4 of the six-bit field select nothing and stay 0.
+            let mut cbp2 = 0u32;
+            for (i, &c) in coded.iter().enumerate().take(12).skip(8) {
+                if c {
+                    cbp2 |= 1 << (11 - i);
+                }
+            }
+            encode_cbp420(bw, cbp);
+            bw.write_u32(cbp2, 6);
+        }
+    }
+    Ok(())
+}
+
 impl CodedBlockPattern {
     /// Parse one `coded_block_pattern()` starting at the current
     /// position of `br`. `chroma_format` (from
@@ -840,6 +918,107 @@ mod tests {
         let s = format!("{cbp:?}");
         assert!(s.contains("CodedBlockPattern"));
         assert!(s.contains("cbp"));
+    }
+
+    #[test]
+    fn encode_coded_block_pattern_422_roundtrips_all_patterns() {
+        // Every non-empty 8-bit pattern must parse back to the same
+        // pattern_code[0..8] through the §6.3.17.4 derivation.
+        for bits in 1u32..256 {
+            let coded: Vec<bool> = (0..8).map(|i| bits & (1 << (7 - i)) != 0).collect();
+            let mut bw = BitWriter::new();
+            super::encode_coded_block_pattern(&mut bw, &coded, ChromaFormat::Yuv422)
+                .expect("non-empty 4:2:2 pattern encodes");
+            bw.write_bit(true);
+            bw.align_to_byte();
+            let bytes = bw.finish();
+            let mut br = BitReader::new(&bytes);
+            let parsed =
+                CodedBlockPattern::parse(&mut br, ChromaFormat::Yuv422).expect("parse back");
+            let pc = parsed.pattern_code(false, true);
+            for i in 0..8 {
+                assert_eq!(pc[i], coded[i], "block {i} of pattern {bits:#010b}");
+            }
+            assert_eq!(pc[8..12], [false; 4]);
+        }
+    }
+
+    #[test]
+    fn encode_coded_block_pattern_422_chroma_extension_only() {
+        // Only blocks 6/7 coded: cbp 0 ('0000 0000 1') + cbp_1 '11' —
+        // legal for 4:2:2 (the Table B-9 NOTE bars cbp 0 for 4:2:0 only).
+        let coded = [false, false, false, false, false, false, true, true];
+        let mut bw = BitWriter::new();
+        super::encode_coded_block_pattern(&mut bw, &coded, ChromaFormat::Yuv422).expect("encode");
+        bw.write_bit(true);
+        bw.align_to_byte();
+        let bytes = bw.finish();
+        let mut br = BitReader::new(&bytes);
+        let parsed = CodedBlockPattern::parse(&mut br, ChromaFormat::Yuv422).expect("parse");
+        assert_eq!(parsed.cbp, 0);
+        assert_eq!(parsed.coded_block_pattern_1, Some(0b11));
+        let pc = parsed.pattern_code(false, true);
+        assert_eq!(pc[0..6], [false; 6]);
+        assert!(pc[6] && pc[7]);
+    }
+
+    #[test]
+    fn encode_coded_block_pattern_444_roundtrips_supported_patterns() {
+        // 4:4:4 patterns over blocks 0..6 and 8..12 (blocks 6/7 have no
+        // §6.3.17.4 non-intra wire representation).
+        for bits in 1u32..1024 {
+            let mut coded = [false; 12];
+            for (i, slot) in coded.iter_mut().enumerate().take(6) {
+                *slot = bits & (1 << (9 - i)) != 0;
+            }
+            for (i, slot) in coded.iter_mut().enumerate().take(12).skip(8) {
+                *slot = bits & (1 << (11 - i)) != 0;
+            }
+            if coded.iter().all(|&b| !b) {
+                continue;
+            }
+            let mut bw = BitWriter::new();
+            super::encode_coded_block_pattern(&mut bw, &coded, ChromaFormat::Yuv444)
+                .expect("supported 4:4:4 pattern encodes");
+            bw.write_bit(true);
+            bw.align_to_byte();
+            let bytes = bw.finish();
+            let mut br = BitReader::new(&bytes);
+            let parsed =
+                CodedBlockPattern::parse(&mut br, ChromaFormat::Yuv444).expect("parse back");
+            let pc = parsed.pattern_code(false, true);
+            for i in 0..12 {
+                assert_eq!(pc[i], coded[i], "block {i} of pattern {bits:#012b}");
+            }
+        }
+    }
+
+    #[test]
+    fn encode_coded_block_pattern_rejects_empty_and_444_blocks_6_7() {
+        let mut bw = BitWriter::new();
+        assert!(
+            super::encode_coded_block_pattern(&mut bw, &[false; 6], ChromaFormat::Yuv420).is_err(),
+            "empty pattern must be rejected"
+        );
+        assert!(
+            super::encode_coded_block_pattern(&mut bw, &[false; 8], ChromaFormat::Yuv422).is_err(),
+            "empty 4:2:2 pattern must be rejected"
+        );
+        let mut only_chroma420_empty = [false; 6];
+        only_chroma420_empty[0] = true;
+        assert!(super::encode_coded_block_pattern(
+            &mut bw,
+            &only_chroma420_empty,
+            ChromaFormat::Yuv420
+        )
+        .is_ok());
+        let mut block6 = [false; 12];
+        block6[6] = true;
+        block6[0] = true;
+        assert!(
+            super::encode_coded_block_pattern(&mut bw, &block6, ChromaFormat::Yuv444).is_err(),
+            "4:4:4 block 6 has no non-intra representation"
+        );
     }
 
     #[test]

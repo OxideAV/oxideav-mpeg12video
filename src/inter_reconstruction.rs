@@ -319,7 +319,7 @@ fn predict_component(
 /// The per-component sub-sampling of one macroblock: the chroma extent
 /// (in chroma samples) and the chroma motion-vector scaling for a
 /// [`ChromaFormat`].
-fn chroma_mb_extent(chroma_format: ChromaFormat) -> (usize, usize) {
+pub(crate) fn chroma_mb_extent(chroma_format: ChromaFormat) -> (usize, usize) {
     match chroma_format {
         // 4:2:0 — chroma is half width, half height: 8×8 per MB.
         ChromaFormat::Yuv420 => (8, 8),

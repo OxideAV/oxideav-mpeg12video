@@ -48,12 +48,14 @@
 
 use oxideav_core::bits::BitWriter;
 
-use crate::coded_block_pattern::encode_cbp420;
+use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::forward_dct::fdct_8x8;
 use crate::forward_quant::forward_quantise_block;
 use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
 use crate::idct::idct_8x8_from_i32;
-use crate::inter_reconstruction::{predict_frame_macroblock_planes, FrameMotion, ReferenceFrames};
+use crate::inter_reconstruction::{
+    chroma_mb_extent, predict_frame_macroblock_planes, FrameMotion, ReferenceFrames,
+};
 use crate::motion_estimation::{estimate_forward_mv, max_search_range};
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::{encode_intra_dc, ColourComponent, DcComponent};
@@ -73,10 +75,6 @@ use crate::stream_writer::{
     PictureCodingExtensionParams,
 };
 use crate::Result;
-
-/// A macroblock's chroma extent in samples for the §6.1 4:2:0 layout
-/// (8×8 per chroma block; one Cb + one Cr block).
-const CHROMA_MB: usize = 8;
 
 /// Wrap a motion-vector `delta` (`vector' - PMV`) into the §7.6.3.1
 /// `[low, high]` codable band of `f_code`, so the §6.2.5.2.1 encoder has
@@ -233,14 +231,15 @@ pub(crate) fn reconstruct_inter_mb(
 ) {
     let chroma_format = recon.chroma_format;
     let nblocks = block_count(chroma_format);
+    let (cmb_w, cmb_h) = chroma_mb_extent(chroma_format);
     for i in 0..nblocks {
         let placement =
             block_placement(i, chroma_format, mb_col, mb_row, false).expect("valid block index");
         let component = block_component(i, chroma_format).expect("valid component");
         let (pred, pred_w, mb_origin_x, mb_origin_y) = match component {
             ColourComponent::Y => (luma_pred, 16usize, mb_col * 16, mb_row * 16),
-            ColourComponent::Cb => (cb_pred, CHROMA_MB, mb_col * CHROMA_MB, mb_row * CHROMA_MB),
-            ColourComponent::Cr => (cr_pred, CHROMA_MB, mb_col * CHROMA_MB, mb_row * CHROMA_MB),
+            ColourComponent::Cb => (cb_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h),
+            ColourComponent::Cr => (cr_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h),
         };
         let local_x0 = placement.base_x - mb_origin_x;
         let local_y0 = placement.base_y - mb_origin_y;
@@ -556,8 +555,9 @@ pub fn encode_p_picture(
             .expect("forward prediction with present reference");
 
             // 3. Residual + forward quantise per block.
+            let (cmb_w, cmb_h) = chroma_mb_extent(params.chroma_format);
             let mut blocks: Vec<InterBlock> = Vec::with_capacity(nblocks);
-            let mut cbp = 0u8;
+            let mut coded_flags = [false; 12];
             for i in 0..nblocks {
                 let placement = block_placement(i, params.chroma_format, mb_col, mb_row, false)
                     .expect("valid block index");
@@ -566,20 +566,12 @@ pub fn encode_p_picture(
                     ColourComponent::Y => {
                         (&current.y, &luma_pred, 16usize, mb_col * 16, mb_row * 16)
                     }
-                    ColourComponent::Cb => (
-                        &current.cb,
-                        &cb_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
-                    ColourComponent::Cr => (
-                        &current.cr,
-                        &cr_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
+                    ColourComponent::Cb => {
+                        (&current.cb, &cb_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
+                    }
+                    ColourComponent::Cr => {
+                        (&current.cr, &cr_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
+                    }
                 };
                 let local_x = placement.base_x - mb_origin_x;
                 let local_y = placement.base_y - mb_origin_y;
@@ -593,16 +585,15 @@ pub fn encode_p_picture(
                     local_y,
                 );
                 let block = quantise_inter_block(&residual, qscale);
-                if block.qf.is_some() {
-                    cbp |= 1 << (5 - i);
-                }
+                coded_flags[i] = block.qf.is_some();
                 blocks.push(block);
             }
+            let any_coded = coded_flags[..nblocks].iter().any(|&b| b);
 
             // 4. Macroblock-type + MV + cbp + coefficients.
             // macroblock_address_increment = 1 (Table B-1 `1`).
             bw.write_bit(true);
-            if cbp != 0 {
+            if any_coded {
                 // macroblock_type = "MC, Coded" (Table B-3 `1`):
                 // motion_forward + macroblock_pattern.
                 bw.write_bit(true);
@@ -621,8 +612,8 @@ pub fn encode_p_picture(
             pmv_x = mv.horizontal;
             pmv_y = mv.vertical;
 
-            if cbp != 0 {
-                encode_cbp420(bw, cbp);
+            if any_coded {
+                encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf.as_ref() {
                         write_inter_block_coeffs(bw, qf);

@@ -277,6 +277,14 @@ fn check_field_params(params: &IntraPictureParams) -> Result<()> {
             "field picture encoder: frame_pred_frame_dct applies to frame pictures only (§6.3.10)",
         ));
     }
+    if params.alternate_scan || params.intra_vlc_format {
+        // The field block writers code Table B-14 / zigzag scan; the
+        // flags would otherwise be declared in the picture coding
+        // extension but not honoured on the wire.
+        return Err(Error::InvalidBitstream(
+            "field picture encoder: alternate_scan / intra_vlc_format are not supported",
+        ));
+    }
     Ok(())
 }
 

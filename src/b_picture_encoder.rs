@@ -37,9 +37,11 @@
 
 use oxideav_core::bits::BitWriter;
 
-use crate::coded_block_pattern::encode_cbp420;
+use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
-use crate::inter_reconstruction::{predict_frame_macroblock_planes, FrameMotion, ReferenceFrames};
+use crate::inter_reconstruction::{
+    chroma_mb_extent, predict_frame_macroblock_planes, FrameMotion, ReferenceFrames,
+};
 use crate::motion_estimation::{estimate_forward_mv, max_search_range};
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::ColourComponent;
@@ -52,9 +54,6 @@ use crate::stream_writer::{
     PictureCodingExtensionParams,
 };
 use crate::Result;
-
-/// Chroma macroblock extent for 4:2:0 (8×8 per chroma block).
-const CHROMA_MB: usize = 8;
 
 /// The chosen prediction direction for one B macroblock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,8 +208,9 @@ pub fn encode_b_picture(
             let (luma_pred, cb_pred, cr_pred) = (&chosen.0, &chosen.1, &chosen.2);
 
             // 3. Residual + forward quantise per block.
+            let (cmb_w, cmb_h) = chroma_mb_extent(params.chroma_format);
             let mut blocks = Vec::with_capacity(nblocks);
-            let mut cbp = 0u8;
+            let mut coded_flags = [false; 12];
             for i in 0..nblocks {
                 let placement = block_placement(i, params.chroma_format, mb_col, mb_row, false)
                     .expect("valid block index");
@@ -219,20 +219,12 @@ pub fn encode_b_picture(
                     ColourComponent::Y => {
                         (&current.y, luma_pred, 16usize, mb_col * 16, mb_row * 16)
                     }
-                    ColourComponent::Cb => (
-                        &current.cb,
-                        cb_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
-                    ColourComponent::Cr => (
-                        &current.cr,
-                        cr_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
+                    ColourComponent::Cb => {
+                        (&current.cb, cb_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
+                    }
+                    ColourComponent::Cr => {
+                        (&current.cr, cr_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
+                    }
                 };
                 let local_x = placement.base_x - mb_origin_x;
                 let local_y = placement.base_y - mb_origin_y;
@@ -249,16 +241,14 @@ pub fn encode_b_picture(
                     }
                 }
                 let block = quantise_inter_block(&residual, qscale);
-                if block.is_coded() {
-                    cbp |= 1 << (5 - i);
-                }
+                coded_flags[i] = block.is_coded();
                 blocks.push(block);
             }
 
             // 4. Macroblock layer.
             // macroblock_address_increment = 1 (Table B-1 `1`).
             bw.write_bit(true);
-            let coded = cbp != 0;
+            let coded = coded_flags[..nblocks].iter().any(|&b| b);
             write_b_macroblock_type(bw, dir, coded);
 
             // Forward MV(s) precede backward MV(s) (bitstream order).
@@ -278,7 +268,7 @@ pub fn encode_b_picture(
             }
 
             if coded {
-                encode_cbp420(bw, cbp);
+                encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
                         write_inter_block_coeffs(bw, qf);
