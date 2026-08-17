@@ -149,6 +149,8 @@ fn encode_intra_block(
     quantiser_scale_value: u8,
     intra_dc_mult_value: i32,
     pred: &mut DcPredictorState,
+    table: TableSelection,
+    alternate_scan: bool,
 ) {
     // 1. Gather the raw 8-bit samples. Unlike many codecs, the MPEG-2
     // intra path does NOT level-shift before the DCT: the §7.4.1
@@ -178,11 +180,12 @@ fn encode_intra_block(
     encode_intra_dc(bw, dc_table_component(c), dct_diff);
     pred.set(c, qfs_zero);
 
-    // 4b. AC coefficients (§7.2.2) in zig-zag order. Intra blocks use
-    // CoefficientPosition::Next throughout (the DC field stood in for
-    // the first coefficient); intra_vlc_format = 0 → Table B-14.
-    let scan = inverse_scan_table(false); // alternate_scan = 0
-    let table = TableSelection::TableZero;
+    // 4b. AC coefficients (§7.2.2) in the §7.3 scan the picture
+    // declares. Intra blocks use CoefficientPosition::Next throughout
+    // (the DC field stood in for the first coefficient); `table` is
+    // the §7.2.2.1 Table 7-3 selection (Table B-15 when the picture
+    // declares intra_vlc_format = 1).
+    let scan = inverse_scan_table(alternate_scan);
     // Collect non-zero AC levels in scan order, tracking the run of
     // zeros preceding each.
     let mut run = 0u8;
@@ -205,11 +208,14 @@ fn encode_intra_block(
 /// trailing `sequence_end_code`).
 ///
 /// `params` carries the geometry + the picture-coding-extension flags
-/// the decoder needs to read the stream back. The encoder writes the
-/// **baseline** intra configuration: frame picture,
-/// `frame_pred_frame_dct = 1`, default quantiser matrices,
-/// `intra_vlc_format = 0`, `alternate_scan = 0`. `quantiser_scale_code`
-/// (`1..=31`) is the per-slice quantiser scale.
+/// the decoder needs to read the stream back, and every flag is
+/// honoured on the wire: `q_scale_type` (Table 7-6 non-linear scale),
+/// `intra_dc_precision` (Table 6-13, 8..=11-bit DC),
+/// `intra_vlc_format` (Table 7-3 → Table B-15 intra AC), and
+/// `alternate_scan` (§7.3 Figure 7-2 scan). The encoder writes a frame
+/// picture with `frame_pred_frame_dct = 1` and default quantiser
+/// matrices. `quantiser_scale_code` (`1..=31`) is the per-slice
+/// quantiser scale.
 ///
 /// # Errors
 /// * [`Error::InvalidBitstream`] if `quantiser_scale_code` is out of
@@ -312,6 +318,8 @@ pub fn encode_intra_picture(
                     q_value,
                     dc_mult,
                     &mut pred,
+                    TableSelection::from_context(params.intra_vlc_format, true),
+                    params.alternate_scan,
                 );
             }
         }

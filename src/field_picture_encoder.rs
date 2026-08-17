@@ -383,6 +383,8 @@ pub fn encode_field_intra_picture(
                 &mut pred,
                 nblocks,
                 params.chroma_format,
+                crate::mpeg2_dct_coeff::TableSelection::TableZero,
+                false,
             );
         }
         bw.align_to_byte_zero();
@@ -486,6 +488,8 @@ pub fn encode_field_p_picture(
                     &mut intra_pred,
                     nblocks,
                     params.chroma_format,
+                    crate::mpeg2_dct_coeff::TableSelection::TableZero,
+                    false,
                 );
                 // §7.6.3.4: an intra macroblock resets the predictors.
                 pmv = (0, 0);
@@ -568,7 +572,7 @@ pub fn encode_field_p_picture(
                 encode_cbp420(bw, cbp);
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, false);
                     }
                 }
             }
@@ -793,7 +797,7 @@ pub fn encode_field_b_picture(
                 encode_cbp420(bw, cbp);
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, false);
                     }
                 }
             }
@@ -1566,6 +1570,8 @@ pub fn encode_field_p_picture_adaptive(
                     &mut intra_pred,
                     nblocks,
                     params.chroma_format,
+                    crate::mpeg2_dct_coeff::TableSelection::TableZero,
+                    false,
                 );
                 pmv.reset();
                 past_intra_address = mb_address;
@@ -1685,7 +1691,7 @@ pub fn encode_field_p_picture_adaptive(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, false);
                     }
                 }
             }
@@ -1971,7 +1977,7 @@ pub fn encode_field_b_picture_adaptive(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, false);
                     }
                 }
             }

@@ -302,6 +302,157 @@ fn gop_422_display_order_sequence_roundtrips() {
     }
 }
 
+/// The r447 feature-flag set: Table B-15 intra AC (`intra_vlc_format`),
+/// Table 7-6 non-linear quantiser scale (`q_scale_type`), 10-bit intra
+/// DC (`intra_dc_precision = 2`), and the §7.3 alternate scan.
+fn params_422_full_flags(width: usize, height: usize) -> IntraPictureParams {
+    IntraPictureParams {
+        intra_dc_precision: 2,
+        intra_vlc_format: true,
+        alternate_scan: true,
+        q_scale_type: true,
+        ..params_422(width, height)
+    }
+}
+
+#[test]
+fn intra_422_full_feature_flags_flat_is_exact() {
+    // Flat content quantises to DC-only regardless of the entropy
+    // table / scan, so a wrong Table B-15 or alternate-scan emission
+    // shows up as a decode failure or wrong samples immediately.
+    let mut f = FrameBuffer::new(32, 32, ChromaFormat::Yuv422);
+    for y in 0..32 {
+        for x in 0..32 {
+            f.y.put_sample(x, y, 137);
+        }
+        for x in 0..16 {
+            f.cb.put_sample(x, y, 77);
+            f.cr.put_sample(x, y, 201);
+        }
+    }
+    let stream = encode_intra_picture(&f, params_422_full_flags(32, 32), 0, 1).expect("encode");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 1);
+    let out = &frames[0].frame;
+    for y in 0..32 {
+        for x in 0..32 {
+            assert_eq!(out.y.get(x, y), Some(137), "luma ({x},{y})");
+        }
+        for x in 0..16 {
+            assert_eq!(out.cb.get(x, y), Some(77), "cb ({x},{y})");
+            assert_eq!(out.cr.get(x, y), Some(201), "cr ({x},{y})");
+        }
+    }
+}
+
+#[test]
+fn intra_422_full_feature_flags_structured_roundtrips() {
+    // Structured content walks real Table B-15 codewords in
+    // alternate-scan order with the non-linear quantiser at a low
+    // code (fine quantisation): the round trip must be faithful and
+    // idempotent.
+    let f = frame_422(64, 48, 1);
+    let p = params_422_full_flags(64, 48);
+    let stream = encode_intra_picture(&f, p, 0, 8).expect("encode");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 1);
+    let out = &frames[0].frame;
+    assert!(mae(&f.y, &out.y, 64, 48) < 4.0, "luma MAE");
+    assert!(mae(&f.cb, &out.cb, 32, 48) < 4.0, "cb MAE");
+    assert!(mae(&f.cr, &out.cr, 32, 48) < 4.0, "cr MAE");
+    // Second-generation convergence. Strict idempotence cannot be
+    // demanded at intra_dc_precision = 2: the DC step is
+    // intra_dc_mult = 4, while FDCT-ing the u8-rounded reconstruction
+    // perturbs the DC by up to 64 · 0.5 / 8 = 4 — more than half a
+    // step — so a boundary DC can legitimately move one level. The
+    // second generation must still stay within ±1 of the first
+    // everywhere (no drift, no shear).
+    let stream2 = encode_intra_picture(out, p, 0, 8).expect("encode 2");
+    let dec2 = decode_video_sequence(&stream2).expect("decode 2");
+    let g2 = &dec2[0].frame;
+    for y in 0..48 {
+        for x in 0..64 {
+            let d =
+                (i32::from(out.y.get(x, y).unwrap()) - i32::from(g2.y.get(x, y).unwrap())).abs();
+            assert!(d <= 1, "gen-2 luma drift {d} at ({x},{y})");
+        }
+        for x in 0..32 {
+            let dcb =
+                (i32::from(out.cb.get(x, y).unwrap()) - i32::from(g2.cb.get(x, y).unwrap())).abs();
+            let dcr =
+                (i32::from(out.cr.get(x, y).unwrap()) - i32::from(g2.cr.get(x, y).unwrap())).abs();
+            assert!(dcb <= 1 && dcr <= 1, "gen-2 chroma drift at ({x},{y})");
+        }
+    }
+}
+
+#[test]
+fn intra_422_ten_bit_dc_beats_eight_bit_dc_on_smooth_ramps() {
+    // A shallow diagonal ramp is dominated by per-block DC steps; the
+    // finer intra_dc_mult of intra_dc_precision = 2 must never lose to
+    // precision 0 at the same quantiser (Table 6-13 / §7.4.1).
+    let mut f = FrameBuffer::new(64, 48, ChromaFormat::Yuv422);
+    for y in 0..48 {
+        for x in 0..64 {
+            f.y.put_sample(x, y, (60 + (x + y) / 8) as u8);
+        }
+        for x in 0..32 {
+            f.cb.put_sample(x, y, (110 + (x + y) / 12) as u8);
+            f.cr.put_sample(x, y, (140 - (x + y) / 12) as u8);
+        }
+    }
+    let p8 = params_422(64, 48);
+    let p10 = IntraPictureParams {
+        intra_dc_precision: 2,
+        ..p8
+    };
+    let mae8 = {
+        let s = encode_intra_picture(&f, p8, 0, 2).expect("encode p8");
+        let d = decode_video_sequence(&s).expect("decode p8");
+        mae(&f.y, &d[0].frame.y, 64, 48)
+    };
+    let mae10 = {
+        let s = encode_intra_picture(&f, p10, 0, 2).expect("encode p10");
+        let d = decode_video_sequence(&s).expect("decode p10");
+        mae(&f.y, &d[0].frame.y, 64, 48)
+    };
+    assert!(
+        mae10 <= mae8 + 1e-9,
+        "10-bit DC (MAE {mae10}) must not lose to 8-bit DC (MAE {mae8})"
+    );
+}
+
+#[test]
+fn gop_422_full_feature_flags_roundtrips_with_intra_fallback() {
+    // A moving sequence whose later frames carry a high-contrast
+    // stamp the prediction cannot capture: the P intra fallback fires
+    // with Table B-15 + alternate scan + non-linear quant + 10-bit DC
+    // active, exercising every flag inside inter pictures too.
+    let frames_in: Vec<FrameBuffer> = (0..5)
+        .map(|k| {
+            let mut f = frame_422(64, 48, k);
+            if k >= 2 {
+                for y in 8..20 {
+                    for x in 8..20 {
+                        f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+                    }
+                }
+            }
+            f
+        })
+        .collect();
+    let p = params_422_full_flags(64, 48);
+    let stream =
+        encode_display_order_gop_sequence(&frames_in, 1, 2, p, 8, 3, 3).expect("encode GOPs");
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 5);
+    for (i, want) in frames_in.iter().enumerate() {
+        let out = &frames[i].frame;
+        assert!(mae(&want.y, &out.y, 64, 48) < 6.0, "frame {i} luma MAE");
+        assert!(mae(&want.cb, &out.cb, 32, 48) < 6.0, "frame {i} cb MAE");
+    }
+}
+
 #[test]
 fn intra_422_non_multiple_of_16_dimensions_roundtrip() {
     // 100×62: right/bottom edge macroblocks overhang the visible

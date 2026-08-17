@@ -193,9 +193,15 @@ pub(crate) fn quantise_inter_block(residual: &[[i16; 8]; 8], qscale: u8) -> Inte
 }
 
 /// Emit one non-intra block's §7.2.2 run-level VLCs from its raster
-/// `QF[v][u]` levels (already known non-zero).
-pub(crate) fn write_inter_block_coeffs(bw: &mut BitWriter, qf: &[[i32; 8]; 8]) {
-    let scan = inverse_scan_table(false);
+/// `QF[v][u]` levels (already known non-zero), walking the §7.3 scan
+/// selected by the picture's `alternate_scan` flag. Non-intra blocks
+/// always code against Table B-14 (§7.2.2.1 Table 7-3).
+pub(crate) fn write_inter_block_coeffs(
+    bw: &mut BitWriter,
+    qf: &[[i32; 8]; 8],
+    alternate_scan: bool,
+) {
+    let scan = inverse_scan_table(alternate_scan);
     let table = TableSelection::TableZero;
     let mut run = 0u8;
     let mut first = true;
@@ -338,6 +344,11 @@ pub(crate) fn intra_activity(current: &FrameBuffer, mb_col: usize, mb_row: usize
 /// block and reconstructs the samples into `recon`. The macroblock type
 /// (`00011`) and `macroblock_address_increment` are written by the
 /// caller; this writes only the block run.
+///
+/// `table` is the §7.2.2.1 Table 7-3 selection for an intra block
+/// (Table B-15 when the picture declares `intra_vlc_format = 1`);
+/// `alternate_scan` selects the §7.3 scan.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_intra_mb(
     bw: &mut BitWriter,
     current: &FrameBuffer,
@@ -349,9 +360,10 @@ pub(crate) fn encode_intra_mb(
     pred: &mut IntraDcPred,
     nblocks: usize,
     chroma_format: crate::sequence_extension::ChromaFormat,
+    table: TableSelection,
+    alternate_scan: bool,
 ) {
-    let scan = inverse_scan_table(false);
-    let table = TableSelection::TableZero;
+    let scan = inverse_scan_table(alternate_scan);
     for i in 0..nblocks {
         let placement =
             block_placement(i, chroma_format, mb_col, mb_row, false).expect("valid block index");
@@ -535,6 +547,8 @@ pub fn encode_p_picture(
                     &mut intra_pred,
                     nblocks,
                     chroma_format,
+                    TableSelection::from_context(params.intra_vlc_format, true),
+                    params.alternate_scan,
                 );
                 // §7.6.3.4: an intra macroblock (no concealment vectors)
                 // resets the motion-vector predictors.
@@ -616,7 +630,7 @@ pub fn encode_p_picture(
                 encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf.as_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }

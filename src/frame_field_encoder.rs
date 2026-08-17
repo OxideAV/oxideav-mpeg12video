@@ -588,7 +588,7 @@ fn luma_coeff_bits(blocks: &[InterBlock]) -> u64 {
     let mut scratch = BitWriter::new();
     for b in blocks.iter().take(4) {
         if let Some(qf) = b.qf_ref() {
-            write_inter_block_coeffs(&mut scratch, qf);
+            write_inter_block_coeffs(&mut scratch, qf, false);
         }
     }
     scratch.bit_position()
@@ -1278,7 +1278,7 @@ pub fn encode_ff_p_picture(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, false);
                     }
                 }
             }
@@ -1614,7 +1614,7 @@ pub fn encode_ff_b_picture(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, false);
                     }
                 }
             }

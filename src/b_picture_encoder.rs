@@ -271,7 +271,7 @@ pub fn encode_b_picture(
                 encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
-                        write_inter_block_coeffs(bw, qf);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }
