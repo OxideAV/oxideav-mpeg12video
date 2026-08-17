@@ -97,13 +97,35 @@ fn chroma_format_code(chroma: ChromaFormat) -> u32 {
     }
 }
 
+/// The §6.3.5 / clause 8 `profile_and_level_indication` the encoder
+/// declares for a given chroma format (Table 8-1 bit layout: escape
+/// bit `0`, 3-bit profile identification, 4-bit level identification).
+///
+/// * 4:2:0 → `0x48`: Main profile (`100`, Table 8-2) @ Main level
+///   (`1000`, Table 8-3).
+/// * 4:2:2 → `0x18`: High profile (`001`) @ Main level. Table 8-5
+///   admits `chroma_format` 4:2:2 only under the High profile among
+///   the profiles defined in the 1995 text.
+/// * 4:4:4 → `0x18` as well, with a caveat: no profile defined in the
+///   1995 text (Tables 8-2 / 8-4 / 8-5) admits 4:4:4 chroma, so there
+///   is no conformant label for such a stream; High profile is
+///   declared as the enclosing syntax superset.
+pub fn profile_and_level_indication(chroma: ChromaFormat) -> u8 {
+    match chroma {
+        ChromaFormat::Yuv420 => 0x48,
+        ChromaFormat::Yuv422 | ChromaFormat::Yuv444 => 0x18,
+    }
+}
+
 /// Write a §6.2.2.3 `sequence_extension()` for a non-scalable,
 /// non-progressive sequence with all size / rate extension fields zero
 /// (the §6.2.2.1 base values carry the full geometry).
+/// `profile_and_level_indication` follows the chroma format (see
+/// [`profile_and_level_indication`]).
 pub fn write_sequence_extension(bw: &mut BitWriter, chroma: ChromaFormat, progressive: bool) {
     bw.write_u32(EXTENSION_START_CODE, 32);
     bw.write_u32(SEQUENCE_EXTENSION_ID, 4);
-    bw.write_u32(0x48, 8); // profile_and_level_indication (Main@Main)
+    bw.write_u32(u32::from(profile_and_level_indication(chroma)), 8);
     bw.write_bit(progressive); // progressive_sequence
     bw.write_u32(chroma_format_code(chroma), 2);
     bw.write_u32(0, 2); // horizontal_size_extension
@@ -337,6 +359,35 @@ mod tests {
         assert_eq!(chroma_format_code(ChromaFormat::Yuv420), 0b01);
         assert_eq!(chroma_format_code(ChromaFormat::Yuv422), 0b10);
         assert_eq!(chroma_format_code(ChromaFormat::Yuv444), 0b11);
+    }
+
+    #[test]
+    fn profile_and_level_follows_chroma_format() {
+        // Table 8-1 layout: escape 0 | profile | level.
+        // 4:2:0 → Main ('100') @ Main ('1000') = 0x48 (Tables 8-2/8-3).
+        assert_eq!(profile_and_level_indication(ChromaFormat::Yuv420), 0x48);
+        // 4:2:2 → High ('001') @ Main ('1000') = 0x18 — the one 1995
+        // profile whose Table 8-5 row admits chroma_format 4:2:2.
+        assert_eq!(profile_and_level_indication(ChromaFormat::Yuv422), 0x18);
+        assert_eq!(profile_and_level_indication(ChromaFormat::Yuv444), 0x18);
+    }
+
+    #[test]
+    fn sequence_extension_carries_high_profile_for_422() {
+        let mut bw = BitWriter::new();
+        write_sequence_header(
+            &mut bw,
+            &SequenceHeaderParams {
+                horizontal_size: 32,
+                vertical_size: 32,
+                ..Default::default()
+            },
+        );
+        write_sequence_extension(&mut bw, ChromaFormat::Yuv422, true);
+        let bytes = bw.finish();
+        let seq = Mpeg2Sequence::from_buf(&bytes).expect("parse sequence");
+        assert_eq!(seq.extension.chroma_format, ChromaFormat::Yuv422);
+        assert_eq!(seq.extension.profile_and_level, 0x18);
     }
 
     #[test]
