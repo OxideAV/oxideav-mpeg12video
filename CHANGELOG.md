@@ -8,6 +8,89 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 447: **4:2:2-profile encoder leg** — the frame-picture I/P/B
+  encoders, the display-order / GOP assemblers and the Annex C CBR
+  controller are chroma-format generic:
+  - `profile_and_level_indication` follows the chroma format
+    (4:2:0 → Main@Main `0x48` unchanged; 4:2:2 / 4:4:4 → High@Main
+    `0x18`, the one profile whose Table 8-5 row admits 4:2:2 chroma
+    in the 1995 text — 4:4:4 has no conformant label there and reuses
+    the High superset, documented) together with the §6.3.5
+    `chroma_format` code.
+  - Figure 6-11 **eight-block macroblocks** on the encode path (the
+    interleaved Cb/Cr §7.2.1 DC chain; per-format chroma macroblock
+    extents; the §7.6.3.7 chroma scaling was already shared with the
+    decode-side prediction former) and the §6.2.5.3
+    `coded_block_pattern()` extensions: `encode_coded_block_pattern`
+    emits the Table B-9 VLC plus the two-bit `coded_block_pattern_1`
+    (4:2:2, mask bit `7 - i`) / six-bit `coded_block_pattern_2`
+    (4:4:4) per §6.3.17.4, with cbp 0 emitted exactly where Table
+    B-9's NOTE permits (never at 4:2:0; legal at 4:2:2 when only
+    extension blocks are coded). Exhaustive encode→parse→derive
+    round-trips over all 255 4:2:2 patterns.
+  - `tests/encode_422.rs`: intra flat-exact / structured / 100×62
+    round-trips with per-row chroma-detail retention (guards any
+    4:2:0 collapse of the full-height chroma), P MC-copy fixed point,
+    decoder-exactness of a translated P against the encoder's
+    returned reconstruction, a chroma-extension-only macroblock proof
+    (cbp420 == 0 + cbp_1 != 0 observed on the wire), an I/P/B group,
+    two-GOP display-order sequences, and an Annex C **CBR** 4:2:2
+    stream held to `vbv::verify_cbr_stream`.
+- round 447: **`intra_vlc_format` + `alternate_scan` honoured on the
+  wire** — the frame-picture intra / P / B encoders previously
+  declared the two flags but always coded Table B-14 in zigzag order
+  (a latent stream-corruption footgun); the block writers now take
+  the §7.2.2.1 Table 7-3 selection (Table B-15 for intra blocks when
+  declared) and the §7.3 scan explicitly. The field-picture encoder
+  gained the same explicit flags-unsupported rejection the
+  frame-field encoder already had. `tests/encode_422.rs` pins the
+  full flag set — Table B-15 + alternate scan + non-linear
+  `q_scale_type` + 10-bit `intra_dc_precision` — on flat-exact,
+  structured, GOP-with-intra-fallback and gen-2-convergence
+  round-trips (strict idempotence is unattainable at
+  `intra_dc_precision = 2`: the u8-rounding DC perturbation of up to
+  64·0.5/8 = 4 exceeds half the `intra_dc_mult = 4` step), plus a
+  10-bit-vs-8-bit DC non-inferiority proof on smooth ramps.
+- round 447: **§6.3.11 downloadable quantiser-matrix emission** —
+  `write_sequence_header` gained the `load_*_quantiser_matrix`
+  payload slots (`SequenceHeaderParams` `Option`s, default `None`,
+  all previous output byte-identical), `write_quant_matrix_extension`
+  writes the §6.2.3.2 extension carrying the chroma tables (w = 2 /
+  w = 3 — no sequence-header slot exists for them; 4:2:2 / 4:4:4
+  only), `QuantMatrixExtension::validate_for_emission` /
+  `resolved_state` mirror the parse-side §6.3.11 rules for the
+  writer, and the frame-path block coders quantise + reconstruct
+  against exactly the Table 7-5 bank the decoder resolves. New
+  entry points `encode_intra_picture_with_matrices` /
+  `encode_p_picture_with_matrices` / `encode_b_picture_with_matrices`
+  / `encode_display_order_gop_sequence_with_matrices` (plain names
+  delegate with defaults). `tests/encode_quant_matrices.rs` pins the
+  explicit-default no-op, a coarse intra matrix moving both sides
+  identically, a chroma-only download leaving luminance
+  bit-identical, decoder-exactness of a 4:2:2 I P GOP under both
+  chroma tables, and the emission-validation rejections.
+- round 447: **4:4:4 encode leg** — intra pictures code all twelve
+  Figure 6-12 blocks; non-intra macroblocks emit the six-bit
+  `coded_block_pattern_2` per the **printed** §6.3.17.4 derivation,
+  which drives `pattern_code[8..12]` from bits 3..0 and leaves blocks
+  6 / 7 with no wire slot — the P/B encoders keep those residuals
+  untransmitted (`nonintra_block_has_cbp_slot`) with the
+  reconstruction in agreement, and always emit bits 5..4 as zero so
+  the streams decode identically under a corrected six-block
+  `i = 6..12` reading. `tests/encode_444.rs` pins intra fidelity in
+  every chroma quadrant, the P fixed point, decoder-exactness, the
+  transmitted right-column blocks, the dropped-but-exact bottom-left
+  quadrant, and a translating GOP with the documented chroma-drift
+  bound.
+- round 447: **three streams join the pinned self-encoded corpus
+  (now twenty)** — `selfenc-422-ibbp-64x48.m2v` (4:2:2 I B P B P;
+  black-box strict pass clean, reference decode max |Δ| = 2 at 2.6 %
+  samples), `selfenc-422-full-64x48.m2v` (the full flag set +
+  §6.3.11 luma-and-chroma matrix downloads; strict clean, max
+  |Δ| = 2 at 1.4 %), and `selfenc-444-ibp-64x48.m2v` (4:4:4 I B P;
+  strict clean, max |Δ| = 1 at 2.0 %). All seventeen pre-existing
+  streams regenerate byte-identical.
+
 - round 443: **frame-picture field-based encode**
   (`frame_field_encoder`) — the `frame_pred_frame_dct = 0`
   frame-picture encode path (§6.3.17.1), the encoder-side mirror of the

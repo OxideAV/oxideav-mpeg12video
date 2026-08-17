@@ -467,3 +467,39 @@ fn intra_422_non_multiple_of_16_dimensions_roundtrip() {
     assert!(mae(&f.y, &out.y, 100, 62) < 4.0, "luma MAE");
     assert!(mae(&f.cb, &out.cb, 50, 62) < 4.0, "cb MAE");
 }
+
+#[test]
+fn cbr_422_gop_sequence_is_vbv_conformant_and_decodes() {
+    // Annex C CBR regulation over the (now chroma-generic) frame
+    // encoders at 4:2:2: the emitted stream must satisfy its declared
+    // bit_rate / vbv_buffer_size under the whole-stream verifier and
+    // decode faithfully.
+    use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
+    use oxideav_mpeg12video::CbrConfig;
+
+    let frames_in: Vec<FrameBuffer> = (0..5).map(|k| frame_422(64, 48, 2 * k)).collect();
+    let cbr = CbrConfig {
+        bit_rate_value: 800, // 320 kbit/s (4:2:2 carries more chroma)
+        vbv_buffer_size_value: 4,
+        frame_rate_code: 3,
+        initial_quantiser_scale_code: 6,
+    };
+    let encoded = oxideav_mpeg12video::encode_cbr_gop_sequence(
+        &frames_in,
+        1,
+        2,
+        params_422(64, 48),
+        &cbr,
+        3,
+        3,
+    )
+    .expect("4:2:2 CBR encode");
+    verify_cbr_stream(&encoded.stream, VbvStandard::Mpeg2).expect("Annex C verification");
+    let frames = decode_video_sequence(&encoded.stream).expect("decode");
+    assert_eq!(frames.len(), 5);
+    for (i, want) in frames_in.iter().enumerate() {
+        let out = &frames[i].frame;
+        assert_eq!(out.chroma_format, ChromaFormat::Yuv422);
+        assert!(mae(&want.y, &out.y, 64, 48) < 10.0, "frame {i} luma MAE");
+    }
+}

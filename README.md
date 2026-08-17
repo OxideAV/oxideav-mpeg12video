@@ -430,8 +430,46 @@ encoder codes **field pictures** end-to-end:
   through the opposite-parity field at a fraction of intra cost),
   and whole-sequence decode through `decode_video_sequence`.
 
+The **4:2:2-profile encoder leg** (and a 4:4:4 leg) landed in round
+447 — the frame-picture I/P/B encoders, the display-order / GOP
+assemblers and the Annex C CBR controller are now **chroma-format
+generic**:
+
+- **Profile signalling**: `profile_and_level_indication` follows the
+  chroma format (4:2:0 → Main@Main `0x48`; 4:2:2 / 4:4:4 → High@Main
+  `0x18` — High is the one profile whose Table 8-5 row admits 4:2:2
+  chroma in the 1995 text; 4:4:4 has no conformant label there and
+  reuses the High superset, documented).
+- **Eight/twelve-block macroblocks** on the encode path (Figures
+  6-11 / 6-12 numbering, the interleaved Cb/Cr §7.2.1 DC chain, the
+  §7.6.3.7 chroma vector scaling already shared with the decoder) and
+  the §6.2.5.3 `coded_block_pattern()` extensions:
+  `encode_coded_block_pattern` emits the Table B-9 VLC plus the 4:2:2
+  two-bit `coded_block_pattern_1` / 4:4:4 six-bit
+  `coded_block_pattern_2` per §6.3.17.4 (cbp 0 emitted exactly where
+  Table B-9's NOTE permits — never at 4:2:0, legal at 4:2:2 when only
+  extension blocks are coded). At 4:4:4 the **printed** §6.3.17.4
+  derivation gives non-intra blocks 6/7 no wire slot
+  (`coded_block_pattern_2` bits `11 - i` reach `pattern_code[8..12]`
+  only), so the P/B encoders leave those residuals untransmitted with
+  the reconstruction in agreement — emitted bits 5..4 stay zero, so
+  the streams decode identically under a corrected six-block reading.
+- **`intra_vlc_format` and `alternate_scan` are now honoured on the
+  wire** (Table 7-3 → Table B-15 intra AC; §7.3 scan selection) beside
+  the already-threaded non-linear `q_scale_type` and 8..=11-bit
+  `intra_dc_precision`; the field / frame-field encoders explicitly
+  reject the two flags they don't code.
+- **§6.3.11 quantiser-matrix emission**: sequence-header
+  `load_intra/non_intra_quantiser_matrix` payloads plus a
+  `quant_matrix_extension()` writer for the chroma tables (w = 2 /
+  w = 3, 4:2:2 / 4:4:4 only), with writer-side validation and the
+  forward quantisers using exactly the Table 7-5 bank the decoder
+  resolves (`encode_intra_picture_with_matrices`,
+  `encode_p_picture_with_matrices`, `encode_b_picture_with_matrices`,
+  `encode_display_order_gop_sequence_with_matrices`).
+
 Both encoders are **externally conformance-validated**: a pinned
-self-encoded corpus (`tests/fixtures/selfenc/` — seventeen streams:
+self-encoded corpus (`tests/fixtures/selfenc/` — twenty streams:
 MPEG-2 all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
 motion-compensated chain with intra fallback, an I/B/P group, a
 7-frame IBBP display-order sequence, a two-GOP MPEG-2 stream with GOP
@@ -442,7 +480,11 @@ parities, §7.6.2.1 second-P-field reference), an **adaptive
 field-mode** I P P mixing simple / 16×8 / dual-prime macroblocks in
 the same slices, an interlaced **frame-picture field-based** I B P B P
 (`frame_pred_frame_dct = 0`, field MC + field DCT), a frame-picture
-**dual-prime** I P P, six MPEG-1 streams — all-intra, one-GOP
+**dual-prime** I P P, a **4:2:2-profile** I B P B P, a 4:2:2
+I B P B P under the full flag set (`intra_vlc_format`,
+`alternate_scan`, non-linear `q_scale_type`, 10-bit DC) with §6.3.11
+luma-and-chroma matrix downloads, a **4:4:4** I B P, six MPEG-1
+streams — all-intra, one-GOP
 I P P P, a two-GOP I B B P | I B B P, an I B P with downloadable
 §2.4.3.2 quantiser matrices, an 11172-2 Annex C CBR two-GOP stream
 with the constrained-parameters flag set, and a **D-only** sequence
@@ -538,10 +580,12 @@ keyframe-flagged packet carrying the finished elementary stream
 round-trips through both decode paths, and the 11172-2 classification
 of the `mpeg1video` output (no extension start codes).
 
-The encoders remain 4:2:0-only with default quantiser matrices and
-the linear quantiser scale (`alternate_scan` / `intra_vlc_format`
-are not emitted); skipped-macroblock emission, concealment motion
-vectors, and the scalable profiles are not encoded.
+The frame-picture encode path now covers 4:2:0 / 4:2:2 / 4:4:4 with
+downloadable quantiser matrices and every picture-coding-extension
+entropy flag; the **field / frame-field** encoders remain 4:2:0-only
+(they reject other chroma formats and the `alternate_scan` /
+`intra_vlc_format` flags). Skipped-macroblock emission, concealment
+motion vectors, and the scalable profiles are not encoded.
 
 ## Not yet supported
 
