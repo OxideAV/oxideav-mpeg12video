@@ -41,9 +41,10 @@ they pin two facts:
 | `selfenc-mpeg1-dpics-48x32.m1v` | `encode_mpeg1_d_sequence` | MPEG-1 **D-only sequence** (§2.4.1 / §2.4.3.4 `picture_coding_type = 4`): four dc intra-coded pictures in two GOPs — Table B.2d macroblock type, six DC-only blocks (no AC walk / `end_of_block`, §2.4.2.8), `end_of_macroblock` bits. **No `.ref.yuv`**: the black-box binary emits zero frames for type-4 pictures (the same limitation recorded for the `mpeg1-dpics` conformance fixture), so the stream is pinned bit-exactly and decoded sample-exactly against the encoder's own §2.4.4.1 reconstruction |
 | `selfenc-fieldmodes-64x64.m2v` | `encode_field_adaptive_display_order_gop_sequence` | MPEG-2 field-coded **adaptive-mode** I P P (`b_between = 0` per §7.6.3.6): per-macroblock Table 6-18 selection between simple field prediction, **§7.6.7.3 16×8 MC** (two `(vector, field-select)` region pairs) and **§7.6.3.6 dual-prime** (one vector + Table B-11 `dmvector`) — 18/9/5 macroblocks respectively, mixed inside single slices so the Table 7-11 predictor-update rows interact |
 | `selfenc-422-ibbp-64x48.m2v` | `encode_display_order_gop_sequence` | **4:2:2 profile** I B P B P (one GOP): §6.3.5 `chroma_format = 10` with the High@Main `profile_and_level_indication` (Table 8-5), Figure 6-11 **eight-block macroblocks**, §6.2.5.3 `coded_block_pattern_1`, §7.6.3.7 horizontal-only chroma MV scaling; full-height chroma detail plus the intra-fallback stamp from display frame 3 |
+| `selfenc-444-ibp-64x48.m2v` | `encode_display_order_gop_sequence` | **4:4:4** I B P (one GOP): Figure 6-12 twelve-block macroblocks, full-resolution chroma, §7.6.3.7 unscaled chroma vectors, §6.2.5.3 `coded_block_pattern_2` (bits 3..0 driving blocks 8..11 per the printed §6.3.17.4 derivation; non-intra blocks 6/7 stay uncoded — bits 5..4 always zero, so the stream decodes identically under a corrected six-block reading) |
 | `selfenc-422-full-64x48.m2v` | `encode_display_order_gop_sequence_with_matrices` | 4:2:2 I B P B P with the full round-447 flag set — `intra_vlc_format = 1` (Table B-15 intra AC), `alternate_scan = 1` (§7.3), `q_scale_type = 1` (Table 7-6 non-linear), `intra_dc_precision = 2` (10-bit DC) — plus §6.3.11 **downloadable matrices**: luminance intra/non-intra loads in the sequence header and chroma intra/non-intra tables in a `quant_matrix_extension()` inside the I picture (w = 2 / w = 3 at Table 7-5) |
 
-All MPEG-2 streams except 18–19: 4:2:0, `progressive_sequence = 1` (§6.3.3
+All MPEG-2 streams except 18–20: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
 quantiser scale, `quantiser_scale_code` 5–6, `f_code` 3 where motion
 is coded. The MPEG-1 streams are 4:2:0 by definition, 25 pictures/s,
@@ -124,6 +125,13 @@ nothing for either stream, and the committed `.ref.yuv` decodes
 stream 18; ≤ 1.4 %, stream 19). All seventeen pre-existing streams
 regenerate byte-identical.
 
+The 4:4:4 stream (20) was generated and validated 2026-08-17 the same
+way: strict pass clean, committed reference decode
+(`-pix_fmt yuv444p`) agrees with ours at max |Δ| = 1 (≤ 2.0 %
+samples). Its non-intra macroblocks never code blocks 6/7 (no wire
+slot in the printed §6.3.17.4 derivation), so the emitted
+`coded_block_pattern_2` always has bits 5..4 zero.
+
 ## SHA-256
 
 ```
@@ -131,6 +139,8 @@ regenerate byte-identical.
 ce73fe19e39bdc742f2f229e6aa636702f95838615584f8b707e64f6766adb10  selfenc-422-full-64x48.m2v.ref.yuv
 a33ce574297e0c5d919497fa2365809049e5dc98900734272693c0bd5aa9712a  selfenc-422-ibbp-64x48.m2v
 e319618a8040d28461f566cc1f76c47e6c3b58b7fe8dee8b2dca8899c3a112be  selfenc-422-ibbp-64x48.m2v.ref.yuv
+39823b129c6b60a2a3d2005496117eb9b53971f3ddbee606e4ac6622d1715144  selfenc-444-ibp-64x48.m2v
+d9ce098a6cae0cbf47b5ea0d8630f758b9371e423bbd459b62fe93bbf3853f53  selfenc-444-ibp-64x48.m2v.ref.yuv
 256f58029bc3cd91efac30d251e9210ac93b082d6ea10e61f65159889b48ff8c  selfenc-cbr-64x48.m2v
 2801a9b27965edff607d0b2b1f40e90b83cb13b50486809d4abc530875ce1dbf  selfenc-cbr-64x48.m2v.ref.yuv
 df8d6ddc8b618b1e00ac8c9cd353a9f886873d171fe5d3624ed6c7b61c40ae6f  selfenc-dualprime-64x64.m2v

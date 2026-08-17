@@ -518,6 +518,36 @@ fn main() {
     )
     .expect("4:2:2 full-flag encode");
     write("selfenc-422-full-64x48.m2v", &m422_full);
+
+    // 20. 4:4:4 I B P (one GOP): Figure 6-12 twelve-block macroblocks,
+    //     full-resolution chroma, §6.2.5.3 coded_block_pattern_2
+    //     (bits 3..0 driving blocks 8..11 per the printed §6.3.17.4;
+    //     non-intra blocks 6/7 stay uncoded — see tests/encode_444.rs).
+    let f444: Vec<FrameBuffer> = (0..3).map(|t| frame_444_at(64, 48, 2 * t)).collect();
+    let p444 = IntraPictureParams {
+        chroma_format: ChromaFormat::Yuv444,
+        ..params(64, 48)
+    };
+    let m444 =
+        encode_display_order_gop_sequence(&f444, 1, 2, p444, 6, 3, 3).expect("4:4:4 gop encode");
+    write("selfenc-444-ibp-64x48.m2v", &m444);
+}
+
+/// Deterministic 4:4:4 frame: full-resolution chroma detail, diagonal
+/// luma pan by `dx`.
+fn frame_444_at(width: usize, height: usize, dx: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv444);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + dx;
+            let g = 24 + ((sx * 3 + y * 5) % 192);
+            let c = if (sx / 4 + y / 4) % 2 == 0 { 12 } else { 0 };
+            f.y.put_sample(x, y, (g + c).min(235) as u8);
+            f.cb.put_sample(x, y, (64 + (sx * 2 + y * 7) % 128) as u8);
+            f.cr.put_sample(x, y, (192u8).saturating_sub(((sx * 3 + y * 5) % 128) as u8));
+        }
+    }
+    f
 }
 
 /// 4:2:2 params: progressive frame pictures, Figure 6-11 macroblocks.

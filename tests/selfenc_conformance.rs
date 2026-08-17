@@ -775,3 +775,38 @@ fn selfenc_422_full_flags_is_pinned_and_reference_conformant() {
     let inputs: Vec<&FrameBuffer> = display.iter().collect();
     assert_reference_conformant("selfenc-422-full-64x48", &stream, &reference, &inputs);
 }
+
+/// Deterministic 4:4:4 frame — must stay in lock-step with
+/// `gen_selfenc_corpus::frame_444_at`.
+fn frame_444_at(width: usize, height: usize, dx: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv444);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + dx;
+            let g = 24 + ((sx * 3 + y * 5) % 192);
+            let c = if (sx / 4 + y / 4) % 2 == 0 { 12 } else { 0 };
+            f.y.put_sample(x, y, (g + c).min(235) as u8);
+            f.cb.put_sample(x, y, (64 + (sx * 2 + y * 7) % 128) as u8);
+            f.cr.put_sample(x, y, (192u8).saturating_sub(((sx * 3 + y * 5) % 128) as u8));
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_444_ibp_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-444-ibp-64x48.m2v");
+    let display: Vec<FrameBuffer> = (0..3).map(|t| frame_444_at(64, 48, 2 * t)).collect();
+    let p444 = IntraPictureParams {
+        chroma_format: ChromaFormat::Yuv444,
+        ..params(64, 48)
+    };
+    let regenerated = encode_display_order_gop_sequence(&display, 1, 2, p444, 6, 3, 3)
+        .expect("4:4:4 gop re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-444-ibp-64x48", &stream, &reference, &inputs);
+}

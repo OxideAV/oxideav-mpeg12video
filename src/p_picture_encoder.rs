@@ -96,6 +96,23 @@ pub(crate) fn wrap_delta(delta: i32, f_code: u8) -> Result<i32> {
     Ok(d)
 }
 
+/// Whether block `i` of a **non-intra** macroblock has a
+/// `coded_block_pattern()` wire slot under the printed §6.3.17.4
+/// derivation. At 4:4:4 the six-bit `coded_block_pattern_2` drives
+/// only `pattern_code[8..12]` (mask bits `11 - i`, i.e. bits 3..0),
+/// so blocks 6 and 7 cannot be signalled coded in a non-intra
+/// macroblock; the encoder leaves their residuals untransmitted (the
+/// reconstruction accounts for it, and a decoder applying either the
+/// printed rule or a six-block `i = 6..12` reading of the same bits
+/// reconstructs identically since bits 5..4 stay zero). Every block
+/// has a slot at 4:2:0 / 4:2:2.
+pub(crate) fn nonintra_block_has_cbp_slot(
+    i: usize,
+    chroma_format: crate::sequence_extension::ChromaFormat,
+) -> bool {
+    !(chroma_format == crate::sequence_extension::ChromaFormat::Yuv444 && (i == 6 || i == 7))
+}
+
 /// Gather an 8×8 block of `current - prediction` residual samples.
 ///
 /// `cur_plane` is the source frame's component plane; `pred` is the
@@ -142,6 +159,15 @@ pub(crate) struct InterBlock {
 }
 
 impl InterBlock {
+    /// An uncoded block (no levels, zero residual) — what the decoder
+    /// reconstructs for a clear `pattern_code[i]`.
+    pub(crate) fn uncoded() -> Self {
+        Self {
+            qf: None,
+            f_pel: [[0i16; 8]; 8],
+        }
+    }
+
     /// Whether this block carried any non-zero level (so it sets a
     /// `coded_block_pattern` bit).
     pub(crate) fn is_coded(&self) -> bool {
@@ -625,7 +651,13 @@ pub fn encode_p_picture_with_matrices(
                     ColourComponent::Y => &matrix_state.non_intra_luma,
                     ColourComponent::Cb | ColourComponent::Cr => &matrix_state.non_intra_chroma,
                 };
-                let block = quantise_inter_block(&residual, qscale, weight);
+                let block = if nonintra_block_has_cbp_slot(i, params.chroma_format) {
+                    quantise_inter_block(&residual, qscale, weight)
+                } else {
+                    // Printed §6.3.17.4: no wire slot — leave the
+                    // block uncoded so encoder and decoder agree.
+                    InterBlock::uncoded()
+                };
                 coded_flags[i] = block.qf.is_some();
                 blocks.push(block);
             }

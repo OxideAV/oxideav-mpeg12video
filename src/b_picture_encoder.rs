@@ -47,7 +47,10 @@ use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::ColourComponent;
 use crate::mpeg2_dequantize::quantiser_scale;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
-use crate::p_picture_encoder::{quantise_inter_block, wrap_delta, write_inter_block_coeffs};
+use crate::p_picture_encoder::{
+    nonintra_block_has_cbp_slot, quantise_inter_block, wrap_delta, write_inter_block_coeffs,
+    InterBlock,
+};
 use crate::picture_header::PictureCodingType;
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_slice_header,
@@ -277,7 +280,13 @@ pub fn encode_b_picture_with_matrices(
                     ColourComponent::Y => &matrix_state.non_intra_luma,
                     ColourComponent::Cb | ColourComponent::Cr => &matrix_state.non_intra_chroma,
                 };
-                let block = quantise_inter_block(&residual, qscale, weight);
+                let block = if nonintra_block_has_cbp_slot(i, params.chroma_format) {
+                    quantise_inter_block(&residual, qscale, weight)
+                } else {
+                    // Printed §6.3.17.4: no wire slot — leave the
+                    // block uncoded so encoder and decoder agree.
+                    InterBlock::uncoded()
+                };
                 coded_flags[i] = block.is_coded();
                 blocks.push(block);
             }
