@@ -810,3 +810,117 @@ fn selfenc_444_ibp_is_pinned_and_reference_conformant() {
     let inputs: Vec<&FrameBuffer> = display.iter().collect();
     assert_reference_conformant("selfenc-444-ibp-64x48", &stream, &reference, &inputs);
 }
+
+/// Deterministic stream-21 content — must stay in lock-step with
+/// `gen_selfenc_corpus` (mostly-static scene, per-frame re-rolled
+/// stamp forcing intra fallbacks).
+fn skipconceal_frame(t: usize) -> FrameBuffer {
+    let mut f = frame_at(64, 48, 0, 0, false);
+    for y in 16..48 {
+        for x in 0..64 {
+            f.y.put_sample(x, y, 100);
+        }
+    }
+    for y in 24usize..36 {
+        for x in (8 + 10 * t)..(20 + 10 * t).min(64) {
+            let h: usize = x
+                .wrapping_mul(31)
+                .wrapping_add(y.wrapping_mul(97))
+                .wrapping_add(t.wrapping_mul(1009));
+            f.y.put_sample(x, y, (16 + (h % 220)) as u8);
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_skip_and_concealment_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-skipconceal-64x48.m2v");
+    let display: Vec<FrameBuffer> = (0..5).map(skipconceal_frame).collect();
+    let (regenerated, stats) = oxideav_mpeg12video::encode_display_order_gop_sequence_with_options(
+        &display,
+        1,
+        4,
+        params(64, 48),
+        6,
+        3,
+        3,
+        &oxideav_mpeg12video::quant_matrix_extension::QuantMatrixExtension::default(),
+        &|_| oxideav_mpeg12video::FrameEncodeOptions {
+            skipped_macroblocks: true,
+            concealment_motion_vectors: true,
+            ..Default::default()
+        },
+    )
+    .expect("skip/concealment re-encode");
+    assert!(stats.skipped > 0, "skips must fire: {stats:?}");
+    assert!(stats.intra > 12, "intra fallbacks must fire: {stats:?}");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-skipconceal-64x48", &stream, &reference, &inputs);
+}
+
+/// Deterministic stream-22 content — must stay in lock-step with
+/// `gen_selfenc_corpus` (per-field opposing pans over a textured
+/// base).
+fn fffull_frame(i: i32) -> FrameBuffer {
+    let (w, h) = (64usize, 64usize);
+    let mut base = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+    for y in 0..h {
+        for x in 0..w {
+            let v = 100 + ((x * 5 + (y / 2) * 7) % 80) as i32;
+            base.y.put_sample(x, y, v as u8);
+        }
+    }
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            base.cb.put_sample(x, y, (110 + (x % 20)) as u8);
+            base.cr.put_sample(x, y, (140 + (y % 20)) as u8);
+        }
+    }
+    let mut out = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+    for y in 0..h {
+        let dx = if y % 2 == 0 { 2 * i } else { -2 * i };
+        for x in 0..w {
+            let sx = (x as i32 - dx).clamp(0, 63) as usize;
+            out.y.put_sample(x, y, base.y.get(sx, y).unwrap());
+        }
+    }
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            out.cb.put_sample(x, y, base.cb.get(x, y).unwrap());
+            out.cr.put_sample(x, y, base.cr.get(x, y).unwrap());
+        }
+    }
+    out
+}
+
+#[test]
+fn selfenc_framefield_full_flags_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-fffull-64x64.m2v");
+    let display: Vec<FrameBuffer> = (0i32..5).map(fffull_frame).collect();
+    let ff_params = IntraPictureParams {
+        width: 64,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 2,
+        intra_vlc_format: true,
+        alternate_scan: true,
+        q_scale_type: true,
+        progressive_sequence: false,
+    };
+    let (regenerated, stats) =
+        encode_ff_display_order_gop_sequence(&display, 1, 2, &ff_params, 6, 3, 3, false)
+            .expect("full-flag frame-field re-encode");
+    assert!(stats.field_mc > 0, "field MC must fire: {stats:?}");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-fffull-64x64", &stream, &reference, &inputs);
+}

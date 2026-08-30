@@ -531,6 +531,126 @@ fn main() {
     let m444 =
         encode_display_order_gop_sequence(&f444, 1, 2, p444, 6, 3, 3).expect("4:4:4 gop encode");
     write("selfenc-444-ibp-64x48.m2v", &m444);
+
+    // ---- round 453 streams ----------------------------------------
+
+    // 21. Skipped macroblocks + concealment motion vectors
+    //     (§7.6.6 / §7.6.3.9): I B P B P over a mostly-static scene
+    //     with a translating high-contrast stamp — the static
+    //     macroblocks skip (P: zero-vector, B: PMV/previous-direction
+    //     inheritance), the stamp forces intra fallbacks that carry
+    //     concealment vectors, and every picture declares
+    //     concealment_motion_vectors = 1 with a real I-picture
+    //     f_code.
+    let skip_frames: Vec<FrameBuffer> = (0usize..5)
+        .map(|t| {
+            let mut f = frame_at(64, 48, 0, 0, false);
+            // Overwrite with a flat backdrop so most macroblocks are
+            // static; keep a band of the busy pattern near the top.
+            for y in 16..48 {
+                for x in 0..64 {
+                    f.y.put_sample(x, y, 100);
+                }
+            }
+            // Translating stamp whose texture is re-rolled every
+            // frame (decorrelated content defeats the motion search
+            // and forces the Table B-3 intra fallback).
+            for y in 24usize..36 {
+                for x in (8 + 10 * t)..(20 + 10 * t).min(64) {
+                    let h: usize = x
+                        .wrapping_mul(31)
+                        .wrapping_add(y.wrapping_mul(97))
+                        .wrapping_add(t.wrapping_mul(1009));
+                    f.y.put_sample(x, y, (16 + (h % 220)) as u8);
+                }
+            }
+            f
+        })
+        .collect();
+    let (skip_stream, skip_stats) =
+        oxideav_mpeg12video::encode_display_order_gop_sequence_with_options(
+            &skip_frames,
+            1,
+            4,
+            params(64, 48),
+            6,
+            3,
+            3,
+            &QuantMatrixExtension::default(),
+            &|_| oxideav_mpeg12video::FrameEncodeOptions {
+                skipped_macroblocks: true,
+                concealment_motion_vectors: true,
+                ..Default::default()
+            },
+        )
+        .expect("skip/concealment encode");
+    eprintln!("skip/concealment stats: {skip_stats:?}");
+    assert!(skip_stats.skipped > 0, "stream 21 must skip macroblocks");
+    assert!(
+        skip_stats.intra > 12,
+        "stream 21 must carry P intra fallbacks beyond the I picture"
+    );
+    write("selfenc-skipconceal-64x48.m2v", &skip_stream);
+
+    // 22. Frame-field (frame_pred_frame_dct = 0) I B P B P under the
+    //     full entropy flag set — alternate_scan, intra_vlc_format,
+    //     non-linear q_scale_type, 10-bit intra DC — with per-field
+    //     motion (round 453: the interlaced encoders honour the
+    //     flags on the wire).
+    let ff_base = {
+        let (w, h) = (64usize, 64usize);
+        let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+        for y in 0..h {
+            for x in 0..w {
+                let v = 100 + ((x * 5 + (y / 2) * 7) % 80) as i32;
+                f.y.put_sample(x, y, v as u8);
+            }
+        }
+        for y in 0..h / 2 {
+            for x in 0..w / 2 {
+                f.cb.put_sample(x, y, (110 + (x % 20)) as u8);
+                f.cr.put_sample(x, y, (140 + (y % 20)) as u8);
+            }
+        }
+        f
+    };
+    let ff_frames: Vec<FrameBuffer> = (0i32..5)
+        .map(|i| {
+            let mut out = FrameBuffer::new(64, 64, ChromaFormat::Yuv420);
+            for y in 0..64usize {
+                let dx = if y % 2 == 0 { 2 * i } else { -2 * i };
+                for x in 0..64usize {
+                    let sx = (x as i32 - dx).clamp(0, 63) as usize;
+                    out.y.put_sample(x, y, ff_base.y.get(sx, y).unwrap());
+                }
+            }
+            for y in 0..32 {
+                for x in 0..32 {
+                    out.cb.put_sample(x, y, ff_base.cb.get(x, y).unwrap());
+                    out.cr.put_sample(x, y, ff_base.cr.get(x, y).unwrap());
+                }
+            }
+            out
+        })
+        .collect();
+    let ff_params = IntraPictureParams {
+        width: 64,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv420,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 2,
+        intra_vlc_format: true,
+        alternate_scan: true,
+        q_scale_type: true,
+        progressive_sequence: false,
+    };
+    let (ff_stream, ff_stats) = oxideav_mpeg12video::encode_ff_display_order_gop_sequence(
+        &ff_frames, 1, 2, &ff_params, 6, 3, 3, false,
+    )
+    .expect("full-flag frame-field encode");
+    eprintln!("full-flag frame-field stats: {ff_stats:?}");
+    assert!(ff_stats.field_mc > 0, "stream 22 must code field MC");
+    write("selfenc-fffull-64x64.m2v", &ff_stream);
 }
 
 /// Deterministic 4:4:4 frame: full-resolution chroma detail, diagonal

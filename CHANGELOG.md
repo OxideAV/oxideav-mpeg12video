@@ -17,6 +17,12 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   rejecting them; combined with the already-threaded `q_scale_type` /
   `intra_dc_precision` the whole picture-coding-extension entropy
   flag set is now encodable in every picture structure at 4:2:0.
+- round 453: two new pinned self-encoded conformance streams
+  (`tests/fixtures/selfenc/`, black-box strict-mode clean):
+  `selfenc-skipconceal-64x48.m2v` (skipped macroblocks + concealment
+  motion vectors) and `selfenc-fffull-64x64.m2v` (frame-field encode
+  under `alternate_scan` + `intra_vlc_format` + non-linear quantiser
+  + 10-bit DC) — twenty-two streams total.
 
 ### Added
 

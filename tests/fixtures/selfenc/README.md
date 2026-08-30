@@ -42,6 +42,8 @@ they pin two facts:
 | `selfenc-fieldmodes-64x64.m2v` | `encode_field_adaptive_display_order_gop_sequence` | MPEG-2 field-coded **adaptive-mode** I P P (`b_between = 0` per §7.6.3.6): per-macroblock Table 6-18 selection between simple field prediction, **§7.6.7.3 16×8 MC** (two `(vector, field-select)` region pairs) and **§7.6.3.6 dual-prime** (one vector + Table B-11 `dmvector`) — 18/9/5 macroblocks respectively, mixed inside single slices so the Table 7-11 predictor-update rows interact |
 | `selfenc-422-ibbp-64x48.m2v` | `encode_display_order_gop_sequence` | **4:2:2 profile** I B P B P (one GOP): §6.3.5 `chroma_format = 10` with the High@Main `profile_and_level_indication` (Table 8-5), Figure 6-11 **eight-block macroblocks**, §6.2.5.3 `coded_block_pattern_1`, §7.6.3.7 horizontal-only chroma MV scaling; full-height chroma detail plus the intra-fallback stamp from display frame 3 |
 | `selfenc-444-ibp-64x48.m2v` | `encode_display_order_gop_sequence` | **4:4:4** I B P (one GOP): Figure 6-12 twelve-block macroblocks, full-resolution chroma, §7.6.3.7 unscaled chroma vectors, §6.2.5.3 `coded_block_pattern_2` (bits 3..0 driving blocks 8..11 per the printed §6.3.17.4 derivation; non-intra blocks 6/7 stay uncoded — bits 5..4 always zero, so the stream decodes identically under a corrected six-block reading) |
+| `selfenc-skipconceal-64x48.m2v` | `encode_display_order_gop_sequence_with_options` | **Skipped macroblocks + concealment motion vectors** (round 453): I B P B P over a mostly-static scene — §7.6.6.2 P skips (zero-vector, predictor reset) and §7.6.6.4 B skips (PMV/previous-direction inheritance) folded into Table B-1 address increments, a per-frame re-rolled stamp forcing Table B-3 intra fallbacks whose macroblocks carry §7.6.3.9 concealment vectors + marker bits, `concealment_motion_vectors = 1` with a real I-picture `f_code` |
+| `selfenc-fffull-64x64.m2v` | `encode_ff_display_order_gop_sequence` | **Frame-field encode under the full entropy flag set** (round 453): `frame_pred_frame_dct = 0` I B P B P with `alternate_scan = 1`, `intra_vlc_format = 1` (Table B-15 intra AC), non-linear `q_scale_type = 1` and 10-bit `intra_dc_precision = 2`, per-field opposing pans (field MC + field DCT throughout) |
 | `selfenc-422-full-64x48.m2v` | `encode_display_order_gop_sequence_with_matrices` | 4:2:2 I B P B P with the full round-447 flag set — `intra_vlc_format = 1` (Table B-15 intra AC), `alternate_scan = 1` (§7.3), `q_scale_type = 1` (Table 7-6 non-linear), `intra_dc_precision = 2` (10-bit DC) — plus §6.3.11 **downloadable matrices**: luminance intra/non-intra loads in the sequence header and chroma intra/non-intra tables in a `quant_matrix_extension()` inside the I picture (w = 2 / w = 3 at Table 7-5) |
 
 All MPEG-2 streams except 18–20: 4:2:0, `progressive_sequence = 1` (§6.3.3
@@ -144,9 +146,22 @@ clean for all ten. The interlaced / field-coded streams (13–17) and
 the MPEG-1 streams already carried conforming values and regenerate
 byte-identical.
 
+The round-453 streams (21–22) were generated and validated 2026-08-30
+with the same black-box reference decoder binary (v8.1.2): the strict
+error-detection pass (`-err_detect explode`) reported nothing for
+either stream, and the committed `.ref.yuv` decodes agree with ours
+within the corpus |Δ| ≤ 3 contract. Stream 21's skipped macroblocks
+and concealment vectors and stream 22's alternate-scan / B-15 intra
+entropy coding are accepted by the reference decoder without a
+diagnostic.
+
 ## SHA-256
 
 ```
+24bca61cff377a087ab53222fbc7359266d0634d3596d127b93127b090dcf746  selfenc-skipconceal-64x48.m2v
+c04c2550505be29a7f26d4cfa67fdf3a64b9e50050a43f74f10217ce10918c09  selfenc-skipconceal-64x48.m2v.ref.yuv
+9a32853f6e0852c09584b9623f86f27d53de96c6e0dcdbc0786b689200701461  selfenc-fffull-64x64.m2v
+57b9e5dd5e5cd6d4086ecda013c1bc0c4913546693bb95708cf62f63bd649f01  selfenc-fffull-64x64.m2v.ref.yuv
 b5ff5f2ff461c8e685e7f1e01a06bcd4de597c81bbb1ffbe4542c32657baba20  selfenc-422-full-64x48.m2v
 ce73fe19e39bdc742f2f229e6aa636702f95838615584f8b707e64f6766adb10  selfenc-422-full-64x48.m2v.ref.yuv
 7a29d7d3d81a31e7f685479a31608cd5bbc7f9a0301c5b2805907c9e8720ece2  selfenc-422-ibbp-64x48.m2v
