@@ -38,11 +38,14 @@
 use oxideav_core::bits::BitWriter;
 
 use crate::coded_block_pattern::encode_coded_block_pattern;
+use crate::encode_options::{FrameEncodeOptions, FrameEncodeStats};
 use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
 use crate::inter_reconstruction::{
-    chroma_mb_extent, predict_frame_macroblock_planes, FrameMotion, ReferenceFrames,
+    chroma_mb_extent, predict_frame_macroblock_planes, FrameMotion, MotionVectorPel,
+    ReferenceFrames,
 };
-use crate::motion_estimation::{estimate_forward_mv, max_search_range};
+use crate::mb_address_increment::encode_mb_address_increment;
+use crate::motion_estimation::{estimate_forward_mv, frame_vector_legal, max_search_range};
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::ColourComponent;
 use crate::mpeg2_dequantize::quantiser_scale;
@@ -54,7 +57,6 @@ use crate::p_picture_encoder::{
 use crate::picture_header::PictureCodingType;
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_slice_header,
-    PictureCodingExtensionParams,
 };
 use crate::Result;
 
@@ -136,9 +138,86 @@ pub fn encode_b_picture_with_matrices(
     backward_f_code: u8,
     matrix_state: &crate::quant_matrix_extension::QuantiserMatrixState,
 ) -> Result<()> {
+    encode_b_picture_with_options(
+        bw,
+        current,
+        forward,
+        backward,
+        params,
+        temporal_reference,
+        quantiser_scale_code,
+        forward_f_code,
+        backward_f_code,
+        matrix_state,
+        FrameEncodeOptions::default(),
+    )
+}
+
+/// [`encode_b_picture_with_matrices`] with the optional
+/// [`FrameEncodeOptions`] behaviours: §7.6.6.4 skipped macroblocks
+/// (the previous macroblock's prediction direction with the current
+/// `PMV` vectors, tried first and taken whenever the residual
+/// quantises to zero — never the first / last of a slice) and the
+/// §6.3.10 output-cadence flags. The B encoder codes no intra
+/// macroblocks, so `concealment_motion_vectors` only sets the
+/// picture-coding-extension flag.
+///
+/// # Errors
+/// [`crate::Error::InvalidBitstream`] on a §6.3.10 flag violation or
+/// an invalid quantiser / f_code.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_b_picture_with_options(
+    bw: &mut BitWriter,
+    current: &FrameBuffer,
+    forward: &FrameBuffer,
+    backward: &FrameBuffer,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    matrix_state: &crate::quant_matrix_extension::QuantiserMatrixState,
+    options: FrameEncodeOptions,
+) -> Result<()> {
+    encode_b_picture_with_stats(
+        bw,
+        current,
+        forward,
+        backward,
+        params,
+        temporal_reference,
+        quantiser_scale_code,
+        forward_f_code,
+        backward_f_code,
+        matrix_state,
+        options,
+    )
+    .map(|_stats| ())
+}
+
+/// [`encode_b_picture_with_options`] also returning the per-macroblock
+/// decision counts ([`FrameEncodeStats`]).
+///
+/// # Errors
+/// As [`encode_b_picture_with_options`].
+#[allow(clippy::too_many_arguments)]
+pub fn encode_b_picture_with_stats(
+    bw: &mut BitWriter,
+    current: &FrameBuffer,
+    forward: &FrameBuffer,
+    backward: &FrameBuffer,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    matrix_state: &crate::quant_matrix_extension::QuantiserMatrixState,
+    options: FrameEncodeOptions,
+) -> Result<FrameEncodeStats> {
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let fwd_range = max_search_range(forward_f_code).min(16);
     let bwd_range = max_search_range(backward_f_code).min(16);
+    let mut stats = FrameEncodeStats::default();
 
     // §6.3.10: the MPEG-1 legacy forward/backward_f_code fields in the
     // picture header "shall have the value seven (all ones)" in an
@@ -151,21 +230,8 @@ pub fn encode_b_picture_with_matrices(
         0b111,
         0b111,
     );
-    write_picture_coding_extension(
-        bw,
-        &PictureCodingExtensionParams {
-            forward_f_code,
-            backward_f_code,
-            frame_pred_frame_dct: params.frame_pred_frame_dct,
-            intra_dc_precision: params.intra_dc_precision,
-            q_scale_type: params.q_scale_type,
-            intra_vlc_format: params.intra_vlc_format,
-            alternate_scan: params.alternate_scan,
-            // §6.3.10: progressive_sequence == 1 requires
-            // progressive_frame == 1.
-            progressive_frame: params.progressive_sequence,
-        },
-    );
+    let pce = options.picture_coding_extension(&params, forward_f_code, backward_f_code)?;
+    write_picture_coding_extension(bw, &pce);
 
     let mb_width = params.mb_width();
     let mb_height = params.mb_height();
@@ -174,29 +240,80 @@ pub fn encode_b_picture_with_matrices(
     // prediction former (its samples are never read — only its
     // dimensions / chroma format matter).
     let geom = FrameBuffer::new(params.width, params.height, params.chroma_format);
+    let (cmb_w, cmb_h) = chroma_mb_extent(params.chroma_format);
 
-    for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
-        // §7.6.3.4: forward and backward PMV slots both reset at slice
-        // start.
-        let mut pmv_fwd = (0i32, 0i32);
-        let mut pmv_bwd = (0i32, 0i32);
+    // Residual + forward quantise every block of one macroblock against
+    // the given prediction planes.
+    let quantise_mb = |mb_col: usize,
+                       mb_row: usize,
+                       pred: &(Vec<u8>, Vec<u8>, Vec<u8>)|
+     -> (Vec<InterBlock>, [bool; 12]) {
+        let (luma_pred, cb_pred, cr_pred) = (&pred.0, &pred.1, &pred.2);
+        let mut blocks = Vec::with_capacity(nblocks);
+        let mut coded_flags = [false; 12];
+        for i in 0..nblocks {
+            let placement = block_placement(i, params.chroma_format, mb_col, mb_row, false)
+                .expect("valid block index");
+            let component = block_component(i, params.chroma_format).expect("valid component");
+            let (cur_plane, pred, pred_w, mb_origin_x, mb_origin_y) = match component {
+                ColourComponent::Y => (&current.y, luma_pred, 16usize, mb_col * 16, mb_row * 16),
+                ColourComponent::Cb => {
+                    (&current.cb, cb_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
+                }
+                ColourComponent::Cr => {
+                    (&current.cr, cr_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
+                }
+            };
+            let local_x = placement.base_x - mb_origin_x;
+            let local_y = placement.base_y - mb_origin_y;
+            let mut residual = [[0i16; 8]; 8];
+            let w = cur_plane.width();
+            let h = cur_plane.height();
+            for r in 0..8 {
+                let sy = (placement.base_y + r).min(h.saturating_sub(1));
+                for c in 0..8 {
+                    let sx = (placement.base_x + c).min(w.saturating_sub(1));
+                    let cur = i32::from(cur_plane.get(sx, sy).unwrap_or(0));
+                    let prd = i32::from(pred[(local_y + r) * pred_w + (local_x + c)]);
+                    residual[r][c] = (cur - prd) as i16;
+                }
+            }
+            // Table 7-5: non-intra luminance → w 1, non-intra
+            // chrominance → w 3 (mirrors w 1 at 4:2:0).
+            let weight = match component {
+                ColourComponent::Y => &matrix_state.non_intra_luma,
+                ColourComponent::Cb | ColourComponent::Cr => &matrix_state.non_intra_chroma,
+            };
+            let block = if nonintra_block_has_cbp_slot(i, params.chroma_format) {
+                quantise_inter_block(&residual, qscale, weight)
+            } else {
+                // Printed §6.3.17.4: no wire slot — leave the
+                // block uncoded so encoder and decoder agree.
+                InterBlock::uncoded()
+            };
+            coded_flags[i] = block.is_coded();
+            blocks.push(block);
+        }
+        (blocks, coded_flags)
+    };
 
-        for mb_col in 0..mb_width {
-            // 1. Motion search in both directions.
-            let fwd = estimate_forward_mv(current, forward, mb_col, mb_row, fwd_range).vector;
-            let bwd = estimate_forward_mv(current, backward, mb_col, mb_row, bwd_range).vector;
-
-            // 2. Score the three candidate predictions.
-            let pred_fwd = predict_frame_macroblock_planes(
+    // Form the prediction for a direction + vector pair.
+    let predict = |mb_col: usize,
+                   mb_row: usize,
+                   dir: BDirection,
+                   fwd: MotionVectorPel,
+                   bwd: MotionVectorPel|
+     -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        match dir {
+            BDirection::Forward => predict_frame_macroblock_planes(
                 &geom,
                 ReferenceFrames::forward_only(forward),
                 mb_col,
                 mb_row,
                 FrameMotion::forward(fwd),
             )
-            .expect("forward prediction");
-            let pred_bwd = predict_frame_macroblock_planes(
+            .expect("forward prediction"),
+            BDirection::Backward => predict_frame_macroblock_planes(
                 &geom,
                 ReferenceFrames {
                     forward: None,
@@ -206,15 +323,82 @@ pub fn encode_b_picture_with_matrices(
                 mb_row,
                 FrameMotion::backward(bwd),
             )
-            .expect("backward prediction");
-            let pred_int = predict_frame_macroblock_planes(
+            .expect("backward prediction"),
+            BDirection::Interpolated => predict_frame_macroblock_planes(
                 &geom,
                 ReferenceFrames::bidirectional(forward, backward),
                 mb_col,
                 mb_row,
                 FrameMotion::bidirectional(fwd, bwd),
             )
-            .expect("interpolated prediction");
+            .expect("interpolated prediction"),
+        }
+    };
+
+    for mb_row in 0..mb_height {
+        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        // §7.6.3.4: forward and backward PMV slots both reset at slice
+        // start.
+        let mut pmv_fwd = (0i32, 0i32);
+        let mut pmv_bwd = (0i32, 0i32);
+        // §7.6.6.4: a skipped macroblock inherits the previous
+        // macroblock's prediction direction. `None` until the slice's
+        // first macroblock is coded.
+        let mut prev_dir: Option<BDirection> = None;
+        let mut pending_skips = 0u32;
+
+        for mb_col in 0..mb_width {
+            // 0. Skip test (§7.6.6.4): the previous direction with the
+            // PMV vectors, taken when the residual quantises to zero.
+            // §6.3.17: never the first / last macroblock of a slice.
+            if options.skipped_macroblocks && mb_col != 0 && mb_col + 1 != mb_width {
+                if let Some(dir) = prev_dir {
+                    let fwd = MotionVectorPel::new(pmv_fwd.0, pmv_fwd.1);
+                    let bwd = MotionVectorPel::new(pmv_bwd.0, pmv_bwd.1);
+                    // §7.6.3.8: the inherited vectors must read inside
+                    // the reference; a predictor from a neighbour can
+                    // overhang at the picture edge.
+                    let uses_fwd = matches!(dir, BDirection::Forward | BDirection::Interpolated);
+                    let uses_bwd = matches!(dir, BDirection::Backward | BDirection::Interpolated);
+                    let legal = (!uses_fwd
+                        || frame_vector_legal(
+                            forward.y.width(),
+                            forward.y.height(),
+                            mb_col,
+                            mb_row,
+                            fwd.horizontal,
+                            fwd.vertical,
+                        ))
+                        && (!uses_bwd
+                            || frame_vector_legal(
+                                backward.y.width(),
+                                backward.y.height(),
+                                mb_col,
+                                mb_row,
+                                bwd.horizontal,
+                                bwd.vertical,
+                            ));
+                    if legal {
+                        let pred = predict(mb_col, mb_row, dir, fwd, bwd);
+                        let (_blocks, coded_flags) = quantise_mb(mb_col, mb_row, &pred);
+                        if !coded_flags[..nblocks].iter().any(|&b| b) {
+                            pending_skips += 1;
+                            stats.skipped += 1;
+                            // Predictors and direction are unaffected.
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // 1. Motion search in both directions.
+            let fwd = estimate_forward_mv(current, forward, mb_col, mb_row, fwd_range).vector;
+            let bwd = estimate_forward_mv(current, backward, mb_col, mb_row, bwd_range).vector;
+
+            // 2. Score the three candidate predictions.
+            let pred_fwd = predict(mb_col, mb_row, BDirection::Forward, fwd, bwd);
+            let pred_bwd = predict(mb_col, mb_row, BDirection::Backward, fwd, bwd);
+            let pred_int = predict(mb_col, mb_row, BDirection::Interpolated, fwd, bwd);
 
             let sad_fwd = luma_sad(current, mb_col, mb_row, &pred_fwd.0);
             let sad_bwd = luma_sad(current, mb_col, mb_row, &pred_bwd.0);
@@ -239,63 +423,20 @@ pub fn encode_b_picture_with_matrices(
                 }
                 (best_dir, best)
             };
-            let (luma_pred, cb_pred, cr_pred) = (&chosen.0, &chosen.1, &chosen.2);
 
             // 3. Residual + forward quantise per block.
-            let (cmb_w, cmb_h) = chroma_mb_extent(params.chroma_format);
-            let mut blocks = Vec::with_capacity(nblocks);
-            let mut coded_flags = [false; 12];
-            for i in 0..nblocks {
-                let placement = block_placement(i, params.chroma_format, mb_col, mb_row, false)
-                    .expect("valid block index");
-                let component = block_component(i, params.chroma_format).expect("valid component");
-                let (cur_plane, pred, pred_w, mb_origin_x, mb_origin_y) = match component {
-                    ColourComponent::Y => {
-                        (&current.y, luma_pred, 16usize, mb_col * 16, mb_row * 16)
-                    }
-                    ColourComponent::Cb => {
-                        (&current.cb, cb_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
-                    }
-                    ColourComponent::Cr => {
-                        (&current.cr, cr_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h)
-                    }
-                };
-                let local_x = placement.base_x - mb_origin_x;
-                let local_y = placement.base_y - mb_origin_y;
-                let mut residual = [[0i16; 8]; 8];
-                let w = cur_plane.width();
-                let h = cur_plane.height();
-                for r in 0..8 {
-                    let sy = (placement.base_y + r).min(h.saturating_sub(1));
-                    for c in 0..8 {
-                        let sx = (placement.base_x + c).min(w.saturating_sub(1));
-                        let cur = i32::from(cur_plane.get(sx, sy).unwrap_or(0));
-                        let prd = i32::from(pred[(local_y + r) * pred_w + (local_x + c)]);
-                        residual[r][c] = (cur - prd) as i16;
-                    }
-                }
-                // Table 7-5: non-intra luminance → w 1, non-intra
-                // chrominance → w 3 (mirrors w 1 at 4:2:0).
-                let weight = match component {
-                    ColourComponent::Y => &matrix_state.non_intra_luma,
-                    ColourComponent::Cb | ColourComponent::Cr => &matrix_state.non_intra_chroma,
-                };
-                let block = if nonintra_block_has_cbp_slot(i, params.chroma_format) {
-                    quantise_inter_block(&residual, qscale, weight)
-                } else {
-                    // Printed §6.3.17.4: no wire slot — leave the
-                    // block uncoded so encoder and decoder agree.
-                    InterBlock::uncoded()
-                };
-                coded_flags[i] = block.is_coded();
-                blocks.push(block);
-            }
+            let (blocks, coded_flags) = quantise_mb(mb_col, mb_row, chosen);
 
             // 4. Macroblock layer.
-            // macroblock_address_increment = 1 (Table B-1 `1`).
-            bw.write_bit(true);
+            encode_mb_address_increment(bw, pending_skips + 1);
+            pending_skips = 0;
             let coded = coded_flags[..nblocks].iter().any(|&b| b);
             write_b_macroblock_type(bw, dir, coded);
+            if coded {
+                stats.coded += 1;
+            } else {
+                stats.not_coded += 1;
+            }
 
             // Forward MV(s) precede backward MV(s) (bitstream order).
             if matches!(dir, BDirection::Forward | BDirection::Interpolated) {
@@ -312,6 +453,7 @@ pub fn encode_b_picture_with_matrices(
                 encode_motion_component(bw, dy, backward_f_code);
                 pmv_bwd = (bwd.horizontal, bwd.vertical);
             }
+            prev_dir = Some(dir);
 
             if coded {
                 encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
@@ -322,10 +464,14 @@ pub fn encode_b_picture_with_matrices(
                 }
             }
         }
+        debug_assert_eq!(
+            pending_skips, 0,
+            "the last macroblock of a slice is never skipped"
+        );
         bw.align_to_byte_zero();
     }
 
-    Ok(())
+    Ok(stats)
 }
 
 /// Emit the Table B-4 `macroblock_type` codeword for the chosen

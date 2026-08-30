@@ -316,6 +316,8 @@ fn write_field_picture_headers(
             // the field writer regardless of these fields.
             frame_pred_frame_dct: false,
             progressive_frame: false,
+            chroma_format: params.chroma_format,
+            ..Default::default()
         },
         structure,
     );

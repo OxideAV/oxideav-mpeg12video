@@ -211,6 +211,10 @@ fn write_ff_picture_headers(
             alternate_scan: params.alternate_scan,
             frame_pred_frame_dct: false,
             progressive_frame: false,
+            // Interlaced frame picture: the top field is output first.
+            top_field_first: true,
+            chroma_format: params.chroma_format,
+            ..Default::default()
         },
     );
 }

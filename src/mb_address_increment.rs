@@ -262,6 +262,27 @@ const TABLE_B1: &[Entry] = &[
     },
 ];
 
+/// Emit a `macroblock_address_increment` of `increment` (`>= 1`) per
+/// §6.2.5: the Table B-1 codeword for `1..=33`, preceded by one
+/// `macroblock_escape` (`0000 0001 000`) per 33 skipped positions
+/// beyond that. `increment - 1` macroblocks are skipped (§7.6.6).
+///
+/// # Panics
+/// Debug-asserts `increment >= 1` (zero has no representation).
+pub fn encode_mb_address_increment(bw: &mut oxideav_core::bits::BitWriter, increment: u32) {
+    debug_assert!(increment >= 1, "macroblock_address_increment is at least 1");
+    let mut remaining = increment.max(1);
+    while remaining > 33 {
+        bw.write_u32(0b0000_0001_000, 11); // macroblock_escape
+        remaining -= 33;
+    }
+    let entry = TABLE_B1
+        .iter()
+        .find(|e| e.symbol == TableSymbol::Value(remaining as u8))
+        .expect("Table B-1 covers 1..=33");
+    bw.write_u32(u32::from(entry.code), u32::from(entry.bits));
+}
+
 /// Sanity-checked Table B-1 lookup: peek `bits` bits, compare for
 /// equality. The walker tries entries longest-first so that a
 /// shorter codeword can never be falsely matched by a longer
@@ -721,5 +742,20 @@ mod tests {
         let s = format!("{mi:?}");
         assert!(s.contains("MbAddressIncrement"));
         assert!(s.contains("value"));
+    }
+
+    #[test]
+    fn encode_mb_address_increment_roundtrips_with_escapes() {
+        use oxideav_core::bits::BitWriter;
+        for inc in [1u32, 2, 3, 33, 34, 66, 67, 100, 200] {
+            let mut bw = BitWriter::new();
+            encode_mb_address_increment(&mut bw, inc);
+            bw.write_u32(0, 8);
+            let bytes = bw.finish();
+            let mut br = BitReader::new(&bytes);
+            let got = MbAddressIncrement::parse(&mut br, MbAddressIncrementContext::mpeg2())
+                .expect("parse");
+            assert_eq!(u32::from(got.value), inc, "increment {inc}");
+        }
     }
 }

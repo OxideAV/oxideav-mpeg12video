@@ -43,6 +43,7 @@
 
 use oxideav_core::bits::BitWriter;
 
+use crate::encode_options::FrameEncodeOptions;
 use crate::forward_dct::fdct_8x8;
 use crate::forward_quant::forward_quantise_block;
 use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
@@ -59,8 +60,7 @@ use crate::picture_header::PictureCodingType;
 use crate::quant_matrix_extension::{write_quant_matrix_extension, QuantMatrixExtension};
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
-    SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header, SequenceHeaderParams, SEQUENCE_END_CODE,
 };
 use crate::{Error, Result};
 
@@ -259,6 +259,58 @@ pub fn encode_intra_picture_with_matrices(
     quantiser_scale_code: u8,
     matrices: &QuantMatrixExtension,
 ) -> Result<Vec<u8>> {
+    encode_intra_picture_with_options(
+        frame,
+        params,
+        temporal_reference,
+        quantiser_scale_code,
+        matrices,
+        FrameEncodeOptions::default(),
+        15,
+        None,
+    )
+}
+
+/// [`encode_intra_picture_with_matrices`] with the optional
+/// [`FrameEncodeOptions`] behaviours. I-pictures never skip
+/// macroblocks (§7.6.6), so only the §6.3.10 output-cadence flags and
+/// **concealment motion vectors** (§7.6.3.9) apply: with
+/// `concealment_motion_vectors` set every macroblock carries a
+/// frame-format forward vector coded against `PMV[0][0]` with
+/// `f_code[0][*] = forward_f_code` (which must then be `1..=9`) plus
+/// a `marker_bit`. The vector is the one best suited to the
+/// macroblock below, searched against `concealment_reference` (the
+/// previous anchor a decoder would conceal from); with no reference
+/// every vector is `(0, 0)`. Without the flag `forward_f_code` is
+/// ignored and `f_code[0][*]` is written as `15` (unused).
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] on out-of-range parameters, a §6.3.11
+/// matrix-payload violation, a §6.3.10 flag violation, or a
+/// concealment `forward_f_code` outside `1..=9`.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_intra_picture_with_options(
+    frame: &FrameBuffer,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    quantiser_scale_code: u8,
+    matrices: &QuantMatrixExtension,
+    options: FrameEncodeOptions,
+    forward_f_code: u8,
+    concealment_reference: Option<&FrameBuffer>,
+) -> Result<Vec<u8>> {
+    if options.concealment_motion_vectors && !(1..=9).contains(&forward_f_code) {
+        return Err(Error::InvalidBitstream(
+            "encode_intra_picture: concealment motion vectors need f_code[0][*] in 1..=9",
+        ));
+    }
+    if let Some(reference) = concealment_reference {
+        if reference.width != params.width || reference.height != params.height {
+            return Err(Error::InvalidBitstream(
+                "encode_intra_picture: concealment reference dimensions do not match params",
+            ));
+        }
+    }
     if frame.width != params.width || frame.height != params.height {
         return Err(Error::InvalidBitstream(
             "encode_intra_picture: frame dimensions do not match params",
@@ -305,20 +357,16 @@ pub fn encode_intra_picture_with_matrices(
         15,
         15,
     );
-    write_picture_coding_extension(
-        &mut bw,
-        &PictureCodingExtensionParams {
-            intra_dc_precision: params.intra_dc_precision,
-            frame_pred_frame_dct: params.frame_pred_frame_dct,
-            q_scale_type: params.q_scale_type,
-            intra_vlc_format: params.intra_vlc_format,
-            alternate_scan: params.alternate_scan,
-            // §6.3.10: progressive_sequence == 1 requires
-            // progressive_frame == 1.
-            progressive_frame: params.progressive_sequence,
-            ..Default::default()
-        },
-    );
+    // §6.3.11: f_code[0][*] is unused (15) in an I-picture unless
+    // concealment motion vectors are coded.
+    let f_code = if options.concealment_motion_vectors {
+        forward_f_code
+    } else {
+        15
+    };
+    let pce = options.picture_coding_extension(&params, f_code, 15)?;
+    write_picture_coding_extension(&mut bw, &pce);
+    let search_range = crate::motion_estimation::max_search_range(f_code).min(16);
     // §6.2.3.2: chroma-specific matrix downloads have no sequence-
     // header slot — they travel in a quant_matrix_extension() between
     // the picture_coding_extension() and the first slice. The luma
@@ -345,6 +393,9 @@ pub fn encode_intra_picture_with_matrices(
         write_slice_header(&mut bw, mb_row as u32, quantiser_scale_code);
         // §7.2.1: the DC predictor resets at the start of every slice.
         let mut pred = DcPredictorState::reset(params.intra_dc_precision);
+        // §7.6.3.4: PMV[0][0] resets at slice start (only consumed by
+        // the concealment vectors).
+        let mut pmv = (0i32, 0i32);
 
         for mb_col in 0..mb_width {
             // macroblock_address_increment = 1 (Table B-1 `1`).
@@ -353,6 +404,29 @@ pub fn encode_intra_picture_with_matrices(
             bw.write_bit(true);
             // No quantiser_scale (macroblock_quant clear), no dct_type
             // (frame_pred_frame_dct = 1 → frame DCT default).
+            if options.concealment_motion_vectors {
+                // §7.6.3.9: motion_vectors(0) — a Frame-based forward
+                // vector against PMV[0][0] (Table 7-9 `Frame-based‡
+                // intra` row writes it back to both forward slots) —
+                // then the marker_bit.
+                let cmv = match concealment_reference {
+                    Some(reference) => crate::p_picture_encoder::concealment_vector(
+                        frame,
+                        reference,
+                        mb_col,
+                        mb_row,
+                        mb_height,
+                        search_range,
+                    ),
+                    None => crate::inter_reconstruction::MotionVectorPel::new(0, 0),
+                };
+                let dx = crate::p_picture_encoder::wrap_delta(cmv.horizontal - pmv.0, f_code)?;
+                let dy = crate::p_picture_encoder::wrap_delta(cmv.vertical - pmv.1, f_code)?;
+                crate::motion_vector::encode_motion_component(&mut bw, dx, f_code);
+                crate::motion_vector::encode_motion_component(&mut bw, dy, f_code);
+                bw.write_bit(true); // marker_bit
+                pmv = (cmv.horizontal, cmv.vertical);
+            }
 
             for i in 0..nblocks {
                 let placement = block_placement(i, params.chroma_format, mb_col, mb_row, false)

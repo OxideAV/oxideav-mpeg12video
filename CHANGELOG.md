@@ -8,6 +8,66 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 453: **`FrameEncodeOptions`** (`encode_options`) — optional
+  behaviours for the frame-picture encoders, threaded through new
+  `_with_options` / `_with_stats` variants of
+  `encode_intra_picture` / `encode_p_picture` / `encode_b_picture`
+  and a per-display-frame options closure on
+  `encode_display_order_gop_sequence_with_options` (which also
+  returns the whole-sequence `FrameEncodeStats` macroblock counts):
+  - **Skipped-macroblock emission (§7.6.6)** — the P encoder skips a
+    macroblock whose zero-vector frame prediction quantises to an
+    all-zero residual (§7.6.6.2 reconstruction, predictors reset);
+    the B encoder tries the previous macroblock's direction with the
+    current PMV vectors first and skips when that residual quantises
+    to zero (§7.6.6.4, predictors untouched, §7.6.3.8 span legality
+    checked on the inherited vectors). The §6.3.17 restrictions are
+    enforced (never the first / last macroblock of a slice, no
+    I-picture skips), runs ride Table B-1 `macroblock_escape` chains
+    (`mb_address_increment::encode_mb_address_increment`).
+  - **Concealment motion vectors (§7.6.3.9)** — with the flag set,
+    every intra macroblock (all of an I-picture's, the P encoder's
+    intra fallbacks) carries a frame-format forward vector coded
+    against `PMV[0][0]` plus the `marker_bit`, with the Table 7-9
+    `Frame-based‡ intra` both-slot predictor write-back. Per the
+    §7.6.3.9 recommendation the vector suits the macroblock *below*
+    (searched against the previous anchor), `(0, 0)` on the bottom
+    row. I-pictures now write a real `f_code[0][*]` when (and only
+    when) the flag is set.
+  - **§6.3.10 output-cadence signalling** — `top_field_first`,
+    `repeat_first_field` and a `progressive_frame` override on the
+    picture-coding-extension writer, validated against the §6.3.10
+    consistency rules
+    (`PictureCodingExtensionParams::validate_frame_picture_flags`),
+    plus the `FrameEncodeOptions::pulldown_32` 3:2 pattern helper.
+- round 453: **I-picture concealment-vector decode** —
+  `decode_intra_picture_with_context` (`IntraDecodeContext`) walks
+  I-pictures whose `picture_coding_extension()` sets
+  `concealment_motion_vectors` (the walker must consume each intra
+  macroblock's `motion_vectors(0)` + `marker_bit` to stay in step);
+  `decode_video_sequence` now threads the flag and the forward
+  f_codes from the parsed extension instead of assuming they are
+  absent.
+- round 453: **`DecodedFrame` display-process fields** —
+  `top_field_first` / `repeat_first_field` / `progressive_frame`
+  from the picture coding extension (field pairs report the
+  first-coded field and `progressive_frame = 0`; MPEG-1 frames
+  `progressive_frame = 1`), with the §6.3.10
+  `output_field_count` / `output_frame_count` helpers.
+
+### Fixed
+
+- round 453: the frame-picture `picture_coding_extension()` writer
+  emitted `top_field_first = 1` unconditionally — §6.3.10 requires
+  `0` when `repeat_first_field` is `0` in a progressive sequence —
+  and `chroma_420_type = 0` unconditionally — §6.3.10 requires it to
+  equal `progressive_frame` at 4:2:0. Both header bits are now
+  derived correctly (reconstruction was never affected); the ten
+  pinned progressive self-encoded corpus streams were regenerated,
+  their black-box reference decodes coming back byte-identical.
+
+### Added
+
 - round 447: **4:2:2-profile encoder leg** — the frame-picture I/P/B
   encoders, the display-order / GOP assemblers and the Annex C CBR
   controller are chroma-format generic:

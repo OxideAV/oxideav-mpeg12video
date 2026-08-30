@@ -87,7 +87,8 @@
 //! requires the MPEG-2 extensions for the geometry and f_codes.
 
 use crate::frame_assembly::{
-    assemble_frame_from_fields, decode_intra_picture_with_matrices, FrameBuffer, IntraPictureParams,
+    assemble_frame_from_fields, decode_intra_picture_with_context, FrameBuffer, IntraDecodeContext,
+    IntraPictureParams,
 };
 use crate::inter_reconstruction::ReferenceFrames;
 use crate::mpeg1_picture::{
@@ -120,6 +121,45 @@ pub struct DecodedFrame {
     pub temporal_reference: u16,
     /// The §6.3.10 `picture_coding_type` of the coded picture (I / P / B).
     pub picture_coding_type: PictureCodingType,
+    /// `top_field_first` (§6.3.10) from the `picture_coding_extension()`
+    /// of a frame picture; for a field-picture pair, whether the top
+    /// field was coded (and is output) first. MPEG-1 frames report
+    /// `false`.
+    pub top_field_first: bool,
+    /// `repeat_first_field` (§6.3.10): the display process repeats the
+    /// first field (interlaced 3:2 pulldown) or outputs the frame two /
+    /// three times (progressive sequence, with `top_field_first`).
+    /// Always `false` for field-picture pairs and MPEG-1 frames.
+    pub repeat_first_field: bool,
+    /// `progressive_frame` (§6.3.10): the two fields are from one time
+    /// instant. `false` for field-picture pairs; `true` for MPEG-1
+    /// frames (11172-2 has no interlace).
+    pub progressive_frame: bool,
+}
+
+impl DecodedFrame {
+    /// The number of **fields** the display process outputs for this
+    /// frame in an interlaced sequence (§6.3.10): 3 when
+    /// `repeat_first_field` is set, else 2.
+    pub fn output_field_count(&self) -> u32 {
+        if self.repeat_first_field {
+            3
+        } else {
+            2
+        }
+    }
+
+    /// The number of **frames** the display process outputs for this
+    /// frame in a progressive sequence (§6.3.10): 1 (`repeat_first_field
+    /// = 0`), 2 (`repeat_first_field = 1`, `top_field_first = 0`) or 3
+    /// (both set).
+    pub fn output_frame_count(&self) -> u32 {
+        match (self.repeat_first_field, self.top_field_first) {
+            (false, _) => 1,
+            (true, false) => 2,
+            (true, true) => 3,
+        }
+    }
 }
 
 /// Decode a whole MPEG-2 elementary stream into a `Vec` of reconstructed
@@ -778,8 +818,16 @@ fn reconstruct_picture(
 
     let frame = match header.picture_coding_type {
         PictureCodingType::Intra => {
-            let (frame, _placed) =
-                decode_intra_picture_with_matrices(picture_region, geometry, matrices)?;
+            let (frame, _placed) = decode_intra_picture_with_context(
+                picture_region,
+                geometry,
+                matrices,
+                IntraDecodeContext {
+                    concealment_motion_vectors: ext.concealment_motion_vectors,
+                    f_code_fwd_horiz: ext.f_code_fwd_horiz,
+                    f_code_fwd_vert: ext.f_code_fwd_vert,
+                },
+            )?;
             frame
         }
         // Unreachable: `parse_with_extension` rejects the Table 6-12
@@ -827,6 +875,9 @@ fn reconstruct_picture(
         frame,
         temporal_reference: header.temporal_reference,
         picture_coding_type: header.picture_coding_type,
+        top_field_first: ext.top_field_first,
+        repeat_first_field: ext.repeat_first_field,
+        progressive_frame: ext.progressive_frame,
     })
 }
 
@@ -885,6 +936,10 @@ fn reconstruct_mpeg1_picture(
         frame,
         temporal_reference: header.temporal_reference,
         picture_coding_type: header.picture_coding_type,
+        // ISO/IEC 11172-2 codes progressive frames only.
+        top_field_first: false,
+        repeat_first_field: false,
+        progressive_frame: true,
     })
 }
 
@@ -1103,6 +1158,12 @@ fn reconstruct_field_pair(
                 // field (an I+P field pair is an anchor frame).
                 temporal_reference: first.temporal_reference,
                 picture_coding_type: first.coding_type,
+                // §6.3.10: a field pair is output first-coded field
+                // first; repeat_first_field / progressive_frame are 0
+                // in field pictures.
+                top_field_first: first.structure == PictureStructure::TopField,
+                repeat_first_field: false,
+                progressive_frame: false,
             }))
         }
     }
@@ -1359,6 +1420,9 @@ mod tests {
 
     fn frame_with(tref: u16, kind: PictureCodingType) -> DecodedFrame {
         DecodedFrame {
+            top_field_first: false,
+            repeat_first_field: false,
+            progressive_frame: true,
             frame: FrameBuffer::new(16, 16, crate::sequence_extension::ChromaFormat::Yuv420),
             temporal_reference: tref,
             picture_coding_type: kind,

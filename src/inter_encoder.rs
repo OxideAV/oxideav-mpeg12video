@@ -136,6 +136,7 @@ pub fn encode_p_copy_picture(
             // §6.3.10: progressive_sequence == 1 requires
             // progressive_frame == 1.
             progressive_frame: params.progressive_sequence,
+            chroma_format: params.chroma_format,
             ..Default::default()
         },
     );
@@ -613,7 +614,52 @@ pub fn encode_display_order_gop_sequence_with_matrices(
     backward_f_code: u8,
     matrices: &crate::quant_matrix_extension::QuantMatrixExtension,
 ) -> Result<Vec<u8>> {
+    encode_display_order_gop_sequence_with_options(
+        frames,
+        b_between,
+        anchors_per_gop,
+        params,
+        quantiser_scale_code,
+        forward_f_code,
+        backward_f_code,
+        matrices,
+        &|_display_index| crate::encode_options::FrameEncodeOptions::default(),
+    )
+    .map(|(stream, _stats)| stream)
+}
+
+/// [`encode_display_order_gop_sequence_with_matrices`] with per-picture
+/// [`crate::encode_options::FrameEncodeOptions`] — `options(display_index)`
+/// supplies each display frame's flags, so §6.3.10 output cadences
+/// (3:2 pulldown patterns, frame doubling) can vary frame by frame
+/// while `skipped_macroblocks` / `concealment_motion_vectors` are
+/// typically constant. I-pictures' concealment vectors are searched
+/// against the previous anchor in coding order (`None` for the first
+/// picture of the stream).
+///
+/// Returns the stream and the whole-sequence
+/// [`crate::encode_options::FrameEncodeStats`] (I-pictures count as
+/// all-intra).
+///
+/// # Errors
+/// As [`encode_display_order_gop_sequence_with_matrices`], plus a
+/// §6.3.10 flag violation from the options.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_display_order_gop_sequence_with_options(
+    frames: &[crate::frame_assembly::FrameBuffer],
+    b_between: usize,
+    anchors_per_gop: usize,
+    params: IntraPictureParams,
+    quantiser_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    matrices: &crate::quant_matrix_extension::QuantMatrixExtension,
+    options: &dyn Fn(usize) -> crate::encode_options::FrameEncodeOptions,
+) -> Result<(Vec<u8>, crate::encode_options::FrameEncodeStats)> {
+    use crate::encode_options::FrameEncodeStats;
     use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
+    let mut stats = FrameEncodeStats::default();
+    let mut previous_anchor: Option<crate::frame_assembly::FrameBuffer> = None;
 
     if frames.is_empty() {
         return Err(Error::InvalidBitstream(
@@ -668,12 +714,15 @@ pub fn encode_display_order_gop_sequence_with_matrices(
         // (quant_matrix_extension after the picture coding extension),
         // so the splice preserves them — every GOP's I picture
         // re-declares the chroma tables, which §6.3.11 allows.
-        let i_stream = crate::intra_encoder::encode_intra_picture_with_matrices(
+        let i_stream = crate::intra_encoder::encode_intra_picture_with_options(
             &frames[gop_start],
             params,
             0,
             quantiser_scale_code,
             matrices,
+            options(gop_start),
+            forward_f_code,
+            previous_anchor.as_ref(),
         )?;
         let mut forward_ref = crate::decode_video_sequence(&i_stream)?
             .first()
@@ -681,6 +730,7 @@ pub fn encode_display_order_gop_sequence_with_matrices(
             .ok_or(Error::InvalidBitstream(
                 "encode_display_order_gop_sequence: I anchor decode produced no frame",
             ))?;
+        stats.intra += params.mb_width() * params.mb_height();
         let pic_start = find_start(&i_stream, 0x0000_0100).ok_or(Error::InvalidBitstream(
             "encode_display_order_gop_sequence: I picture start code missing",
         ))?;
@@ -692,7 +742,7 @@ pub fn encode_display_order_gop_sequence_with_matrices(
         let mut prev_anchor = gop_start;
         while prev_anchor < gop_end {
             let next_anchor = (prev_anchor + step).min(gop_end);
-            let backward_ref = crate::p_picture_encoder::encode_p_picture_with_matrices(
+            let (backward_ref, p_stats) = crate::p_picture_encoder::encode_p_picture_with_stats(
                 &mut bw,
                 &frames[next_anchor],
                 &forward_ref,
@@ -701,9 +751,11 @@ pub fn encode_display_order_gop_sequence_with_matrices(
                 quantiser_scale_code,
                 forward_f_code,
                 &matrix_state,
+                options(next_anchor),
             )?;
+            stats.add(&p_stats);
             for b in (prev_anchor + 1)..next_anchor {
-                crate::b_picture_encoder::encode_b_picture_with_matrices(
+                let b_stats = crate::b_picture_encoder::encode_b_picture_with_stats(
                     &mut bw,
                     &frames[b],
                     &forward_ref,
@@ -714,18 +766,21 @@ pub fn encode_display_order_gop_sequence_with_matrices(
                     forward_f_code,
                     backward_f_code,
                     &matrix_state,
+                    options(b),
                 )?;
+                stats.add(&b_stats);
             }
             forward_ref = backward_ref;
             prev_anchor = next_anchor;
         }
+        previous_anchor = Some(forward_ref);
 
         gop_start = gop_end + 1;
     }
 
     let mut stream = bw.finish();
     stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
-    Ok(stream)
+    Ok((stream, stats))
 }
 
 /// Find the first 4-byte big-endian `code` start-code in `buf`.

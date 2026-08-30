@@ -231,6 +231,26 @@ pub struct PictureCodingExtensionParams {
     pub alternate_scan: bool,
     /// `progressive_frame`.
     pub progressive_frame: bool,
+    /// `top_field_first` (§6.3.10). In an interlaced sequence's frame
+    /// picture it names the field output first; in a progressive
+    /// sequence it combines with `repeat_first_field` into the
+    /// one / two / three frame output count and *shall* be `0` when
+    /// `repeat_first_field` is `0`. Field pictures force it to `0`.
+    pub top_field_first: bool,
+    /// `repeat_first_field` (§6.3.10): the 3:2-pulldown / frame
+    /// doubling flag. Shall be `0` when `progressive_frame` is `0` in
+    /// an interlaced sequence; field pictures force it to `0`.
+    pub repeat_first_field: bool,
+    /// `concealment_motion_vectors` (§6.3.10 / §7.6.3.9): when set
+    /// every intra macroblock of the picture carries a
+    /// `motion_vectors(0)` block plus a `marker_bit`.
+    pub concealment_motion_vectors: bool,
+    /// `chroma_format` of the surrounding `sequence_extension()`,
+    /// used only to derive the historical `chroma_420_type` flag —
+    /// §6.3.10: *"If chroma_format is 4:2:0, the value of
+    /// chroma_420_type shall be the same as progressive_frame; else
+    /// ... shall be equal to zero"*.
+    pub chroma_format: ChromaFormat,
 }
 
 impl Default for PictureCodingExtensionParams {
@@ -244,12 +264,65 @@ impl Default for PictureCodingExtensionParams {
             intra_vlc_format: false,
             alternate_scan: false,
             progressive_frame: false,
+            top_field_first: false,
+            repeat_first_field: false,
+            concealment_motion_vectors: false,
+            chroma_format: ChromaFormat::Yuv420,
         }
     }
 }
 
+impl PictureCodingExtensionParams {
+    /// The §6.3.10 `chroma_420_type` value these parameters imply:
+    /// equal to `progressive_frame` at 4:2:0, zero otherwise.
+    pub fn chroma_420_type(&self) -> bool {
+        self.progressive_frame && self.chroma_format == ChromaFormat::Yuv420
+    }
+
+    /// Check the §6.3.10 frame-picture flag constraints against the
+    /// sequence's `progressive_sequence`:
+    ///
+    /// * `progressive_sequence == 1` ⇒ `progressive_frame` shall be
+    ///   `1`, and `repeat_first_field == 0` ⇒ `top_field_first` shall
+    ///   be `0` (the one / two / three frame output ladder);
+    /// * `progressive_frame == 0` ⇒ `repeat_first_field` shall be `0`
+    ///   (two-field duration);
+    /// * `progressive_frame == 1` ⇒ `frame_pred_frame_dct` shall be
+    ///   `1`.
+    ///
+    /// # Errors
+    /// [`crate::Error::InvalidBitstream`] naming the violated rule.
+    pub fn validate_frame_picture_flags(&self, progressive_sequence: bool) -> crate::Result<()> {
+        if progressive_sequence && !self.progressive_frame {
+            return Err(crate::Error::InvalidBitstream(
+                "§6.3.10: progressive_sequence == 1 requires progressive_frame == 1",
+            ));
+        }
+        if progressive_sequence && !self.repeat_first_field && self.top_field_first {
+            return Err(crate::Error::InvalidBitstream(
+                "§6.3.10: in a progressive sequence top_field_first shall be 0 when repeat_first_field is 0",
+            ));
+        }
+        if !self.progressive_frame && self.repeat_first_field {
+            return Err(crate::Error::InvalidBitstream(
+                "§6.3.10: repeat_first_field shall be 0 when progressive_frame is 0",
+            ));
+        }
+        if self.progressive_frame && !self.frame_pred_frame_dct {
+            return Err(crate::Error::InvalidBitstream(
+                "§6.3.10: progressive_frame == 1 requires frame_pred_frame_dct == 1",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Write a §6.2.3.1 `picture_coding_extension()` for a frame picture
-/// (`picture_structure = Frame`, `top_field_first = 1`).
+/// (`picture_structure = Frame`). The `top_field_first` /
+/// `repeat_first_field` / `concealment_motion_vectors` flags and the
+/// derived `chroma_420_type` come from `p`; the caller is responsible
+/// for the §6.3.10 consistency rules
+/// ([`PictureCodingExtensionParams::validate_frame_picture_flags`]).
 pub fn write_picture_coding_extension(bw: &mut BitWriter, p: &PictureCodingExtensionParams) {
     bw.write_u32(EXTENSION_START_CODE, 32);
     bw.write_u32(PICTURE_CODING_EXTENSION_ID, 4);
@@ -259,14 +332,14 @@ pub fn write_picture_coding_extension(bw: &mut BitWriter, p: &PictureCodingExten
     bw.write_u32(u32::from(p.backward_f_code), 4); // f_code[1][1]
     bw.write_u32(u32::from(p.intra_dc_precision), 2);
     bw.write_u32(0b11, 2); // picture_structure = Frame
-    bw.write_bit(true); // top_field_first
+    bw.write_bit(p.top_field_first);
     bw.write_bit(p.frame_pred_frame_dct);
-    bw.write_bit(false); // concealment_motion_vectors
+    bw.write_bit(p.concealment_motion_vectors);
     bw.write_bit(p.q_scale_type);
     bw.write_bit(p.intra_vlc_format);
     bw.write_bit(p.alternate_scan);
-    bw.write_bit(false); // repeat_first_field
-    bw.write_bit(false); // chroma_420_type
+    bw.write_bit(p.repeat_first_field);
+    bw.write_bit(p.chroma_420_type()); // §6.3.10: = progressive_frame at 4:2:0
     bw.write_bit(p.progressive_frame);
     bw.write_bit(false); // composite_display_flag
     bw.align_to_byte();
@@ -312,7 +385,7 @@ pub fn write_field_picture_coding_extension(
     bw.write_u32(structure_code, 2); // picture_structure (Table 6-14)
     bw.write_bit(false); // top_field_first (§6.3.10: '0' in a field picture)
     bw.write_bit(false); // frame_pred_frame_dct (frame pictures only)
-    bw.write_bit(false); // concealment_motion_vectors
+    bw.write_bit(p.concealment_motion_vectors);
     bw.write_bit(p.q_scale_type);
     bw.write_bit(p.intra_vlc_format);
     bw.write_bit(p.alternate_scan);

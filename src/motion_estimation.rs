@@ -119,16 +119,14 @@ pub fn estimate_forward_mv(
     // grid. The zero-vector incumbent is always legal (the macroblock
     // itself is inside the picture).
     let legal = |hx: i32, hy: i32| -> bool {
-        let base_x = (mb_col * 16) as i32;
-        let base_y = (mb_row * 16) as i32;
-        let ix = hx.div_euclid(2);
-        let iy = hy.div_euclid(2);
-        let ex = i32::from(hx.rem_euclid(2) != 0);
-        let ey = i32::from(hy.rem_euclid(2) != 0);
-        base_x + ix >= 0
-            && base_y + iy >= 0
-            && base_x + ix + 15 + ex < reference.y.width() as i32
-            && base_y + iy + 15 + ey < reference.y.height() as i32
+        frame_vector_legal(
+            reference.y.width(),
+            reference.y.height(),
+            mb_col,
+            mb_row,
+            hx,
+            hy,
+        )
     };
 
     // Tie-break helper: when two vectors give the same SAD, prefer the
@@ -198,6 +196,31 @@ pub fn estimate_forward_mv(
         vector: MotionVectorPel::new(best_hx, best_hy),
         sad: best_sad,
     }
+}
+
+/// §7.6.3.8 legality of a frame-format half-sample vector `(hx, hy)`
+/// for the 16×16 luminance macroblock at `(mb_col, mb_row)` against a
+/// `ref_width × ref_height` reference plane: the whole §7.6.4 read
+/// span `base + (h DIV 2) ..= base + 15 + (h DIV 2) + (h & 1)` must
+/// lie inside the plane.
+pub fn frame_vector_legal(
+    ref_width: usize,
+    ref_height: usize,
+    mb_col: usize,
+    mb_row: usize,
+    hx: i32,
+    hy: i32,
+) -> bool {
+    let base_x = (mb_col * 16) as i32;
+    let base_y = (mb_row * 16) as i32;
+    let ix = hx.div_euclid(2);
+    let iy = hy.div_euclid(2);
+    let ex = i32::from(hx.rem_euclid(2) != 0);
+    let ey = i32::from(hy.rem_euclid(2) != 0);
+    base_x + ix >= 0
+        && base_y + iy >= 0
+        && base_x + ix + 15 + ex < ref_width as i32
+        && base_y + iy + 15 + ey < ref_height as i32
 }
 
 /// The largest integer-pel `search_range` that keeps every reachable

@@ -624,6 +624,49 @@ pub fn decode_intra_picture_with_matrices(
     params: IntraPictureParams,
     matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
 ) -> crate::Result<(FrameBuffer, usize)> {
+    decode_intra_picture_with_context(picture, params, matrices, IntraDecodeContext::default())
+}
+
+/// The §6.3.11 picture-coding-extension fields an **I-picture** slice
+/// walk needs beyond [`IntraPictureParams`]: with
+/// `concealment_motion_vectors == 1` every intra macroblock carries a
+/// `motion_vectors(0)` block (read with `f_code[0][*]`) plus a
+/// `marker_bit` (§6.2.5 / §7.6.3.9), which the walker must consume to
+/// stay in step with the block data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntraDecodeContext {
+    /// `concealment_motion_vectors` (§6.3.11).
+    pub concealment_motion_vectors: bool,
+    /// `f_code[0][0]` — forward horizontal f_code (`1..=9`, or `15`
+    /// when no vectors are coded).
+    pub f_code_fwd_horiz: u8,
+    /// `f_code[0][1]` — forward vertical f_code.
+    pub f_code_fwd_vert: u8,
+}
+
+impl Default for IntraDecodeContext {
+    /// No concealment vectors, `f_code[0][*] = 15` (unused).
+    fn default() -> Self {
+        Self {
+            concealment_motion_vectors: false,
+            f_code_fwd_horiz: 15,
+            f_code_fwd_vert: 15,
+        }
+    }
+}
+
+/// [`decode_intra_picture_with_matrices`] with an explicit
+/// [`IntraDecodeContext`] — required to decode I-pictures whose
+/// `picture_coding_extension()` sets `concealment_motion_vectors`.
+///
+/// # Errors
+/// As [`decode_intra_picture`].
+pub fn decode_intra_picture_with_context(
+    picture: &[u8],
+    params: IntraPictureParams,
+    matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
+    context: IntraDecodeContext,
+) -> crate::Result<(FrameBuffer, usize)> {
     use crate::picture_header::PictureStructure;
     use crate::slice_header::{SliceContext, SliceHeader};
     use crate::slice_macroblock_walk::SliceWalkContext;
@@ -655,11 +698,11 @@ pub fn decode_intra_picture_with_matrices(
             header.quantiser_scale_code,
             PictureStructure::Frame,
             params.frame_pred_frame_dct,
+            context.f_code_fwd_horiz,
+            context.f_code_fwd_vert,
             15,
             15,
-            15,
-            15,
-            false,
+            context.concealment_motion_vectors,
             params.chroma_format,
             params.intra_vlc_format,
             params.alternate_scan,

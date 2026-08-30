@@ -374,6 +374,7 @@ pub mod decoder;
 pub mod dequantize;
 #[doc(hidden)] // internal: §7.6.3.6 dual-prime vector arithmetic
 pub mod dual_prime;
+pub mod encode_options;
 pub mod encoder;
 #[doc(hidden)] // internal: §6.2.2.2 extension/user-data dispatcher
 pub mod extension_and_user_data;
@@ -478,11 +479,15 @@ pub mod video_sequence;
 // Stable crate-root surface: whole-stream decode, encoder entry points,
 // registry glue, and the frame/error types their signatures expose.
 // ---------------------------------------------------------------------
-pub use b_picture_encoder::{encode_b_picture, encode_b_picture_with_matrices};
+pub use b_picture_encoder::{
+    encode_b_picture, encode_b_picture_with_matrices, encode_b_picture_with_options,
+    encode_b_picture_with_stats,
+};
 pub use decoder::{
     frame_buffer_to_video_frame, make_decoder, Mpeg12Decoder, MPEG1_CODEC_ID_STR,
     MPEG2_CODEC_ID_STR,
 };
+pub use encode_options::{FrameEncodeOptions, FrameEncodeStats};
 pub use encoder::{make_encoder, Mpeg12Encoder};
 pub use field_picture_encoder::{
     encode_field_adaptive_display_order_gop_sequence, encode_field_b_picture,
@@ -491,18 +496,21 @@ pub use field_picture_encoder::{
     estimate_field_mv, estimate_field_region_mv, second_p_field_reference, FieldModeStats,
     FieldSearchResult,
 };
-pub use frame_assembly::{FrameBuffer, IntraPictureParams, Plane};
+pub use frame_assembly::{FrameBuffer, IntraDecodeContext, IntraPictureParams, Plane};
 pub use frame_field_encoder::{
     encode_ff_b_picture, encode_ff_display_order_gop_sequence, encode_ff_intra_picture,
     encode_ff_p_picture, estimate_field_in_frame_mv, FrameFieldStats,
 };
 pub use inter_encoder::{
     encode_display_order_gop_sequence, encode_display_order_gop_sequence_with_matrices,
-    encode_display_order_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p,
-    encode_i_then_p_copy, encode_nonintra_block, encode_p_copy_picture,
+    encode_display_order_gop_sequence_with_options, encode_display_order_sequence, encode_i_p_b,
+    encode_i_p_chain, encode_i_then_p, encode_i_then_p_copy, encode_nonintra_block,
+    encode_p_copy_picture,
 };
 pub use inter_reconstruction::InterError;
-pub use intra_encoder::{encode_intra_picture, encode_intra_picture_with_matrices};
+pub use intra_encoder::{
+    encode_intra_picture, encode_intra_picture_with_matrices, encode_intra_picture_with_options,
+};
 pub use mpeg1_encoder::{
     encode_mpeg1_b_picture, encode_mpeg1_d_picture, encode_mpeg1_d_sequence,
     encode_mpeg1_display_order_sequence, encode_mpeg1_intra_picture, encode_mpeg1_intra_stream,
@@ -513,7 +521,10 @@ pub use mpeg1_stream_writer::{
     constrained_parameters_admissible, write_mpeg1_picture_header, write_mpeg1_sequence_header,
     Mpeg1SequenceParams, CPB_MAX_BIT_RATE_VALUE, CPB_MAX_VBV_BUFFER_SIZE_VALUE,
 };
-pub use p_picture_encoder::{encode_p_picture, encode_p_picture_with_matrices};
+pub use p_picture_encoder::{
+    encode_p_picture, encode_p_picture_with_matrices, encode_p_picture_with_options,
+    encode_p_picture_with_stats,
+};
 pub use picture_header::PictureCodingType;
 pub use rate_control::{
     encode_cbr_gop_sequence, encode_field_cbr_gop_sequence, encode_mpeg1_cbr_sequence, CbrConfig,
@@ -621,9 +632,13 @@ pub use macroblock_pipeline::{
 #[doc(hidden)] // internal: §6.2.5.1 macroblock_type re-exports
 pub use macroblock_type::{MacroblockType, MacroblockTypeTable};
 #[doc(hidden)] // internal: §6.2.5 address-increment re-exports
-pub use mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
+pub use mb_address_increment::{
+    encode_mb_address_increment, MbAddressIncrement, MbAddressIncrementContext,
+};
 #[doc(hidden)] // internal: encoder motion-search re-exports
-pub use motion_estimation::{estimate_forward_mv, max_search_range, MotionSearchResult};
+pub use motion_estimation::{
+    estimate_forward_mv, frame_vector_legal, max_search_range, MotionSearchResult,
+};
 #[doc(hidden)] // internal: §6.2.5.2 motion-vector re-exports
 pub use motion_vector::{
     encode_dmvector, encode_motion_component, encode_motion_vector, split_delta, MotionVector,
