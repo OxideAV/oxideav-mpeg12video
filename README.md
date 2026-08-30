@@ -21,6 +21,11 @@ both the `mpeg1video` and `mpeg2video` codec ids, so the codec is
 consumed through `oxideav_core::make_decoder` (a `RuntimeContext` /
 `register_all` lookup) as well as through the direct
 `decoder::make_decoder` factory and the per-stage module APIs.
+§7.10 **data-partitioned** streams decode through
+`decode_data_partitioned` (partition pair → merged non-scalable
+stream → the same driver), and a three-target cargo-fuzz harness
+(`fuzz/`) runs daily against the decoder, the encode→decode round
+trip and the partition merge.
 
 ## What works today
 
@@ -196,6 +201,27 @@ The decode pipeline is implemented end-to-end at the module level:
   `reference_select_code` into the named Table 7-28 (P-picture) /
   Table 7-29 (B-picture) prediction reference sources
   (`PictureReferences` / `ReferenceSource`).
+- **Data partitioning (§7.10)**: `data_partitioning::split_data_partitions`
+  divides a non-scalable ISO/IEC 13818-2 stream into its partition 0 /
+  partition 1 pair at a Table 7-30 `priority_breakpoint` (`1..=3`, or
+  `64..=127` for the per-`(run, level)`-pair breakpoints) — inserting
+  the `sequence_scalable_extension()`, the slice-level
+  `priority_breakpoint`, and the §7.10 redundant header copies (only
+  `sequence_extension()` / `picture_coding_extension()` /
+  `sequence_scalable_extension()` in partition 1) — and
+  `merge_data_partitions` is the §7.10 *"current_partition"* switching
+  procedure applied bitstream-to-bitstream, re-forming the non-scalable
+  stream that `decode_video_sequence` reconstructs
+  (`decode_data_partitioned` chains the two). Both directions are one
+  engine over the crate's per-element syntax parsers (address
+  increment, `macroblock_type` + modes tail, `quantiser_scale_code`,
+  `motion_vectors(s)`, the concealment `marker_bit`,
+  `coded_block_pattern()`, the §7.2.1 DC prelude, the §7.2.2 run-level
+  walker); `merge(split(s, pb)) == s` **byte-exactly** for every `.m2v`
+  stream of the conformance and self-encoded corpora at breakpoints
+  1 / 2 / 3 / 64 / 65 / 72 / 127, §5.2.3 zero stuffing preserved, and
+  hostile pairs (swapped, duplicated, truncated, non-scalable,
+  ISO/IEC 11172-2) are rejected without panics.
 - **Block / macroblock drivers**: `mpeg2_block_decoder::decode_block`
   chains DC prelude → residual VLC → inverse scan → inverse quant →
   IDCT into a single bitstream→plane entry point, and
@@ -208,7 +234,7 @@ verifying the parsers against known-good encoded streams.
 ## Reference conformance
 
 `tests/fixtures/conformance/` stages a **whole-sequence conformance
-corpus**: nine elementary streams — MPEG-1 IBBP GOPs, high-motion
+corpus**: twelve elementary streams — MPEG-1 IBBP GOPs, high-motion
 wide-`f_code`, and VCD-rate CBR SIF; MPEG-2 IBBP with adaptive
 quantisation, interlaced field prediction, `intra_vlc_format` +
 non-linear quant + 10-bit DC, 4:2:2 profile, non-macroblock-multiple
@@ -469,7 +495,7 @@ generic**:
   `encode_display_order_gop_sequence_with_matrices`).
 
 Both encoders are **externally conformance-validated**: a pinned
-self-encoded corpus (`tests/fixtures/selfenc/` — twenty streams:
+self-encoded corpus (`tests/fixtures/selfenc/` — twenty-two streams:
 MPEG-2 all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
 motion-compensated chain with intra fallback, an I/B/P group, a
 7-frame IBBP display-order sequence, a two-GOP MPEG-2 stream with GOP
@@ -483,7 +509,9 @@ the same slices, an interlaced **frame-picture field-based** I B P B P
 **dual-prime** I P P, a **4:2:2-profile** I B P B P, a 4:2:2
 I B P B P under the full flag set (`intra_vlc_format`,
 `alternate_scan`, non-linear `q_scale_type`, 10-bit DC) with §6.3.11
-luma-and-chroma matrix downloads, a **4:4:4** I B P, six MPEG-1
+luma-and-chroma matrix downloads, a **4:4:4** I B P, a
+**skipped-macroblock + concealment-vector** I B P B P, a
+**frame-field** I B P B P under the full entropy flag set, six MPEG-1
 streams — all-intra, one-GOP
 I P P P, a two-GOP I B B P | I B B P, an I B P with downloadable
 §2.4.3.2 quantiser matrices, an 11172-2 Annex C CBR two-GOP stream
@@ -563,6 +591,47 @@ unshifted values the §2.4.4.2 / §2.4.4.3 final `recon <<= 1`
 restores; pinned by a sample-exact round-trip and a strict black-box
 decode).
 
+Round 453 closed the frame-picture encode remainders behind
+**`FrameEncodeOptions`** (`encode_options`; `_with_options` /
+`_with_stats` variants of the I / P / B encoders and a per-display-
+frame options closure on
+`encode_display_order_gop_sequence_with_options`, which also returns
+the whole-sequence `FrameEncodeStats` macroblock counts):
+
+- **Skipped macroblocks (§7.6.6)** — the P encoder skips a
+  macroblock whose zero-vector frame prediction quantises to an
+  all-zero residual (the §7.6.6.2 reconstruction, predictors reset);
+  the B encoder tries the previous macroblock's direction with the
+  current `PMV` vectors first and skips when that residual quantises
+  to zero (§7.6.6.4, predictors untouched, §7.6.3.8 span legality
+  checked on the inherited vectors). Never the first / last
+  macroblock of a slice, never in I-pictures; runs ride Table B-1
+  `macroblock_escape` chains (`encode_mb_address_increment`).
+- **Concealment motion vectors (§7.6.3.9)** — every intra macroblock
+  (all of an I-picture's, the P encoder's intra fallbacks) carries a
+  frame-format forward vector coded against `PMV[0][0]` plus the
+  `marker_bit`, with the Table 7-9 both-slot predictor write-back;
+  per the §7.6.3.9 recommendation the vector suits the macroblock
+  *below* (searched against the previous anchor), `(0, 0)` on the
+  bottom row. I-pictures write a real `f_code[0][*]` when (and only
+  when) the flag is set, and the decode side
+  (`decode_intra_picture_with_context`) walks such I-pictures.
+- **§6.3.10 output-cadence signalling** — `top_field_first`,
+  `repeat_first_field` and a `progressive_frame` override, validated
+  against the §6.3.10 consistency rules
+  (`PictureCodingExtensionParams::validate_frame_picture_flags`),
+  with `FrameEncodeOptions::pulldown_32` for the classic 3:2
+  pattern; `DecodedFrame` surfaces the three flags plus the
+  `output_field_count` / `output_frame_count` helpers. The writer
+  also derives `chroma_420_type` from `progressive_frame` and emits
+  `top_field_first = 0` where a progressive sequence requires it.
+- **Interlaced entropy flags** — the field-picture encoders (plain
+  and adaptive) and the frame-field encoder honour `alternate_scan`
+  and `intra_vlc_format` on the wire (through the block writers, the
+  `dct_type` wire-bit cost comparison and the intra AC cost probe),
+  so the whole picture-coding-extension flag set is encodable in
+  every picture structure at 4:2:0.
+
 ## Runtime encoder
 
 `register` installs `oxideav_core::Encoder` factories under both the
@@ -580,86 +649,38 @@ keyframe-flagged packet carrying the finished elementary stream
 round-trips through both decode paths, and the 11172-2 classification
 of the `mpeg1video` output (no extension start codes).
 
-The frame-picture encode path now covers 4:2:0 / 4:2:2 / 4:4:4 with
-downloadable quantiser matrices and every picture-coding-extension
-entropy flag; the **field / frame-field** encoders remain 4:2:0-only
-(they reject other chroma formats and the `alternate_scan` /
-`intra_vlc_format` flags). Skipped-macroblock emission, concealment
-motion vectors, and the scalable profiles are not encoded.
+The frame-picture encode path covers 4:2:0 / 4:2:2 / 4:4:4 with
+downloadable quantiser matrices, every picture-coding-extension
+entropy flag, skipped macroblocks, concealment motion vectors and the
+§6.3.10 output-cadence flags; the **field / frame-field** encoders
+honour every entropy flag but remain 4:2:0-only. The runtime
+`Encoder` adapter drives the baseline (no-options) assemblers.
 
 ## Not yet supported
 
-- A top-level **`video_sequence()` decode loop** now exists
-  (`decode_video_sequence(stream) -> Vec<DecodedFrame>`): it parses the
-  sequence layer once for the geometry, walks every `picture_start_code`,
-  dispatches each frame picture to the matching per-picture driver with
-  the running §7.6 anchor pair, and reorders the reconstructed frames
-  into **display order** per §6.1.1.11 (B-frames pass through, I/P frames
-  held back one). The structural reorder is independently cross-checkable
-  against the `temporal_reference`-derived display order:
-  `display_indices_from_temporal_references` accumulates a continuous
-  display index per coded frame across §6.3.8/§6.3.9 GOP resets, and
-  `verify_display_order` confirms a display-ordered sequence is strictly
-  increasing in those indices (an integration test asserts the two agree
-  on a decoded I-P-B run). It covers **frame pictures** (the MPEG-2 common case +
-  MPEG-1 entirely) **and field-picture pairs** (§6.1.1.4.1): each field
-  picture is reconstructed by `decode_field_picture`, the first field of
-  a pair is held until its partner arrives, and the two are interleaved
-  into one full-height frame by `assemble_frame_from_fields` (§3.131
-  top→even lines / §3.13 bottom→odd lines), with the §7.6.2.1
-  second-field-of-a-P-frame reference rule honoured via a synthetic
-  reference frame pairing the current first field with the previous
-  frame's opposite-parity field. **Downloadable quantiser matrices are
-  threaded end-to-end** (§6.3.11): the sequence header's
-  `load_*_quantiser_matrix` payloads and every
-  `quant_matrix_extension()` update a running matrix state (reset to
-  the §6.3.7 defaults at each `sequence_header_code`) that the slice
-  walker's §7.4.2.3 reconstruction consumes — proven
-  reference-conformant on a custom-matrix black-box fixture and
-  exactly (splice/persist/reset) on self-encoded streams. The
-  scalable layers are skipped by the start-code scan. The
-  per-picture module APIs remain available directly
-  (`decode_intra_picture` for I-pictures, `decode_inter_picture` for
-  frame-picture P/B, `decode_field_picture` for field-picture P/B,
-  each with a `_with_matrices` variant taking the §6.3.11 state),
-  with the caller supplying the decoded reference frame(s). All §7.6
-  motion-compensation prediction modes are now driven end-to-end: the
-  frame-picture frame-based **and** field-based P/B reconstruction, the
-  field-picture **simple field prediction**, the field-picture **16×8
-  motion compensation**, the **dual-prime** four-/two-field reconstruction
-  in both frame and field pictures (§7.6.3.6 / §7.6.7.4), and the
-  field-picture **B-field skipped-macroblock** §7.6.6.3 direction
-  inheritance. (Frame-picture 16×8-MC does not exist — §7.6 restricts 16×8
-  MC to field pictures.)
-- Scalability profiles and the spatial/temporal/SNR enhancement layers.
-  Nearly all of the per-stage math is now implemented and composed:
-  - **Spatial (§7.7)**: the §7.7.3.4 deinterlace, §7.7.3.5/.6 lower-layer
-    resampling, §7.7.3.7 reinterlace, the §7.7.3.1 / Table 7-15
-    upsampling-case dispatch + `upsample_spatial_prediction` driver, the
-    §7.7.4 spatial/temporal prediction combination, and §7.7.5.1 PMV
-    reset. The **picture-level spatial-prediction driver**
-    (`spatial_prediction_picture`) now derives the Table 7-16 / 7-17 /
-    7-18 `ResampleParams` from the parsed `sequence_scalable_extension()`
-    + `picture_spatial_scalable_extension()` geometry and runs the
-    upsample over a whole lower-layer frame to emit the enhancement-grid
-    `SpatialPredictionPicture` (`spat_pred_pic` per component), and the
-    **§7.7.4 per-macroblock combiner**
-    (`combine_macroblock_spatial_temporal` /
-    `extract_colocated_spatial`) extracts the co-located `spat_pred_pic`
-    block at each macroblock position (with §7.7.3 border extension) and
-    blends it with the temporal prediction under the Table 7-21 weight.
-  - **SNR (§7.8)**: the §7.8.3.4 two-layer coefficient addition
-    (`add_layer_block`, plus the `chroma_simulcast` DC-prediction case
-    `add_layer_chroma_simulcast` with the Table 7-27
-    `simulcast_dc_predictor_block` lookup).
-  - **Temporal (§7.9)**: the Table 7-28 / 7-29 reference-frame selection
-    (`PictureTemporalScalableExtension::resolve_references`).
-
-  What remains uncomposed is the **top-level multi-layer decode loop**
-  that demuxes the two layer bitstreams, decodes the lower layer, and
-  walks the enhancement-layer macroblocks feeding the temporal
-  predictions and lower-layer coefficients/frames into these combiners
-  picture-by-picture.
+- **Scalable multi-layer decode loops** for the spatial (§7.7), SNR
+  (§7.8) and temporal (§7.9) profiles. Every per-stage building block
+  is implemented and unit-tested — the §7.7.3 deinterlace / resample /
+  reinterlace chain with the Table 7-15 case dispatch and the
+  picture-level `spatial_prediction_picture` driver, the §7.7.4
+  spatial/temporal combiner, the §7.8.3.4 coefficient addition (with
+  the `chroma_simulcast` Table 7-27 case), the Table 7-28 / 7-29
+  temporal reference selection, and all the extension parsers — but
+  the top-level loop that demultiplexes an enhancement-layer bitstream
+  and feeds those combiners picture by picture is not composed. No
+  clean-room fixture source exists for these layers (the black-box
+  reference binary neither produces nor decodes them), so a self-made
+  layered encoder would be the only oracle. Data partitioning (§7.10)
+  **is** supported (see above).
+- **4:2:2 / 4:4:4 on the interlaced encode paths** — the field-picture
+  and frame-field encoders are 4:2:0-only (the frame-picture encoders
+  cover all three chroma formats).
+- **Scalable-layer encoding** (spatial / SNR / temporal enhancement
+  layers) and `vertical_size > 2800` (`slice_vertical_position_extension`)
+  on the data-partitioning split / merge.
+- The runtime `Encoder` adapter exposes the baseline assemblers only
+  (`FrameEncodeOptions`, the interlaced encoders and CBR rate control
+  are reached through the direct APIs).
 
 ## Clean-room provenance
 
