@@ -278,14 +278,6 @@ fn check_field_params(params: &IntraPictureParams) -> Result<()> {
             "field picture encoder: frame_pred_frame_dct applies to frame pictures only (§6.3.10)",
         ));
     }
-    if params.alternate_scan || params.intra_vlc_format {
-        // The field block writers code Table B-14 / zigzag scan; the
-        // flags would otherwise be declared in the picture coding
-        // extension but not honoured on the wire.
-        return Err(Error::InvalidBitstream(
-            "field picture encoder: alternate_scan / intra_vlc_format are not supported",
-        ));
-    }
     Ok(())
 }
 
@@ -386,8 +378,8 @@ pub fn encode_field_intra_picture(
                 &mut pred,
                 nblocks,
                 params.chroma_format,
-                crate::mpeg2_dct_coeff::TableSelection::TableZero,
-                false,
+                crate::mpeg2_dct_coeff::TableSelection::from_context(params.intra_vlc_format, true),
+                params.alternate_scan,
                 &QuantiserMatrixState::defaults(),
             );
         }
@@ -492,8 +484,11 @@ pub fn encode_field_p_picture(
                     &mut intra_pred,
                     nblocks,
                     params.chroma_format,
-                    crate::mpeg2_dct_coeff::TableSelection::TableZero,
-                    false,
+                    crate::mpeg2_dct_coeff::TableSelection::from_context(
+                        params.intra_vlc_format,
+                        true,
+                    ),
+                    params.alternate_scan,
                     &QuantiserMatrixState::defaults(),
                 );
                 // §7.6.3.4: an intra macroblock resets the predictors.
@@ -577,7 +572,7 @@ pub fn encode_field_p_picture(
                 encode_cbp420(bw, cbp);
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
-                        write_inter_block_coeffs(bw, qf, false);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }
@@ -802,7 +797,7 @@ pub fn encode_field_b_picture(
                 encode_cbp420(bw, cbp);
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
-                        write_inter_block_coeffs(bw, qf, false);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }
@@ -1575,8 +1570,11 @@ pub fn encode_field_p_picture_adaptive(
                     &mut intra_pred,
                     nblocks,
                     params.chroma_format,
-                    crate::mpeg2_dct_coeff::TableSelection::TableZero,
-                    false,
+                    crate::mpeg2_dct_coeff::TableSelection::from_context(
+                        params.intra_vlc_format,
+                        true,
+                    ),
+                    params.alternate_scan,
                     &QuantiserMatrixState::defaults(),
                 );
                 pmv.reset();
@@ -1697,7 +1695,7 @@ pub fn encode_field_p_picture_adaptive(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf, false);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }
@@ -1983,7 +1981,7 @@ pub fn encode_field_b_picture_adaptive(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf, false);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }

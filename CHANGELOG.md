@@ -8,6 +8,18 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- round 453: **`alternate_scan` / `intra_vlc_format` on the interlaced
+  encode paths** — the field-picture encoders (plain and adaptive) and
+  the `frame_pred_frame_dct = 0` frame-field encoder now honour the
+  two entropy flags on the wire (Table 7-3 → Table B-15 intra AC, §7.3
+  scan selection threaded through the block writers, the `dct_type`
+  wire-bit cost comparison and the intra AC cost probe) instead of
+  rejecting them; combined with the already-threaded `q_scale_type` /
+  `intra_dc_precision` the whole picture-coding-extension entropy
+  flag set is now encodable in every picture structure at 4:2:0.
+
+### Added
+
 - round 453: **`FrameEncodeOptions`** (`encode_options`) — optional
   behaviours for the frame-picture encoders, threaded through new
   `_with_options` / `_with_stats` variants of
@@ -57,6 +69,8 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- round 453: clippy 1.98 `needless_late_init` in
+  `mpeg1_reconstruct` (CI toolchain drift).
 - round 453: the frame-picture `picture_coding_extension()` writer
   emitted `top_field_first = 1` unconditionally — §6.3.10 requires
   `0` when `repeat_first_field` is `0` in a progressive sequence —

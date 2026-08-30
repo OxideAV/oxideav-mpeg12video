@@ -384,3 +384,53 @@ fn field_assembler_rejects_bad_geometry() {
     let f = FrameBuffer::new(W, H, ChromaFormat::Yuv420);
     assert!(encode_field_display_order_gop_sequence(&[f], 0, 1, &p, 6, 3, 3).is_err());
 }
+
+#[test]
+fn field_sequence_honours_alternate_scan_and_intra_vlc_format() {
+    // Round 453: the field-picture encoders code `alternate_scan` /
+    // `intra_vlc_format` (+ non-linear quantiser, 10-bit DC) on the
+    // wire instead of rejecting them.
+    let params = IntraPictureParams {
+        alternate_scan: true,
+        intra_vlc_format: true,
+        q_scale_type: true,
+        intra_dc_precision: 2,
+        ..frame_params()
+    };
+    let frames: Vec<FrameBuffer> = (0..5).map(|t| frame_at(t, 0)).collect();
+    let stream = encode_field_display_order_gop_sequence(&frames, 1, 2, &params, 6, 3, 3)
+        .expect("encode full-flag field sequence");
+
+    let pic = stream
+        .windows(4)
+        .position(|w| w == [0x00, 0x00, 0x01, 0x00])
+        .expect("picture start code");
+    let (_hdr, ext) =
+        oxideav_mpeg12video::picture_header::Mpeg2PictureHeader::parse_with_extension(
+            &stream[pic..],
+        )
+        .expect("parse picture headers");
+    assert!(ext.alternate_scan);
+    assert!(ext.intra_vlc_format);
+    assert_eq!(ext.picture_structure, PictureStructure::TopField);
+
+    let decoded = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(decoded.len(), 5);
+    for (t, d) in decoded.iter().enumerate() {
+        let src = frame_at(t, 0);
+        let mut sum = 0u64;
+        for y in 0..H {
+            for x in 0..W {
+                sum += u64::from(
+                    d.frame
+                        .y
+                        .get(x, y)
+                        .unwrap()
+                        .abs_diff(src.y.get(x, y).unwrap()),
+                );
+            }
+        }
+        let mae = sum as f64 / (W * H) as f64;
+        assert!(mae < 8.0, "frame {t} luma MAE {mae}");
+    }
+}

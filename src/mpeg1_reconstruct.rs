@@ -329,16 +329,15 @@ fn reconstruct_component(
 
     // §2.4.4.2 `*_little` / `*_big` formula.
     let mut little = motion_code * f;
-    let big;
-    if little == 0 {
-        big = 0;
+    let big = if little == 0 {
+        0
     } else if little > 0 {
         little -= complement;
-        big = little - (32 * f);
+        little - (32 * f)
     } else {
         little += complement;
-        big = little + (32 * f);
-    }
+        little + (32 * f)
+    };
 
     // §2.4.4.2 conformance guard: *"Values of forward_f,
     // motion_horizontal_forward_code and if present

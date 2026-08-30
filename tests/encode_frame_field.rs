@@ -462,3 +462,62 @@ fn ff_encoders_reject_bad_configurations() {
     )
     .is_err());
 }
+
+#[test]
+fn ff_assembler_honours_alternate_scan_and_intra_vlc_format() {
+    // Round 453: the frame-field encoder codes the full entropy flag
+    // set on the wire — `alternate_scan` (§7.3), `intra_vlc_format`
+    // (Table 7-3 → Table B-15), non-linear `q_scale_type` and 10-bit
+    // `intra_dc_precision` — and the stream still decodes with
+    // bounded distortion through `decode_video_sequence`.
+    let width = 64;
+    let height = 64;
+    let params = IntraPictureParams {
+        alternate_scan: true,
+        intra_vlc_format: true,
+        q_scale_type: true,
+        intra_dc_precision: 2,
+        ..ff_params(width, height)
+    };
+    let base = textured_frame(width, height);
+    let frames: Vec<FrameBuffer> = (0i32..5)
+        .map(|i| shift_fields(&base, 2 * i, -2 * i))
+        .collect();
+
+    let (stream, stats) =
+        encode_ff_display_order_gop_sequence(&frames, 1, 2, &params, 6, 3, 3, false)
+            .expect("assemble full-flag ff sequence");
+    assert!(stats.field_mc > 0, "per-field motion sequence: {stats:?}");
+
+    // The flags are on the wire.
+    let pic = stream
+        .windows(4)
+        .position(|w| w == [0x00, 0x00, 0x01, 0x00])
+        .expect("picture start code");
+    let (_hdr, ext) =
+        oxideav_mpeg12video::picture_header::Mpeg2PictureHeader::parse_with_extension(
+            &stream[pic..],
+        )
+        .expect("parse picture headers");
+    assert!(ext.alternate_scan);
+    assert!(ext.intra_vlc_format);
+    assert!(ext.q_scale_type);
+    assert_eq!(ext.intra_dc_precision, 2);
+
+    let decoded: Vec<DecodedFrame> = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(decoded.len(), 5);
+    for (i, frame) in frames.iter().enumerate() {
+        let mut err_sum = 0u64;
+        let mut n = 0u64;
+        for y in 4..height - 4 {
+            for x in 12..width - 12 {
+                let d = i64::from(decoded[i].frame.y.get(x, y).unwrap())
+                    - i64::from(frame.y.get(x, y).unwrap());
+                err_sum += d.unsigned_abs();
+                n += 1;
+            }
+        }
+        let mae = err_sum as f64 / n as f64;
+        assert!(mae < 6.0, "frame {i} interior luma MAE {mae}");
+    }
+}

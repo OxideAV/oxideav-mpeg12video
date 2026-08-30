@@ -179,11 +179,6 @@ fn check_ff_params(params: &IntraPictureParams) -> Result<()> {
              progressive_frame = 0, which requires an interlaced sequence (§6.3.10)",
         ));
     }
-    if params.alternate_scan || params.intra_vlc_format {
-        return Err(Error::InvalidBitstream(
-            "frame-field encoder: alternate_scan / intra_vlc_format are not supported",
-        ));
-    }
     Ok(())
 }
 
@@ -589,11 +584,11 @@ fn quantise_mb_residuals(
 
 /// Exact §7.2.2 wire-bit cost of a quantised luma block set: the sum of
 /// the run-level VLC + `end_of_block` lengths of every coded block.
-fn luma_coeff_bits(blocks: &[InterBlock]) -> u64 {
+fn luma_coeff_bits(blocks: &[InterBlock], alternate_scan: bool) -> u64 {
     let mut scratch = BitWriter::new();
     for b in blocks.iter().take(4) {
         if let Some(qf) = b.qf_ref() {
-            write_inter_block_coeffs(&mut scratch, qf, false);
+            write_inter_block_coeffs(&mut scratch, qf, alternate_scan);
         }
     }
     scratch.bit_position()
@@ -613,6 +608,7 @@ fn choose_inter_dct(
     mb_row: usize,
     qscale: u8,
     chroma_format: ChromaFormat,
+    alternate_scan: bool,
 ) -> (bool, Vec<InterBlock>, u8) {
     let (frame_blocks, frame_cbp) = quantise_mb_residuals(
         current,
@@ -636,7 +632,9 @@ fn choose_inter_dct(
         true,
         chroma_format,
     );
-    if luma_coeff_bits(&field_blocks) < luma_coeff_bits(&frame_blocks) {
+    if luma_coeff_bits(&field_blocks, alternate_scan)
+        < luma_coeff_bits(&frame_blocks, alternate_scan)
+    {
         (true, field_blocks, field_cbp)
     } else {
         (false, frame_blocks, frame_cbp)
@@ -692,8 +690,11 @@ fn intra_luma_ac_bits(
     dc_mult: i32,
     field_dct: bool,
     chroma_format: ChromaFormat,
+    alternate_scan: bool,
+    intra_vlc_format: bool,
 ) -> u64 {
-    let scan = inverse_scan_table(false);
+    let scan = inverse_scan_table(alternate_scan);
+    let table = TableSelection::from_context(intra_vlc_format, true);
     let mut scratch = BitWriter::new();
     for i in 0..4usize {
         let placement =
@@ -716,14 +717,14 @@ fn intra_luma_ac_bits(
             }
             encode_dct_coeff(
                 &mut scratch,
-                TableSelection::TableZero,
+                table,
                 CoefficientPosition::Next,
                 run,
                 level.clamp(-2047, 2047) as i16,
             );
             run = 0;
         }
-        encode_end_of_block(&mut scratch, TableSelection::TableZero);
+        encode_end_of_block(&mut scratch, table);
     }
     scratch.bit_position()
 }
@@ -745,9 +746,11 @@ fn encode_ff_intra_mb(
     pred: &mut IntraDcPred,
     field_dct: bool,
     chroma_format: ChromaFormat,
+    alternate_scan: bool,
+    intra_vlc_format: bool,
 ) {
-    let scan = inverse_scan_table(false);
-    let table = TableSelection::TableZero;
+    let scan = inverse_scan_table(alternate_scan);
+    let table = TableSelection::from_context(intra_vlc_format, true);
     let nblocks = block_count(chroma_format);
     for i in 0..nblocks {
         let placement =
@@ -972,6 +975,8 @@ pub fn encode_ff_intra_picture(
                 dc_mult,
                 true,
                 params.chroma_format,
+                params.alternate_scan,
+                params.intra_vlc_format,
             ) < intra_luma_ac_bits(
                 frame,
                 mb_col,
@@ -980,6 +985,8 @@ pub fn encode_ff_intra_picture(
                 dc_mult,
                 false,
                 params.chroma_format,
+                params.alternate_scan,
+                params.intra_vlc_format,
             );
             bw.write_bit(field_dct);
             encode_ff_intra_mb(
@@ -993,6 +1000,8 @@ pub fn encode_ff_intra_picture(
                 &mut pred,
                 field_dct,
                 params.chroma_format,
+                params.alternate_scan,
+                params.intra_vlc_format,
             );
             stats.intra += 1;
             if field_dct {
@@ -1173,6 +1182,8 @@ pub fn encode_ff_p_picture(
                     dc_mult,
                     true,
                     params.chroma_format,
+                    params.alternate_scan,
+                    params.intra_vlc_format,
                 ) < intra_luma_ac_bits(
                     current,
                     mb_col,
@@ -1181,6 +1192,8 @@ pub fn encode_ff_p_picture(
                     dc_mult,
                     false,
                     params.chroma_format,
+                    params.alternate_scan,
+                    params.intra_vlc_format,
                 );
                 bw.write_bit(field_dct);
                 encode_ff_intra_mb(
@@ -1194,6 +1207,8 @@ pub fn encode_ff_p_picture(
                     &mut intra_pred,
                     field_dct,
                     params.chroma_format,
+                    params.alternate_scan,
+                    params.intra_vlc_format,
                 );
                 // §7.6.3.4 / Table 7-10 ◊ row: intra without concealment
                 // vectors resets the predictor bank.
@@ -1240,6 +1255,7 @@ pub fn encode_ff_p_picture(
                 mb_row,
                 qscale,
                 params.chroma_format,
+                params.alternate_scan,
             );
             // §6.2.5.1: dct_type is only transmitted when the macroblock
             // is coded; an uncoded macroblock defaults to frame DCT.
@@ -1283,7 +1299,7 @@ pub fn encode_ff_p_picture(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf, false);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }
@@ -1580,6 +1596,7 @@ pub fn encode_ff_b_picture(
                 mb_row,
                 qscale,
                 params.chroma_format,
+                params.alternate_scan,
             );
             let effective_field_dct = field_dct && cbp != 0;
 
@@ -1619,7 +1636,7 @@ pub fn encode_ff_b_picture(
                 encode_cbp420(bw, cbp);
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
-                        write_inter_block_coeffs(bw, qf, false);
+                        write_inter_block_coeffs(bw, qf, params.alternate_scan);
                     }
                 }
             }
