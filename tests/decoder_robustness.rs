@@ -115,3 +115,47 @@ fn no_panic_on_mpeg1_bit_flips() {
         drive(MPEG1_CODEC_ID_STR, &buf);
     }
 }
+
+/// Round-453 fuzz finding: a 282-byte input whose pictures carry no
+/// slices used to mint one full-size (4019×2549) frame per
+/// `picture_start_code` — gigabytes of output from a few header bytes.
+/// §6.1.2.2 (restricted slice structure, Table 8-5) requires every
+/// macroblock to be enclosed in a slice, so such pictures are rejected.
+#[test]
+fn zero_slice_pictures_are_rejected_not_allocated() {
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/hostile/zero-slice-pictures-282b.bin"
+    ))
+    .expect("hostile fixture");
+    let result = oxideav_mpeg12video::decode_video_sequence(&bytes);
+    assert!(result.is_err(), "slice-less pictures must be rejected");
+}
+
+/// A conformant picture with its last slice removed leaves the bottom
+/// macroblock row uncovered — rejected per §6.1.2.2 (restricted slice
+/// structure), while the intact stream decodes.
+#[test]
+fn partial_slice_coverage_is_rejected() {
+    let stream = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/selfenc/selfenc-intra-64x48.m2v"
+    ))
+    .expect("fixture");
+    assert!(oxideav_mpeg12video::decode_video_sequence(&stream).is_ok());
+    // Locate the last slice start code (0x000001 0x01..=0xAF) and cut
+    // the stream there, re-appending the sequence_end_code.
+    let last_slice = stream
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| w[0] == 0 && w[1] == 0 && w[2] == 1 && (1..=0xAF).contains(&w[3]))
+        .map(|(i, _)| i)
+        .next_back()
+        .expect("slice present");
+    let mut cut = stream[..last_slice].to_vec();
+    cut.extend_from_slice(&[0, 0, 1, 0xB7]);
+    assert!(
+        oxideav_mpeg12video::decode_video_sequence(&cut).is_err(),
+        "a picture missing a slice row must be rejected"
+    );
+}

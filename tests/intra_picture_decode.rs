@@ -95,16 +95,13 @@ fn decodes_first_i_picture_to_full_frame() {
 
     let (frame, placed) = decode_intra_picture(picture, params).expect("intra picture decode");
 
-    // 352×240 4:2:0 → 22×15 = 330 macroblocks, 6 blocks each (4 Y +
-    // 1 Cb + 1 Cr). Every macroblock of an I-picture is intra and
-    // fully coded, so all 330*6 = 1980 blocks must be placed.
+    // 352×240 4:2:0 → 22×15 = 330 macroblocks. Every macroblock of an
+    // I-picture is intra and fully coded, so all 330 macroblocks must
+    // be placed (the count is in macroblocks — it feeds the §6.1.2.2
+    // restricted-slice-structure coverage check).
     assert_eq!(params.mb_width(), 22);
     assert_eq!(params.mb_height(), 15);
-    assert_eq!(
-        placed,
-        330 * 6,
-        "all 1980 intra blocks placed (330 MBs × 6)"
-    );
+    assert_eq!(placed, 330, "all 330 intra macroblocks placed");
 
     // Frame geometry: luma 352×240, chroma 176×120 (4:2:0).
     assert_eq!((frame.y.width(), frame.y.height()), (352, 240));

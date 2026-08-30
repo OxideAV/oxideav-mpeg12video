@@ -104,6 +104,16 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- round 453: **§6.1.2.2 restricted slice structure enforced** —
+  `decode_video_sequence` now rejects a picture whose slices do not
+  enclose every macroblock of the §6.3.3 grid exactly once (Table 8-5
+  imposes the restricted slice structure on every defined profile;
+  ISO/IEC 11172-2 §2.4.1 forbids gaps between slices). Found by the
+  new `decode` fuzz target: a 282-byte input whose pictures carried
+  no slices at all minted one full-size 4019×2549 frame per
+  `picture_start_code` and ran the process past 1 GB
+  (`tests/fixtures/hostile/zero-slice-pictures-282b.bin` pins the
+  rejection; `tests/decoder_robustness.rs`).
 - round 453: clippy 1.98 `needless_late_init` in
   `mpeg1_reconstruct` (CI toolchain drift).
 - round 453: the frame-picture `picture_coding_extension()` writer

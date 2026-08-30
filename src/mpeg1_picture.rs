@@ -167,7 +167,9 @@ pub fn decode_mpeg1_intra_picture(
 
         let walk = walk_slice_at(slice_buf, header.body_bit_position, ctx)?;
         for record in &walk.macroblocks {
-            placed += place_intra_macroblock(&mut frame, record, mb_width, ChromaFormat::Yuv420);
+            placed += usize::from(
+                place_intra_macroblock(&mut frame, record, mb_width, ChromaFormat::Yuv420) > 0,
+            );
         }
         offset = start + end;
     }

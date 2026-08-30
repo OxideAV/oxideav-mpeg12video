@@ -730,6 +730,24 @@ fn sequence_geometry_at(buf: &[u8]) -> Result<SequenceGeometry> {
     }
 }
 
+/// §6.1.2.2 restricted slice structure — *"every macroblock in the
+/// picture shall be enclosed in a slice"* — which Table 8-5 imposes
+/// on every defined profile, and ISO/IEC 11172-2 §2.4.1 (*"there
+/// shall be no gaps between slices"*): a picture whose slices leave
+/// part of the §6.3.3 macroblock grid undecoded (or cover it more
+/// than once) is rejected. Beyond conformance this closes a resource
+/// hole the round-453 fuzz run found: a picture carrying no slices at
+/// all used to yield a full-size frame, so a few hundred header bytes
+/// minted gigabytes of output.
+fn require_full_coverage(placed: usize, mb_width: usize, mb_height: usize) -> Result<()> {
+    if placed != mb_width * mb_height {
+        return Err(Error::InvalidBitstream(
+            "§6.1.2.2: the picture's slices do not enclose every macroblock exactly once (restricted slice structure, Table 8-5)",
+        ));
+    }
+    Ok(())
+}
+
 /// Build the per-picture geometry the I/P/B drivers consume from the
 /// parsed sequence layer. The DCT-context flags live in
 /// `picture_coding_extension()` (per-picture), so they are seeded to a
@@ -818,7 +836,7 @@ fn reconstruct_picture(
 
     let frame = match header.picture_coding_type {
         PictureCodingType::Intra => {
-            let (frame, _placed) = decode_intra_picture_with_context(
+            let (frame, placed) = decode_intra_picture_with_context(
                 picture_region,
                 geometry,
                 matrices,
@@ -828,6 +846,7 @@ fn reconstruct_picture(
                     f_code_fwd_vert: ext.f_code_fwd_vert,
                 },
             )?;
+            require_full_coverage(placed, geometry.mb_width(), geometry.mb_height())?;
             frame
         }
         // Unreachable: `parse_with_extension` rejects the Table 6-12
@@ -843,12 +862,13 @@ fn reconstruct_picture(
                 "§6.1.1.11: P-picture before any I/P anchor exists (no forward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (frame, _placed) = decode_inter_picture_with_matrices(
+            let (frame, placed) = decode_inter_picture_with_matrices(
                 picture_region,
                 params,
                 ReferenceFrames::forward_only(forward),
                 matrices,
             )?;
+            require_full_coverage(placed, geometry.mb_width(), geometry.mb_height())?;
             frame
         }
         PictureCodingType::Bidirectional => {
@@ -861,12 +881,13 @@ fn reconstruct_picture(
                 "§6.1.1.11: B-picture before two I/P anchors exist (no backward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (frame, _placed) = decode_inter_picture_with_matrices(
+            let (frame, placed) = decode_inter_picture_with_matrices(
                 picture_region,
                 params,
                 ReferenceFrames::bidirectional(forward, backward),
                 matrices,
             )?;
+            require_full_coverage(placed, geometry.mb_width(), geometry.mb_height())?;
             frame
         }
     };
@@ -894,13 +915,23 @@ fn reconstruct_mpeg1_picture(
 ) -> Result<DecodedFrame> {
     let frame = match header.picture_coding_type {
         PictureCodingType::Intra => {
-            let (frame, _placed) = decode_mpeg1_intra_picture(picture_region, params)?;
+            let (frame, placed) = decode_mpeg1_intra_picture(picture_region, params)?;
+            require_full_coverage(
+                placed,
+                params.width.div_ceil(16),
+                params.height.div_ceil(16),
+            )?;
             frame
         }
         PictureCodingType::DcIntra => {
             // §2.4.3.4 dc intra-coded picture: DC-only intra blocks,
             // Table B.2d macroblock type, end_of_macroblock markers.
-            let (frame, _placed) = decode_mpeg1_d_picture(picture_region, params)?;
+            let (frame, placed) = decode_mpeg1_d_picture(picture_region, params)?;
+            require_full_coverage(
+                placed,
+                params.width.div_ceil(16),
+                params.height.div_ceil(16),
+            )?;
             frame
         }
         PictureCodingType::Predictive => {
@@ -908,10 +939,15 @@ fn reconstruct_mpeg1_picture(
                 "§2.4.1: P-picture before any I/P anchor exists (no forward reference)",
             ))?;
             let inter = mpeg1_inter_params(header, params)?;
-            let (frame, _placed) = decode_mpeg1_inter_picture(
+            let (frame, placed) = decode_mpeg1_inter_picture(
                 picture_region,
                 &inter,
                 ReferenceFrames::forward_only(forward),
+            )?;
+            require_full_coverage(
+                placed,
+                params.width.div_ceil(16),
+                params.height.div_ceil(16),
             )?;
             frame
         }
@@ -923,10 +959,15 @@ fn reconstruct_mpeg1_picture(
                 "§2.4.1: B-picture before two I/P anchors exist (no backward reference)",
             ))?;
             let inter = mpeg1_inter_params(header, params)?;
-            let (frame, _placed) = decode_mpeg1_inter_picture(
+            let (frame, placed) = decode_mpeg1_inter_picture(
                 picture_region,
                 &inter,
                 ReferenceFrames::bidirectional(forward, backward),
+            )?;
+            require_full_coverage(
+                placed,
+                params.width.div_ceil(16),
+                params.height.div_ceil(16),
             )?;
             frame
         }
@@ -1082,7 +1123,7 @@ fn reconstruct_field_pair(
             // macroblocks itself; an I field forms no predictions, so
             // no references are supplied.
             let params = inter_params(header, ext, geometry);
-            let (field, _placed) = decode_field_picture_with_matrices(
+            let (field, placed) = decode_field_picture_with_matrices(
                 picture_region,
                 params,
                 structure,
@@ -1091,6 +1132,11 @@ fn reconstruct_field_pair(
                     backward: None,
                 },
                 matrices,
+            )?;
+            require_full_coverage(
+                placed,
+                params.geometry.mb_width(),
+                params.geometry.mb_height(),
             )?;
             field
         }
@@ -1103,12 +1149,17 @@ fn reconstruct_field_pair(
                     "§7.6.2.1: P field before any reference frame exists",
                 ))?
             };
-            let (field, _placed) = decode_field_picture_with_matrices(
+            let (field, placed) = decode_field_picture_with_matrices(
                 picture_region,
                 params,
                 structure,
                 ReferenceFrames::forward_only(reference),
                 matrices,
+            )?;
+            require_full_coverage(
+                placed,
+                params.geometry.mb_width(),
+                params.geometry.mb_height(),
             )?;
             field
         }
@@ -1120,12 +1171,17 @@ fn reconstruct_field_pair(
                 "§7.6.2.1: B field before two reference frames exist (no backward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (field, _placed) = decode_field_picture_with_matrices(
+            let (field, placed) = decode_field_picture_with_matrices(
                 picture_region,
                 params,
                 structure,
                 ReferenceFrames::bidirectional(forward, backward),
                 matrices,
+            )?;
+            require_full_coverage(
+                placed,
+                params.geometry.mb_width(),
+                params.geometry.mb_height(),
             )?;
             field
         }

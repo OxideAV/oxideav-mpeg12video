@@ -713,8 +713,12 @@ pub fn decode_intra_picture_with_context(
 
         let walk = crate::walk_slice_at(slice_buf, header.body_bit_position, ctx)?;
         for record in &walk.macroblocks {
-            placed +=
-                place_intra_macroblock(&mut frame, record, mb_width as usize, params.chroma_format);
+            // Counted in macroblocks (the block-level return feeds the
+            // §6.1.2.2 coverage check in `decode_video_sequence`).
+            placed += usize::from(
+                place_intra_macroblock(&mut frame, record, mb_width as usize, params.chroma_format)
+                    > 0,
+            );
         }
 
         offset = start + end;

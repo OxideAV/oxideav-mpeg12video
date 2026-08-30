@@ -20,7 +20,10 @@ registry**: `register` installs `oxideav_core::Decoder` factories under
 both the `mpeg1video` and `mpeg2video` codec ids, so the codec is
 consumed through `oxideav_core::make_decoder` (a `RuntimeContext` /
 `register_all` lookup) as well as through the direct
-`decoder::make_decoder` factory and the per-stage module APIs.
+`decoder::make_decoder` factory and the per-stage module APIs. The
+driver enforces the §6.1.2.2 restricted slice structure (every
+macroblock enclosed in a slice, Table 8-5) — a picture with missing
+or slice-less macroblock rows is rejected rather than reconstructed.
 §7.10 **data-partitioned** streams decode through
 `decode_data_partitioned` (partition pair → merged non-scalable
 stream → the same driver), and a three-target cargo-fuzz harness
