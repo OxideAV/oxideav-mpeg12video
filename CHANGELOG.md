@@ -73,6 +73,14 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `progressive_frame = 1`), with the §6.3.10
   `output_field_count` / `output_frame_count` helpers.
 
+- round 453: **cargo-fuzz harness** (`fuzz/`) with two targets —
+  `decode` (raw + structure-aware MPEG-1/MPEG-2 skeleton splices
+  through `decode_video_sequence`, panic-freedom contract) and
+  `encode_roundtrip` (fuzzer-chosen geometry / chroma / flags /
+  options / pixels through the GOP assembler, decode-success +
+  frame-count oracle) — plus the scheduled `Fuzz` workflow (daily,
+  30-minute budget, org reusable `crate-fuzz.yml`).
+
 ### Fixed
 
 - round 453: clippy 1.98 `needless_late_init` in

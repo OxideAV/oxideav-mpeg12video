@@ -1,0 +1,24 @@
+name: Fuzz
+
+# Daily fuzz run for the cargo-fuzz harness under fuzz/. The MPEG-1/2
+# video surface worth fuzzing is the whole-elementary-stream decoder
+# (start-code scan -> sequence/GOP/picture headers + extensions ->
+# slice walk -> macroblock modes / motion vectors / coded block
+# pattern VLCs -> block residual VLC + inverse quant + IDCT -> §7.6
+# motion compensation -> display reorder) plus the encoder->decoder
+# round-trip contract. Clean-room: no external oracle is pulled in;
+# both targets are panic-freedom / self-consistency harnesses. The
+# 30-minute budget is split across the two targets by the reusable
+# workflow.
+
+on:
+  schedule:
+    - cron: "43 4 * * *"   # daily 04:43 UTC, jittered off the hour
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    uses: OxideAV/.github/.github/workflows/crate-fuzz.yml@master
+    with:
+      time_budget_seconds: 1800
+    secrets: inherit

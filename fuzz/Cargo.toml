@@ -1,0 +1,60 @@
+# cargo-fuzz manifest for the oxideav-mpeg12video attacker surface.
+#
+# Round 453 depth-mode lane. Two coverage-guided targets:
+#
+# * `decode` — attacker bytes through the whole-elementary-stream
+#   driver `decode_video_sequence` (sequence / GOP / picture / slice /
+#   macroblock / block layers, MPEG-1 and MPEG-2 classification,
+#   field-picture pairing, display reorder) and the registered
+#   `Decoder` trait object (send_packet / receive_frame / flush /
+#   reset). A structure-aware prefix splices attacker payloads behind
+#   a valid sequence-header + picture-header skeleton so the deep
+#   slice/macroblock/block walk is reached on most iterations.
+# * `encode_roundtrip` — attacker-shaped synthetic frames (dimensions,
+#   chroma format, flags and pixel content all fuzzer-chosen) through
+#   the display-order GOP assembler with FrameEncodeOptions, then
+#   back through decode_video_sequence; panics on any decode failure
+#   of a self-encoded stream, so the encoder/decoder contract itself
+#   is the oracle.
+#
+# Spec basis: ISO/IEC 13818-2 §6.2/§6.3 syntax, §7 decoding process,
+# ISO/IEC 11172-2 §2.4. The contract under test is panic-freedom on
+# every public decode entry irrespective of input shape, plus
+# decode-success on every self-encoded stream.
+
+[package]
+name = "oxideav-mpeg12video-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxideav-core = "0.1"
+
+[dependencies.oxideav-mpeg12video]
+path = ".."
+
+# Self-contained workspace so the umbrella's `crates/*` member glob
+# (one level deep — this manifest is two levels deep and would not
+# match anyway) cannot pull this package in.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "encode_roundtrip"
+path = "fuzz_targets/encode_roundtrip.rs"
+test = false
+doc = false
