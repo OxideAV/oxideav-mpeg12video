@@ -6,6 +6,75 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.13](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.12...v0.0.13) - 2026-08-30
+
+### Added
+
+- §7.10 data partitioning — split/merge engine over the per-element parsers, byte-exact across the corpus
+- alternate_scan + intra_vlc_format on the interlaced encode paths; clippy-1.98 late-init fix
+- FrameEncodeOptions — §7.6.6 skipped-macroblock emission, §7.6.3.9 concealment motion vectors, §6.3.10 output-cadence flags
+- 4:4:4 encode leg — twelve-block macroblocks + coded_block_pattern_2 safe subset
+- §6.3.11 downloadable quantiser-matrix emission — sequence-header loads + quant_matrix_extension() with chroma tables
+- honour intra_vlc_format + alternate_scan on the frame-picture encode path
+- 4:2:2 motion-compensated P/B encode — eight-block macroblocks + coded_block_pattern_1
+- 4:2:2 profile signalling + all-intra 4:2:2 encode round-trip
+- adaptive field-picture encode — per-MB 16x8 MC + dual-prime beside simple field prediction
+- runtime encoder registry wiring (encoder::make_encoder + register)
+- frame-picture field-based encode — frame_pred_frame_dct = 0 P/B/I pictures with per-MB frame/field prediction, field DCT, and dual-prime
+- MPEG-1 D-picture encode (encode_mpeg1_d_picture + encode_mpeg1_d_sequence)
+- CBR rate control over field-coded sequences (encode_field_cbr_gop_sequence)
+- MPEG-2 field-picture inter encode — I/P/B field pictures + display-order field assembler
+- MPEG-1 CBR rate control (encode_mpeg1_cbr_sequence)
+- MPEG-2 CBR rate control — VBV-regulated GOP assembler (encode_cbr_gop_sequence)
+- exact Annex C VBV model + whole-stream CBR verifier (vbv module)
+- MPEG-1 full_pel_*_vector = 1 emission
+- downloadable §2.4.3.2 quantiser matrices in the MPEG-1 encoder + pinned custom-matrix fixture
+- MPEG-2 GOP-structured display-order assembly (encode_display_order_gop_sequence)
+- conformant ISO/IEC 11172-2 encode path — I/P/B pictures + GOP-structured display-order assembly
+- MPEG-1 entropy encoders + §2.4.4 forward quantisers
+- ISO/IEC 11172-2 sequence-header writer + §2.4.3.2 constrained-parameters check
+- group_of_pictures_header() writer + display-index time-code derivation
+- encode_display_order_sequence — whole display-order I(B..)P(B..)P assembler
+- externally-validated encoder conformance + pinned self-encoded corpus
+- thread §6.3.11 downloadable quantiser matrices through whole-stream decode
+- ISO/IEC 11172-2 D-picture decode (picture_coding_type 4)
+- MPEG-1 (ISO/IEC 11172-2) whole-stream decode — I/P/B end-to-end
+
+### Fixed
+
+- enforce §6.1.2.2 restricted slice structure — reject pictures whose slices do not enclose every macroblock (fuzz OOM finding)
+- platform-deterministic DCT/IDCT cosine kernel — constant correctly-rounded table
+- clippy findings in the field-picture encoder arc
+- P/B picture headers carry the §6.3.10 legacy f_code value '111'
+- §6.3.3 interlaced macroblock-grid alignment (non-multiple-of-32 heights)
+- I field pictures route through the field-picture walker; hand-built field/dual-prime/16x8 oracle fixture
+- honour motion_vertical_field_select in frame-picture field prediction; §7.6.6.4 B-skip vectors from the predictors
+- slice at end-of-stream with a short non-zero tail keeps decoding (§6.2.4 / §5.2.3)
+- retain macroblock-aligned reconstruction storage for §7.6.4 reference reads
+- 4:2:2 / 4:4:4 chroma block numbering interleaves Cb/Cr (Figures 6-11/6-12)
+- reset DC predictors on skipped macroblocks (§7.2.1)
+
+### Other
+
+- README + CHANGELOG — round 453 encode options, interlaced entropy flags, §7.10 data partitioning, fuzz harness; Not-yet-supported rewritten
+- cargo-fuzz harness — decode panic-freedom + encode->decode round-trip oracle, daily scheduled workflow
+- corpus streams 21-22 — skipped-MB + concealment-vector stream, full-entropy-flag frame-field stream
+- README + CHANGELOG — the 4:2:2 / 4:4:4 encoder legs, entropy flags, matrix downloads, twenty-stream corpus; test: Annex C CBR at 4:2:2
+- two 4:2:2 streams join the pinned self-encoded corpus (nineteen)
+- CHANGELOG — r443 fixed entry for the deterministic cosine kernel
+- README + CHANGELOG — frame-field encode, adaptive field modes, D pictures, runtime encoder, seventeen-stream corpus
+- pin three new streams in the self-encoded corpus — frame-field, dual-prime, MPEG-1 D-only
+- README — Annex C CBR rate control + field-picture inter encode land
+- pin a black-box-validated field-coded stream in the self-encoded corpus
+- pin two black-box-validated CBR streams in the self-encoded corpus
+- truncation + bit-flip robustness over self-encoded MPEG-1 streams
+- README + CHANGELOG — MPEG-1 encode path, GOP emission, nine-stream validated corpus
+- extend the pinned self-encoded corpus — 3 MPEG-1 streams + an MPEG-2 GOP stream, black-box validated
+- doc(hidden) the internal §6/§7 plumbing surface
+- README reference-conformance section + MPEG-1 whole-stream decode; round-410 CHANGELOG
+- whole-sequence reference-conformance corpus (8 streams, both standards)
+- decode_to_yuv — dump display-order planar YCbCr for black-box comparison
+
 ### Added
 
 - round 453: **`alternate_scan` / `intra_vlc_format` on the interlaced
