@@ -368,6 +368,7 @@ pub mod combine_predictions;
 #[doc(hidden)] // internal: §6.2.3.6 extension parser
 pub mod copyright_extension;
 #[doc(hidden)] // internal: MPEG-1 §2.4.3.7 run-level VLC walker
+pub mod data_partitioning;
 pub mod dct_coeff;
 pub mod decoder;
 #[doc(hidden)] // internal: MPEG-1 §2.4.4 dequantiser stage
@@ -482,6 +483,9 @@ pub mod video_sequence;
 pub use b_picture_encoder::{
     encode_b_picture, encode_b_picture_with_matrices, encode_b_picture_with_options,
     encode_b_picture_with_stats,
+};
+pub use data_partitioning::{
+    decode_data_partitioned, merge_data_partitions, split_data_partitions,
 };
 pub use decoder::{
     frame_buffer_to_video_frame, make_decoder, Mpeg12Decoder, MPEG1_CODEC_ID_STR,

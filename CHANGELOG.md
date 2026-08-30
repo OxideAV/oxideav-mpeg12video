@@ -73,12 +73,33 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
   `progressive_frame = 1`), with the §6.3.10
   `output_field_count` / `output_frame_count` helpers.
 
-- round 453: **cargo-fuzz harness** (`fuzz/`) with two targets —
+- round 453: **§7.10 data partitioning** (`data_partitioning`) — the
+  partition-switching decoding process implemented as a
+  bitstream-to-bitstream engine over the crate's per-element syntax
+  parsers, driven in two configurations: `split_data_partitions`
+  (non-scalable ISO/IEC 13818-2 stream → partition 0 / partition 1 at
+  a Table 7-30 `priority_breakpoint` of `1..=3` or `64..=127`:
+  `sequence_scalable_extension()` inserted, slice-level
+  `priority_breakpoint` written, partition-1 header copies filtered to
+  the three §7.10-allowed extensions, per-element routing including
+  the per-`(run, level)`-pair breakpoints ≥ 64 and the concealment
+  `marker_bit`) and `merge_data_partitions` (the §7.10
+  *"current_partition"* switch re-forming the non-scalable stream),
+  with `decode_data_partitioned` chaining merge →
+  `decode_video_sequence`. `merge(split(s, pb)) == s` byte-exactly for
+  every `.m2v` stream of the conformance + self-encoded corpus at
+  breakpoints 1 / 2 / 3 / 64 / 65 / 72 / 127 (`tests/data_partitioning.rs`);
+  hostile pairs (swapped, duplicated, truncated, non-scalable, MPEG-1)
+  are rejected, never panicked. §5.2.3 zero stuffing after slices is
+  preserved through partition 0.
+- round 453: **cargo-fuzz harness** (`fuzz/`) with three targets —
   `decode` (raw + structure-aware MPEG-1/MPEG-2 skeleton splices
   through `decode_video_sequence`, panic-freedom contract) and
   `encode_roundtrip` (fuzzer-chosen geometry / chroma / flags /
   options / pixels through the GOP assembler, decode-success +
-  frame-count oracle) — plus the scheduled `Fuzz` workflow (daily,
+  frame-count oracle) and `partition_merge` (attacker partition pairs
+  and corrupted valid pairs through the §7.10 merge) — plus the
+  scheduled `Fuzz` workflow (daily,
   30-minute budget, org reusable `crate-fuzz.yml`).
 
 ### Fixed

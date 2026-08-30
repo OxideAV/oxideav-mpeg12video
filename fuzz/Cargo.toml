@@ -58,3 +58,9 @@ name = "encode_roundtrip"
 path = "fuzz_targets/encode_roundtrip.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "partition_merge"
+path = "fuzz_targets/partition_merge.rs"
+test = false
+doc = false
