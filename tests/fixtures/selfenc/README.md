@@ -45,8 +45,12 @@ they pin two facts:
 | `selfenc-skipconceal-64x48.m2v` | `encode_display_order_gop_sequence_with_options` | **Skipped macroblocks + concealment motion vectors** (round 453): I B P B P over a mostly-static scene — §7.6.6.2 P skips (zero-vector, predictor reset) and §7.6.6.4 B skips (PMV/previous-direction inheritance) folded into Table B-1 address increments, a per-frame re-rolled stamp forcing Table B-3 intra fallbacks whose macroblocks carry §7.6.3.9 concealment vectors + marker bits, `concealment_motion_vectors = 1` with a real I-picture `f_code` |
 | `selfenc-fffull-64x64.m2v` | `encode_ff_display_order_gop_sequence` | **Frame-field encode under the full entropy flag set** (round 453): `frame_pred_frame_dct = 0` I B P B P with `alternate_scan = 1`, `intra_vlc_format = 1` (Table B-15 intra AC), non-linear `q_scale_type = 1` and 10-bit `intra_dc_precision = 2`, per-field opposing pans (field MC + field DCT throughout) |
 | `selfenc-422-full-64x48.m2v` | `encode_display_order_gop_sequence_with_matrices` | 4:2:2 I B P B P with the full round-447 flag set — `intra_vlc_format = 1` (Table B-15 intra AC), `alternate_scan = 1` (§7.3), `q_scale_type = 1` (Table 7-6 non-linear), `intra_dc_precision = 2` (10-bit DC) — plus §6.3.11 **downloadable matrices**: luminance intra/non-intra loads in the sequence header and chroma intra/non-intra tables in a `quant_matrix_extension()` inside the I picture (w = 2 / w = 3 at Table 7-5) |
+| `selfenc-422-fieldseq-48x64.m2v` | `encode_field_display_order_gop_sequence` | **4:2:2 field-coded** I B P B P (round 456): Figure 6-11 eight-block macroblocks in Top / Bottom field pictures, §6.2.5.3 `coded_block_pattern_1`, full-height chroma with per-field structure, High@Main profile signalling |
+| `selfenc-422-framefield-64x64.m2v` | `encode_ff_display_order_gop_sequence` | **4:2:2 frame-picture field-based** I B P B P (round 456): per-field opposite pans in luma *and* the full-height chroma — Field-based macroblocks plus the §6.1.3 **field-DCT chroma organisation** (4:2:2 chroma blocks follow the luma under `dct_type`), `dct_type` costed over every block |
+| `selfenc-422-fieldmodes-64x64.m2v` | `encode_field_adaptive_display_order_gop_sequence` | **4:2:2 adaptive field modes** I P P (round 456): the stream-17 luma over eight-block macroblocks — simple field / §7.6.7.3 16×8 / §7.6.3.6 dual-prime (18 / 9 / 5) with `coded_block_pattern_1` |
+| `selfenc-444-framefield-64x64.m2v` | `encode_ff_display_order_gop_sequence` | **4:4:4 frame-picture field-based** I B P (round 456): Figure 6-12 twelve-block macroblocks under per-macroblock `dct_type` with full-resolution chroma following the luma field organisation (non-intra blocks 6/7 stay uncoded per the printed §6.3.17.4 derivation) |
 
-All MPEG-2 streams except 18–20: 4:2:0, `progressive_sequence = 1` (§6.3.3
+All MPEG-2 streams except 18–20 and 23–26: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
 quantiser scale, `quantiser_scale_code` 5–6, `f_code` 3 where motion
 is coded. The MPEG-1 streams are 4:2:0 by definition, 25 pictures/s,
@@ -155,9 +159,28 @@ and concealment vectors and stream 22's alternate-scan / B-15 intra
 entropy coding are accepted by the reference decoder without a
 diagnostic.
 
+The round-456 streams (23–26) were generated and validated
+2026-09-05 with the same black-box reference decoder binary (v8.1.2):
+the default decodes (`-pix_fmt yuv422p` / `yuv444p`) are the committed
+references and agree with ours within the corpus |Δ| ≤ 3 contract; the
+strict error-detection pass (`-err_detect explode`) reported nothing
+for the two frame-picture streams (24, 26) and, for the two
+field-picture-pair streams (23, 25), only the documented field-pair
+packet diagnostic while still decoding every frame (as for streams 13
+and 17). All twenty-two pre-existing streams regenerate
+byte-identical.
+
 ## SHA-256
 
 ```
+445b75da0ccc619634cc922eb9d7b3fe2628ac4f9cdba04b7fca39e5e176be54  selfenc-422-fieldseq-48x64.m2v
+6da22fbbe181a9be87b5e3757e0ebd89ba76b10f54c6a202e1438c374bd42695  selfenc-422-fieldseq-48x64.m2v.ref.yuv
+7c7becdaf05190503a8f8e5e3681b808a991345b7fea4b05c9f9915123795c2e  selfenc-422-framefield-64x64.m2v
+1f9994988f7b3adbfdc4f99806b7bd5c02300b2cb9cb094069a43f2f6d59c880  selfenc-422-framefield-64x64.m2v.ref.yuv
+770c0fa3d38c0defc2322099edc5442cd674f25fb3dad9e4e96e2c58918aeb08  selfenc-422-fieldmodes-64x64.m2v
+8aa00417acb99b38873f705de95ab815675c46eb617fc4c332e5d2295ee4be94  selfenc-422-fieldmodes-64x64.m2v.ref.yuv
+19571cdcc9086f5000a6576e980f7dbe2b5c5dffff13b0231b8fd778b8bdc816  selfenc-444-framefield-64x64.m2v
+e8022beca3f8acfef922e370b6f440e842d3cc46a20e83eecf8ab7dc136d2546  selfenc-444-framefield-64x64.m2v.ref.yuv
 24bca61cff377a087ab53222fbc7359266d0634d3596d127b93127b090dcf746  selfenc-skipconceal-64x48.m2v
 c04c2550505be29a7f26d4cfa67fdf3a64b9e50050a43f74f10217ce10918c09  selfenc-skipconceal-64x48.m2v.ref.yuv
 9a32853f6e0852c09584b9623f86f27d53de96c6e0dcdbc0786b689200701461  selfenc-fffull-64x64.m2v

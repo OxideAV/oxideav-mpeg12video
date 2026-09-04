@@ -8,6 +8,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- four black-box-validated interlaced 4:2:2 / 4:4:4 streams join the pinned self-encoded corpus (twenty-six): 4:2:2 field pairs, 4:2:2 frame-field, 4:2:2 adaptive field modes, 4:4:4 frame-field
 - 4:2:2 / 4:4:4 on the frame-picture field-based encode path — §6.1.3 field-DCT chroma organisation for the full-height chroma formats, the per-macroblock `dct_type` decision costed over every block, chroma-generic `coded_block_pattern()` emission
 - 4:2:2 / 4:4:4 on the field-picture encode paths — plain and adaptive I/P/B field encoders, the field display-order assembler and the Annex C field CBR controller are chroma-format generic (Figures 6-11 / 6-12 macroblocks, §6.2.5.3 `coded_block_pattern_1` / `_2`)
 

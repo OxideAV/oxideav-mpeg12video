@@ -651,6 +651,233 @@ fn main() {
     eprintln!("full-flag frame-field stats: {ff_stats:?}");
     assert!(ff_stats.field_mc > 0, "stream 22 must code field MC");
     write("selfenc-fffull-64x64.m2v", &ff_stream);
+
+    // ---- round 456 streams: 4:2:2 / 4:4:4 on the interlaced paths --
+
+    // 23. 4:2:2 field-coded I B P B P (48x64, fields 48x32): Figure
+    //     6-11 eight-block macroblocks in Top / Bottom field pictures,
+    //     §6.2.5.3 coded_block_pattern_1, full-height chroma with
+    //     per-field structure, High@Main profile signalling.
+    let f422_field: Vec<FrameBuffer> = (0..5)
+        .map(|t| interlaced_frame_at(ChromaFormat::Yuv422, 48, 64, t))
+        .collect();
+    let p422_field = IntraPictureParams {
+        width: 48,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv422,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+    let s422_field =
+        encode_field_display_order_gop_sequence(&f422_field, 1, 2, &p422_field, 6, 3, 3)
+            .expect("4:2:2 field sequence encode");
+    write("selfenc-422-fieldseq-48x64.m2v", &s422_field);
+
+    // 24. 4:2:2 frame-picture field-based I B P B P (64x64,
+    //     frame_pred_frame_dct = 0): per-field opposite pans in luma
+    //     *and* the full-height chroma, so Field-based macroblocks and
+    //     the §6.1.3 field-DCT chroma organisation both fire.
+    let ff422_base = ff_chroma_base(ChromaFormat::Yuv422);
+    let ff422_frames: Vec<FrameBuffer> = (0i32..5)
+        .map(|t| ff_chroma_shift(&ff422_base, 2 * t, -2 * t))
+        .collect();
+    let p422_ff = IntraPictureParams {
+        width: 64,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv422,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+    let (s422_ff, st422_ff) =
+        encode_ff_display_order_gop_sequence(&ff422_frames, 1, 2, &p422_ff, 6, 3, 3, false)
+            .expect("4:2:2 frame-field encode");
+    eprintln!("4:2:2 frame-field stats: {st422_ff:?}");
+    assert!(st422_ff.field_mc > 0, "stream 24 must code field MC");
+    assert!(st422_ff.field_dct > 0, "stream 24 must code field DCT");
+    write("selfenc-422-framefield-64x64.m2v", &s422_ff);
+
+    // 25. 4:2:2 field-coded adaptive-mode I P P (64x64, dual-prime
+    //     allowed): the stream-17 luma (noisy I, clean P1, banded P2)
+    //     with full-height chroma detail — simple field / 16x8 /
+    //     dual-prime macroblocks over eight-block macroblocks.
+    let fa422_frames: Vec<FrameBuffer> = (0..3).map(fieldmodes_422_frame_at).collect();
+    let p422_fa = IntraPictureParams {
+        width: 64,
+        height: 64,
+        chroma_format: ChromaFormat::Yuv422,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    };
+    let (s422_fa, st422_fa) =
+        oxideav_mpeg12video::encode_field_adaptive_display_order_gop_sequence(
+            &fa422_frames,
+            0,
+            2,
+            &p422_fa,
+            6,
+            3,
+            3,
+            true,
+        )
+        .expect("4:2:2 adaptive field sequence encode");
+    eprintln!("4:2:2 adaptive field stats: {st422_fa:?}");
+    assert!(st422_fa.sixteen_by_eight > 0, "16x8 must fire in stream 25");
+    assert!(st422_fa.dual_prime > 0, "dual-prime must fire in stream 25");
+    write("selfenc-422-fieldmodes-64x64.m2v", &s422_fa);
+
+    // 26. 4:4:4 frame-picture field-based I B P (64x64): Figure 6-12
+    //     twelve-block macroblocks under per-macroblock dct_type with
+    //     full-resolution chroma following the luma field organisation.
+    let ff444_base = ff_chroma_base(ChromaFormat::Yuv444);
+    let ff444_frames: Vec<FrameBuffer> = (0i32..3)
+        .map(|t| ff_chroma_shift(&ff444_base, 2 * t, -2 * t))
+        .collect();
+    let p444_ff = IntraPictureParams {
+        chroma_format: ChromaFormat::Yuv444,
+        ..p422_ff
+    };
+    let (s444_ff, st444_ff) =
+        encode_ff_display_order_gop_sequence(&ff444_frames, 1, 1, &p444_ff, 6, 3, 3, false)
+            .expect("4:4:4 frame-field encode");
+    eprintln!("4:4:4 frame-field stats: {st444_ff:?}");
+    assert!(st444_ff.field_dct > 0, "stream 26 must code field DCT");
+    write("selfenc-444-framefield-64x64.m2v", &s444_ff);
+}
+
+/// Interlaced-looking source frame at the format's full chroma
+/// resolution: per-line luma phase (the two fields differ), diagonal
+/// pan with `t`, chroma planes with per-row detail (so a 4:2:0
+/// collapse or a chroma field-parity mix-up shows as error). Must stay
+/// in lock-step with `tests/selfenc_conformance.rs`.
+fn interlaced_frame_at(chroma: ChromaFormat, w: usize, h: usize, t: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(w, h, chroma);
+    for y in 0..h {
+        for x in 0..w {
+            let v = 30 + ((x * 4 + y * 7 + t * 3) % 180);
+            let line = if y % 2 == 0 { 12 } else { 0 };
+            f.y.put_sample(x, y, (v + line).min(235) as u8);
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            let phase = if y % 2 == 0 { 20 } else { 0 };
+            f.cb.put_sample(x, y, (60 + (x * 3 + y * 5 + t * 2 + phase) % 120) as u8);
+            f.cr.put_sample(
+                x,
+                y,
+                (200u8).saturating_sub(((x * 2 + y * 7 + t) % 120) as u8),
+            );
+        }
+    }
+    f
+}
+
+/// Textured 64x64 base frame (both fields carry the same luma
+/// pattern) with per-row chroma detail at the format's full chroma
+/// resolution.
+fn ff_chroma_base(chroma: ChromaFormat) -> FrameBuffer {
+    let (w, h) = (64usize, 64usize);
+    let mut f = FrameBuffer::new(w, h, chroma);
+    for y in 0..h {
+        for x in 0..w {
+            let v = 100 + ((x * 5 + (y / 2) * 7) % 80) as i32;
+            f.y.put_sample(x, y, v as u8);
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            let phase = if y % 2 == 0 { 24 } else { 0 };
+            f.cb.put_sample(x, y, (70 + (x * 3 + y * 5 + phase) % 110) as u8);
+            f.cr.put_sample(x, y, (190u8).saturating_sub(((x * 2 + y * 9) % 110) as u8));
+        }
+    }
+    f
+}
+
+/// Shift each **field** of `src` horizontally by its own amount — luma
+/// and the full-height chroma alike (chroma shift scaled by the
+/// horizontal subsampling), clamping at the edges.
+fn ff_chroma_shift(src: &FrameBuffer, top_dx: i32, bottom_dx: i32) -> FrameBuffer {
+    let mut out = FrameBuffer::new(src.width, src.height, src.chroma_format);
+    for y in 0..src.height {
+        let dx = if y % 2 == 0 { top_dx } else { bottom_dx };
+        for x in 0..src.width {
+            let sx = (x as i32 - dx).clamp(0, src.width as i32 - 1) as usize;
+            out.y.put_sample(x, y, src.y.get(sx, y).unwrap());
+        }
+    }
+    let (cw, ch) = src.visible_chroma_dims();
+    let (sx_shift, _) = oxideav_mpeg12video::frame_assembly::chroma_shift(src.chroma_format);
+    for y in 0..ch {
+        let dx = if ch == src.height {
+            (if y % 2 == 0 { top_dx } else { bottom_dx }) >> sx_shift
+        } else {
+            0
+        };
+        for x in 0..cw {
+            let sx = (x as i32 - dx).clamp(0, cw as i32 - 1) as usize;
+            out.cb.put_sample(x, y, src.cb.get(sx, y).unwrap());
+            out.cr.put_sample(x, y, src.cr.get(sx, y).unwrap());
+        }
+    }
+    out
+}
+
+/// The stream-17 adaptive-field luma (noisy I reference, clean P1,
+/// 16-line bands shifting in opposite directions on P2) over 4:2:2
+/// chroma with per-row detail.
+fn fieldmodes_422_frame_at(t: usize) -> FrameBuffer {
+    let noise = |x: usize, y: usize, seed: usize| -> i32 {
+        let h = x
+            .wrapping_mul(31)
+            .wrapping_add(y.wrapping_mul(97))
+            .wrapping_add(seed.wrapping_mul(131));
+        ((h % 17) as i32) - 8
+    };
+    let (w, h) = (64usize, 64usize);
+    let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv422);
+    for y in 0..h {
+        for x in 0..w {
+            let dx: i32 = if t == 2 {
+                if (y / 16) % 2 == 0 {
+                    4
+                } else {
+                    -4
+                }
+            } else {
+                0
+            };
+            let sx = (x as i32 - dx).clamp(0, w as i32 - 1) as usize;
+            let base = 90 + ((sx * 7) % 100) as i32;
+            let v = if t == 0 {
+                base + noise(x, y / 2, 1 + (y % 2))
+            } else {
+                base
+            };
+            f.y.put_sample(x, y, v.clamp(0, 255) as u8);
+        }
+    }
+    for y in 0..h {
+        for x in 0..w / 2 {
+            f.cb.put_sample(x, y, (96 + (x * 2 + y * 3) % 64) as u8);
+            f.cr.put_sample(x, y, (160u8).saturating_sub(((x + y * 5) % 64) as u8));
+        }
+    }
+    f
 }
 
 /// Deterministic 4:4:4 frame: full-resolution chroma detail, diagonal

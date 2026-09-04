@@ -22,10 +22,11 @@ use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
 use oxideav_mpeg12video::{
     decode_video_sequence, encode_cbr_gop_sequence, encode_display_order_gop_sequence,
-    encode_display_order_sequence, encode_ff_display_order_gop_sequence, encode_i_p_b,
-    encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence, encode_mpeg1_d_sequence,
-    encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream, CbrConfig, DecodedFrame,
-    FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
+    encode_display_order_sequence, encode_ff_display_order_gop_sequence,
+    encode_field_adaptive_display_order_gop_sequence, encode_field_display_order_gop_sequence,
+    encode_i_p_b, encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence,
+    encode_mpeg1_d_sequence, encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream,
+    CbrConfig, DecodedFrame, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
 };
 
 const MAX_ABS_DELTA: i32 = 3;
@@ -923,4 +924,237 @@ fn selfenc_framefield_full_flags_is_pinned_and_reference_conformant() {
     );
     let inputs: Vec<&FrameBuffer> = display.iter().collect();
     assert_reference_conformant("selfenc-fffull-64x64", &stream, &reference, &inputs);
+}
+
+// ---- round 456: 4:2:2 / 4:4:4 on the interlaced encode paths --------
+
+/// Interlaced-looking source frame at the format's full chroma
+/// resolution (lock-step with `examples/gen_selfenc_corpus.rs`).
+fn interlaced_frame_at(chroma: ChromaFormat, w: usize, h: usize, t: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(w, h, chroma);
+    for y in 0..h {
+        for x in 0..w {
+            let v = 30 + ((x * 4 + y * 7 + t * 3) % 180);
+            let line = if y % 2 == 0 { 12 } else { 0 };
+            f.y.put_sample(x, y, (v + line).min(235) as u8);
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            let phase = if y % 2 == 0 { 20 } else { 0 };
+            f.cb.put_sample(x, y, (60 + (x * 3 + y * 5 + t * 2 + phase) % 120) as u8);
+            f.cr.put_sample(
+                x,
+                y,
+                (200u8).saturating_sub(((x * 2 + y * 7 + t) % 120) as u8),
+            );
+        }
+    }
+    f
+}
+
+fn interlaced_params(w: usize, h: usize, chroma: ChromaFormat) -> IntraPictureParams {
+    IntraPictureParams {
+        width: w,
+        height: h,
+        chroma_format: chroma,
+        frame_pred_frame_dct: false,
+        intra_dc_precision: 0,
+        intra_vlc_format: false,
+        alternate_scan: false,
+        q_scale_type: false,
+        progressive_sequence: false,
+    }
+}
+
+fn ff_chroma_base(chroma: ChromaFormat) -> FrameBuffer {
+    let (w, h) = (64usize, 64usize);
+    let mut f = FrameBuffer::new(w, h, chroma);
+    for y in 0..h {
+        for x in 0..w {
+            let v = 100 + ((x * 5 + (y / 2) * 7) % 80) as i32;
+            f.y.put_sample(x, y, v as u8);
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            let phase = if y % 2 == 0 { 24 } else { 0 };
+            f.cb.put_sample(x, y, (70 + (x * 3 + y * 5 + phase) % 110) as u8);
+            f.cr.put_sample(x, y, (190u8).saturating_sub(((x * 2 + y * 9) % 110) as u8));
+        }
+    }
+    f
+}
+
+fn ff_chroma_shift(src: &FrameBuffer, top_dx: i32, bottom_dx: i32) -> FrameBuffer {
+    let mut out = FrameBuffer::new(src.width, src.height, src.chroma_format);
+    for y in 0..src.height {
+        let dx = if y % 2 == 0 { top_dx } else { bottom_dx };
+        for x in 0..src.width {
+            let sx = (x as i32 - dx).clamp(0, src.width as i32 - 1) as usize;
+            out.y.put_sample(x, y, src.y.get(sx, y).unwrap());
+        }
+    }
+    let (cw, ch) = src.visible_chroma_dims();
+    let (sx_shift, _) = oxideav_mpeg12video::frame_assembly::chroma_shift(src.chroma_format);
+    for y in 0..ch {
+        let dx = if ch == src.height {
+            (if y % 2 == 0 { top_dx } else { bottom_dx }) >> sx_shift
+        } else {
+            0
+        };
+        for x in 0..cw {
+            let sx = (x as i32 - dx).clamp(0, cw as i32 - 1) as usize;
+            out.cb.put_sample(x, y, src.cb.get(sx, y).unwrap());
+            out.cr.put_sample(x, y, src.cr.get(sx, y).unwrap());
+        }
+    }
+    out
+}
+
+fn fieldmodes_422_frame_at(t: usize) -> FrameBuffer {
+    let noise = |x: usize, y: usize, seed: usize| -> i32 {
+        let h = x
+            .wrapping_mul(31)
+            .wrapping_add(y.wrapping_mul(97))
+            .wrapping_add(seed.wrapping_mul(131));
+        ((h % 17) as i32) - 8
+    };
+    let (w, h) = (64usize, 64usize);
+    let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv422);
+    for y in 0..h {
+        for x in 0..w {
+            let dx: i32 = if t == 2 {
+                if (y / 16) % 2 == 0 {
+                    4
+                } else {
+                    -4
+                }
+            } else {
+                0
+            };
+            let sx = (x as i32 - dx).clamp(0, w as i32 - 1) as usize;
+            let base = 90 + ((sx * 7) % 100) as i32;
+            let v = if t == 0 {
+                base + noise(x, y / 2, 1 + (y % 2))
+            } else {
+                base
+            };
+            f.y.put_sample(x, y, v.clamp(0, 255) as u8);
+        }
+    }
+    for y in 0..h {
+        for x in 0..w / 2 {
+            f.cb.put_sample(x, y, (96 + (x * 2 + y * 3) % 64) as u8);
+            f.cr.put_sample(x, y, (160u8).saturating_sub(((x + y * 5) % 64) as u8));
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_422_field_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-422-fieldseq-48x64.m2v");
+    let display: Vec<FrameBuffer> = (0..5)
+        .map(|t| interlaced_frame_at(ChromaFormat::Yuv422, 48, 64, t))
+        .collect();
+    let regenerated = encode_field_display_order_gop_sequence(
+        &display,
+        1,
+        2,
+        &interlaced_params(48, 64, ChromaFormat::Yuv422),
+        6,
+        3,
+        3,
+    )
+    .expect("4:2:2 field sequence re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-422-fieldseq-48x64", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_422_frame_field_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-422-framefield-64x64.m2v");
+    let base = ff_chroma_base(ChromaFormat::Yuv422);
+    let display: Vec<FrameBuffer> = (0i32..5)
+        .map(|t| ff_chroma_shift(&base, 2 * t, -2 * t))
+        .collect();
+    let (regenerated, stats) = encode_ff_display_order_gop_sequence(
+        &display,
+        1,
+        2,
+        &interlaced_params(64, 64, ChromaFormat::Yuv422),
+        6,
+        3,
+        3,
+        false,
+    )
+    .expect("4:2:2 frame-field re-encode");
+    assert!(stats.field_mc > 0 && stats.field_dct > 0, "{stats:?}");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-422-framefield-64x64", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_422_field_modes_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-422-fieldmodes-64x64.m2v");
+    let display: Vec<FrameBuffer> = (0..3).map(fieldmodes_422_frame_at).collect();
+    let (regenerated, stats) = encode_field_adaptive_display_order_gop_sequence(
+        &display,
+        0,
+        2,
+        &interlaced_params(64, 64, ChromaFormat::Yuv422),
+        6,
+        3,
+        3,
+        true,
+    )
+    .expect("4:2:2 adaptive field re-encode");
+    assert!(
+        stats.sixteen_by_eight > 0 && stats.dual_prime > 0,
+        "{stats:?}"
+    );
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-422-fieldmodes-64x64", &stream, &reference, &inputs);
+}
+
+#[test]
+fn selfenc_444_frame_field_sequence_is_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-444-framefield-64x64.m2v");
+    let base = ff_chroma_base(ChromaFormat::Yuv444);
+    let display: Vec<FrameBuffer> = (0i32..3)
+        .map(|t| ff_chroma_shift(&base, 2 * t, -2 * t))
+        .collect();
+    let (regenerated, stats) = encode_ff_display_order_gop_sequence(
+        &display,
+        1,
+        1,
+        &interlaced_params(64, 64, ChromaFormat::Yuv444),
+        6,
+        3,
+        3,
+        false,
+    )
+    .expect("4:4:4 frame-field re-encode");
+    assert!(stats.field_dct > 0, "{stats:?}");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = display.iter().collect();
+    assert_reference_conformant("selfenc-444-framefield-64x64", &stream, &reference, &inputs);
 }
