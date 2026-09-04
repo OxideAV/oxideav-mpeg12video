@@ -74,7 +74,7 @@
 use oxideav_core::bits::BitWriter;
 
 use crate::b_picture_encoder::{write_b_macroblock_type, BDirection};
-use crate::coded_block_pattern::encode_cbp420;
+use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::dual_prime::{derive_all, DualPrimePicture, FieldParity};
 use crate::field_picture_encoder::FieldSearchResult;
 use crate::forming_predictions::{predict_field_block, BlockSize, FieldReference, ReferencePlane};
@@ -84,11 +84,11 @@ use crate::frame_assembly::{block_placement, place_intra_block, FrameBuffer, Int
 use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
 use crate::idct::idct_8x8_from_i32;
 use crate::inter_reconstruction::{
-    predict_field_based_macroblock_planes, predict_frame_dual_prime_macroblock_planes,
-    predict_frame_macroblock_planes, reconstruct_field_based_macroblock,
-    reconstruct_frame_dual_prime_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
-    FieldVector, FrameDualPrimeMotion, FrameMotion, MotionVectorPel, ReferenceFrames,
-    ResidualBlock,
+    chroma_mb_extent, predict_field_based_macroblock_planes,
+    predict_frame_dual_prime_macroblock_planes, predict_frame_macroblock_planes,
+    reconstruct_field_based_macroblock, reconstruct_frame_dual_prime_macroblock,
+    reconstruct_inter_macroblock, FieldBasedMotion, FieldVector, FrameDualPrimeMotion, FrameMotion,
+    MotionVectorPel, ReferenceFrames, ResidualBlock,
 };
 use crate::motion_estimation::{estimate_forward_mv, max_search_range};
 use crate::motion_vector::{encode_dmvector, encode_motion_component};
@@ -103,8 +103,8 @@ use crate::mpeg2_dequantize::{
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::p_picture_encoder::{
-    intra_activity, quantise_inter_block, wrap_delta, write_inter_block_coeffs, InterBlock,
-    IntraDcPred,
+    intra_activity, nonintra_block_has_cbp_slot, quantise_inter_block, wrap_delta,
+    write_inter_block_coeffs, InterBlock, IntraDcPred,
 };
 use crate::picture_header::PictureCodingType;
 use crate::sequence_extension::ChromaFormat;
@@ -115,9 +115,11 @@ use crate::stream_writer::{
 };
 use crate::{Error, Result};
 
-/// A macroblock's chroma extent for the 4:2:0 layout this encoder
-/// supports (8×8 per chroma block).
-const CHROMA_MB: usize = 8;
+/// `true` when any block of a macroblock carries coded coefficients
+/// (`macroblock_pattern = 1`).
+fn any_coded(flags: &[bool; 12]) -> bool {
+    flags.iter().any(|&f| f)
+}
 
 /// Flat bit-cost bias (in SAD units) charged to a Field-based
 /// macroblock when competing with a Frame-based one: two field-select
@@ -162,11 +164,6 @@ impl FrameFieldStats {
 /// Validate the geometry / format constraints shared by the
 /// frame-picture field-based encoders.
 fn check_ff_params(params: &IntraPictureParams) -> Result<()> {
-    if params.chroma_format != ChromaFormat::Yuv420 {
-        return Err(Error::InvalidBitstream(
-            "frame-field encoder: only 4:2:0 is supported",
-        ));
-    }
     if params.frame_pred_frame_dct {
         return Err(Error::InvalidBitstream(
             "frame-field encoder: frame_pred_frame_dct must be 0 (use the \
@@ -535,7 +532,7 @@ fn gather_residual_placed(
 }
 
 /// Quantise all blocks of one inter macroblock against its prediction
-/// planes under the given `dct_type`, returning `(blocks, cbp)`.
+/// planes under the given `dct_type`, returning `(blocks, coded_flags)`.
 fn quantise_mb_residuals(
     current: &FrameBuffer,
     luma_pred: &[u8],
@@ -546,47 +543,48 @@ fn quantise_mb_residuals(
     qscale: u8,
     field_dct: bool,
     chroma_format: ChromaFormat,
-) -> (Vec<InterBlock>, u8) {
+) -> (Vec<InterBlock>, [bool; 12]) {
     let nblocks = block_count(chroma_format);
+    let (cmb_w, cmb_h) = chroma_mb_extent(chroma_format);
     let mut blocks = Vec::with_capacity(nblocks);
-    let mut cbp = 0u8;
+    let mut coded_flags = [false; 12];
     for i in 0..nblocks {
+        // §6.1.3: at 4:2:2 / 4:4:4 the chroma blocks follow the luma
+        // field / frame organisation under `dct_type`; at 4:2:0 they
+        // stay frame-organised (block_placement ignores `field_dct`
+        // for them).
         let placement =
             block_placement(i, chroma_format, mb_col, mb_row, field_dct).expect("valid index");
         let component = block_component(i, chroma_format).expect("valid component");
         let (cur_plane, pred, pred_w, origin_x, origin_y) = match component {
             ColourComponent::Y => (&current.y, luma_pred, 16usize, mb_col * 16, mb_row * 16),
-            ColourComponent::Cb => (
-                &current.cb,
-                cb_pred,
-                CHROMA_MB,
-                mb_col * CHROMA_MB,
-                mb_row * CHROMA_MB,
-            ),
-            ColourComponent::Cr => (
-                &current.cr,
-                cr_pred,
-                CHROMA_MB,
-                mb_col * CHROMA_MB,
-                mb_row * CHROMA_MB,
-            ),
+            ColourComponent::Cb => (&current.cb, cb_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h),
+            ColourComponent::Cr => (&current.cr, cr_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h),
         };
         let residual =
             gather_residual_placed(cur_plane, pred, pred_w, placement, origin_x, origin_y);
-        let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
-        if block.is_coded() {
-            cbp |= 1 << (5 - i);
-        }
+        // §6.3.17.4 (printed derivation): 4:4:4 non-intra blocks 6 / 7
+        // have no coded_block_pattern slot (see p_picture_encoder).
+        let block = if nonintra_block_has_cbp_slot(i, chroma_format) {
+            quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT)
+        } else {
+            InterBlock::uncoded()
+        };
+        coded_flags[i] = block.is_coded();
         blocks.push(block);
     }
-    (blocks, cbp)
+    (blocks, coded_flags)
 }
 
-/// Exact §7.2.2 wire-bit cost of a quantised luma block set: the sum of
-/// the run-level VLC + `end_of_block` lengths of every coded block.
-fn luma_coeff_bits(blocks: &[InterBlock], alternate_scan: bool) -> u64 {
+/// Exact §7.2.2 wire-bit cost of a quantised block set: the sum of the
+/// run-level VLC + `end_of_block` lengths of every coded block. Every
+/// block takes part: at 4:2:0 the chroma blocks are frame-organised
+/// under either `dct_type` (equal cost on both sides of the
+/// comparison); at 4:2:2 / 4:4:4 their organisation follows `dct_type`
+/// (§6.1.3) and genuinely takes part in the decision.
+fn coeff_bits(blocks: &[InterBlock], alternate_scan: bool) -> u64 {
     let mut scratch = BitWriter::new();
-    for b in blocks.iter().take(4) {
+    for b in blocks.iter() {
         if let Some(qf) = b.qf_ref() {
             write_inter_block_coeffs(&mut scratch, qf, alternate_scan);
         }
@@ -597,7 +595,7 @@ fn luma_coeff_bits(blocks: &[InterBlock], alternate_scan: bool) -> u64 {
 /// Choose the macroblock's `dct_type` for an inter macroblock: quantise
 /// the luminance residual in both §6.1.3 organisations and keep the one
 /// whose coded luma costs fewer exact wire bits (ties → frame DCT).
-/// Returns `(field_dct, blocks, cbp)` with the **full** block set (luma
+/// Returns `(field_dct, blocks, coded_flags)` with the **full** block set (luma
 /// + chroma) quantised under the winner.
 fn choose_inter_dct(
     current: &FrameBuffer,
@@ -609,8 +607,8 @@ fn choose_inter_dct(
     qscale: u8,
     chroma_format: ChromaFormat,
     alternate_scan: bool,
-) -> (bool, Vec<InterBlock>, u8) {
-    let (frame_blocks, frame_cbp) = quantise_mb_residuals(
+) -> (bool, Vec<InterBlock>, [bool; 12]) {
+    let (frame_blocks, frame_flags) = quantise_mb_residuals(
         current,
         luma_pred,
         cb_pred,
@@ -621,7 +619,7 @@ fn choose_inter_dct(
         false,
         chroma_format,
     );
-    let (field_blocks, field_cbp) = quantise_mb_residuals(
+    let (field_blocks, field_flags) = quantise_mb_residuals(
         current,
         luma_pred,
         cb_pred,
@@ -632,12 +630,10 @@ fn choose_inter_dct(
         true,
         chroma_format,
     );
-    if luma_coeff_bits(&field_blocks, alternate_scan)
-        < luma_coeff_bits(&frame_blocks, alternate_scan)
-    {
-        (true, field_blocks, field_cbp)
+    if coeff_bits(&field_blocks, alternate_scan) < coeff_bits(&frame_blocks, alternate_scan) {
+        (true, field_blocks, field_flags)
     } else {
-        (false, frame_blocks, frame_cbp)
+        (false, frame_blocks, frame_flags)
     }
 }
 
@@ -682,7 +678,7 @@ fn dc_table_component(c: ColourComponent) -> DcComponent {
 /// macroblock's four luminance blocks under one DCT organisation
 /// (DC differentials excluded — they depend on the predictor chain,
 /// which both organisations share block-for-block).
-fn intra_luma_ac_bits(
+fn intra_ac_bits(
     frame: &FrameBuffer,
     mb_col: usize,
     mb_row: usize,
@@ -696,10 +692,14 @@ fn intra_luma_ac_bits(
     let scan = inverse_scan_table(alternate_scan);
     let table = TableSelection::from_context(intra_vlc_format, true);
     let mut scratch = BitWriter::new();
-    for i in 0..4usize {
+    // Every block takes part: at 4:2:0 the chroma organisation is the
+    // same under both dct_type values (equal cost on both sides); at
+    // 4:2:2 / 4:4:4 it follows the luma (§6.1.3).
+    for i in 0..block_count(chroma_format) {
         let placement =
             block_placement(i, chroma_format, mb_col, mb_row, field_dct).expect("valid index");
-        let raw = gather_intra_placed(frame, ColourComponent::Y, placement);
+        let component = block_component(i, chroma_format).expect("valid component");
+        let raw = gather_intra_placed(frame, component, placement);
         let f = fdct_8x8(&raw);
         let qf = forward_quantise_block(
             &f,
@@ -967,7 +967,7 @@ pub fn encode_ff_intra_picture(
             bw.write_bit(true);
             // §6.2.5.1: dct_type present (frame picture,
             // frame_pred_frame_dct == 0, macroblock_intra).
-            let field_dct = intra_luma_ac_bits(
+            let field_dct = intra_ac_bits(
                 frame,
                 mb_col,
                 mb_row,
@@ -977,7 +977,7 @@ pub fn encode_ff_intra_picture(
                 params.chroma_format,
                 params.alternate_scan,
                 params.intra_vlc_format,
-            ) < intra_luma_ac_bits(
+            ) < intra_ac_bits(
                 frame,
                 mb_col,
                 mb_row,
@@ -1174,7 +1174,7 @@ pub fn encode_ff_p_picture(
                 // `00011`); dct_type present (intra).
                 bw.write_bit(true);
                 bw.write_u32(0b0001_1, 5);
-                let field_dct = intra_luma_ac_bits(
+                let field_dct = intra_ac_bits(
                     current,
                     mb_col,
                     mb_row,
@@ -1184,7 +1184,7 @@ pub fn encode_ff_p_picture(
                     params.chroma_format,
                     params.alternate_scan,
                     params.intra_vlc_format,
-                ) < intra_luma_ac_bits(
+                ) < intra_ac_bits(
                     current,
                     mb_col,
                     mb_row,
@@ -1246,7 +1246,7 @@ pub fn encode_ff_p_picture(
             };
 
             // ---- dct_type + residual quantisation ----
-            let (field_dct, blocks, cbp) = choose_inter_dct(
+            let (field_dct, blocks, coded_flags) = choose_inter_dct(
                 current,
                 &luma_pred,
                 &cb_pred,
@@ -1259,11 +1259,12 @@ pub fn encode_ff_p_picture(
             );
             // §6.2.5.1: dct_type is only transmitted when the macroblock
             // is coded; an uncoded macroblock defaults to frame DCT.
-            let effective_field_dct = field_dct && cbp != 0;
+            let coded = any_coded(&coded_flags);
+            let effective_field_dct = field_dct && coded;
 
             // ---- Macroblock layer ----
             bw.write_bit(true); // macroblock_address_increment = 1
-            if cbp != 0 {
+            if coded {
                 bw.write_bit(true); // Table B-3 "MC, Coded" `1`
             } else {
                 bw.write_u32(0b001, 3); // "MC, Not Coded"
@@ -1274,7 +1275,7 @@ pub fn encode_ff_p_picture(
                 PMode::Field(_, _) => bw.write_u32(0b01, 2),
                 PMode::DualPrime(_, _, _) => bw.write_u32(0b11, 2),
             }
-            if cbp != 0 {
+            if coded {
                 bw.write_bit(effective_field_dct);
             }
             match &best_mode {
@@ -1295,8 +1296,12 @@ pub fn encode_ff_p_picture(
                     stats.dual_prime += 1;
                 }
             }
-            if cbp != 0 {
-                encode_cbp420(bw, cbp);
+            if coded {
+                encode_coded_block_pattern(
+                    bw,
+                    &coded_flags[..block_count(params.chroma_format)],
+                    params.chroma_format,
+                )?;
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
                         write_inter_block_coeffs(bw, qf, params.alternate_scan);
@@ -1587,7 +1592,7 @@ pub fn encode_ff_b_picture(
             let (luma_pred, cb_pred, cr_pred) = best_planes.expect("six candidates were scored");
 
             // ---- dct_type + residual quantisation ----
-            let (field_dct, blocks, cbp) = choose_inter_dct(
+            let (field_dct, blocks, coded_flags) = choose_inter_dct(
                 current,
                 &luma_pred,
                 &cb_pred,
@@ -1598,14 +1603,15 @@ pub fn encode_ff_b_picture(
                 params.chroma_format,
                 params.alternate_scan,
             );
-            let effective_field_dct = field_dct && cbp != 0;
+            let coded = any_coded(&coded_flags);
+            let effective_field_dct = field_dct && coded;
 
             // ---- Macroblock layer ----
             bw.write_bit(true); // macroblock_address_increment = 1
-            write_b_macroblock_type(bw, chosen.dir, cbp != 0);
+            write_b_macroblock_type(bw, chosen.dir, coded);
             // frame_motion_type (Table 6-17).
             bw.write_u32(if chosen.is_field { 0b01 } else { 0b10 }, 2);
-            if cbp != 0 {
+            if coded {
                 bw.write_bit(effective_field_dct);
             }
             // Forward motion_vectors(0) precede backward
@@ -1632,8 +1638,12 @@ pub fn encode_ff_b_picture(
                 }
                 stats.frame_mc += 1;
             }
-            if cbp != 0 {
-                encode_cbp420(bw, cbp);
+            if coded {
+                encode_coded_block_pattern(
+                    bw,
+                    &coded_flags[..block_count(params.chroma_format)],
+                    params.chroma_format,
+                )?;
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
                         write_inter_block_coeffs(bw, qf, params.alternate_scan);
