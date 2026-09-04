@@ -8,6 +8,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- runtime `Encoder` adapter exposes the full assembler surface through a typed option schema (`Mpeg12EncoderOptions`, `CodecOptionsStruct`): `picture_structure` (frame / field / frame_field / field_adaptive), `interlaced`, the entropy flags, `FrameEncodeOptions` (`skipped_macroblocks`, `concealment_motion_vectors`, `top_field_first`, `repeat_first_field`, `pulldown = 3:2`), `dual_prime`, Annex C `rate_control = cbr` (`bit_rate_value` / `vbv_buffer_size_value`, `bit_rate` + `frame_rate` from `CodecParameters`), §7.10 `data_partitioning` (two partition packets), `mpeg1_d_pictures`; 4:2:2 / 4:4:4 pixel formats; unknown keys and malformed values rejected at construction
 - `vertical_size > 2800` end to end — the encoders emit the §6.2.4 / §6.3.16 `slice_vertical_position_extension` (`write_slice_header_in`), the frame / field decode drivers derive `mb_row` from it, and the §7.10 data-partitioning split / merge carries it in both partitions ahead of `priority_breakpoint`
 - the encode round-trip fuzz target now covers field-picture pairs, frame-field pictures, every chroma format on every path and tall (> 2800-line) pictures
 - four black-box-validated interlaced 4:2:2 / 4:4:4 streams join the pinned self-encoded corpus (twenty-six): 4:2:2 field pairs, 4:2:2 frame-field, 4:2:2 adaptive field modes, 4:4:4 frame-field

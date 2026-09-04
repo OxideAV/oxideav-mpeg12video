@@ -492,7 +492,10 @@ pub use decoder::{
     MPEG2_CODEC_ID_STR,
 };
 pub use encode_options::{FrameEncodeOptions, FrameEncodeStats};
-pub use encoder::{make_encoder, Mpeg12Encoder};
+pub use encoder::{
+    make_encoder, Mpeg12Encoder, Mpeg12EncoderOptions, PictureStructureOption, PulldownOption,
+    RateControlOption,
+};
 pub use field_picture_encoder::{
     encode_field_adaptive_display_order_gop_sequence, encode_field_b_picture,
     encode_field_b_picture_adaptive, encode_field_display_order_gop_sequence,

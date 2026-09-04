@@ -182,8 +182,9 @@ fn encoder_options_are_honoured_and_validated() {
         ("quantiser_scale_code", "0"),
         ("quantiser_scale_code", "32"),
         ("quantiser_scale_code", "abc"),
-        ("f_code", "8"),
+        ("f_code", "10"),
         ("anchors_per_gop", "0"),
+        ("no_such_option", "1"),
     ] {
         let mut bad = encoder_params(MPEG2_CODEC_ID_STR, 48, 32);
         bad.options.insert(key, value);
@@ -200,10 +201,14 @@ fn encoder_rejects_bad_geometry_and_formats() {
     let bare = CodecParameters::video(CodecId::new(MPEG2_CODEC_ID_STR));
     assert!(make_encoder(&bare).is_err(), "missing width/height");
 
-    // Unsupported pixel format.
+    // Unsupported pixel format (only planar 4:2:0 / 4:2:2 / 4:4:4).
     let mut p = encoder_params(MPEG2_CODEC_ID_STR, 64, 48);
-    p.pixel_format = Some(PixelFormat::Yuv444P);
-    assert!(make_encoder(&p).is_err(), "non-4:2:0 pixel format");
+    p.pixel_format = Some(PixelFormat::Gray8);
+    assert!(make_encoder(&p).is_err(), "non-planar-YCbCr pixel format");
+    // ISO/IEC 11172-2 is 4:2:0 only.
+    let mut p = encoder_params(MPEG1_CODEC_ID_STR, 64, 48);
+    p.pixel_format = Some(PixelFormat::Yuv422P);
+    assert!(make_encoder(&p).is_err(), "mpeg1video at 4:2:2");
 
     // Frame geometry mismatch at send_frame.
     let params = encoder_params(MPEG2_CODEC_ID_STR, 64, 48);
