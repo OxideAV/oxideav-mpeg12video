@@ -53,6 +53,8 @@ they pin two facts:
 | `selfenc-snr-enh-64x48.m2v` | `encode_snr_enhancement_layer` | **§7.8 SNR enhancement layer** (round 456) for the stream above at `quantiser_scale_code = 4`: `sequence_scalable_extension()` (SNR, `layer_id = 1`), coincident GOP / picture / slice layers, Table B-8 macroblocks with non-intra refinement blocks. **No `.ref.yuv`**: no black-box decoder in reach consumes an SNR enhancement layer (the reference binary misreads it as a plain stream), so `tests/selfenc_conformance.rs` pins it bit-exactly and holds `decode_snr_scalable_sequence` sample-exact against the encoder's own combined reconstruction |
 | `selfenc-temporal-base-64x48.m2v` | `encode_display_order_gop_sequence` | **Temporal-scalable lower layer** (round 456): a progressive I B P B P at the even half-frame instants — an ordinary 13818-2 stream, black-box validated like every other corpus stream |
 | `selfenc-temporal-enh-64x48.m2v` | `encode_temporal_enhancement_layer` | **§7.9 temporal enhancement layer** (round 456) at the odd instants: `sequence_scalable_extension()` (temporal, `layer_id = 1`, `picture_mux_enable = 1`, `mux_to_progressive_sequence = 1`, order 0 / factor 1), one GOP, four B pictures each with a `picture_temporal_scalable_extension()` (`reference_select_code = 11`: forward = most recent lower frame, backward = next lower frame). **No `.ref.yuv`**: no black-box decoder in reach resolves the lower-layer references, so the layer is pinned bit-exactly with `decode_temporal_scalable_sequence` held sample-exact against the encoder's own reconstruction |
+| `selfenc-spatial-base-32x24.m2v` | `encode_display_order_gop_sequence` | **Spatial-scalable lower layer** (round 456): the 2:1 box-filtered source as a 32×24 I B P B P — an ordinary 13818-2 stream, black-box validated like every other corpus stream |
+| `selfenc-spatial-enh-64x48.m2v` | `encode_spatial_enhancement_layer` | **§7.7 spatial enhancement layer** (round 456) at 64×48: `sequence_scalable_extension()` (spatial, `layer_id = 1`, lower 32×24, 1:2 factors), a `picture_spatial_scalable_extension()` per picture (weight table 00, `lower_layer_progressive_frame = 1`, `deinterlaced_field_select = 1`), Tables B-5 / B-6 / B-7 macroblocks mixing intra, temporal, spatial-only and half-weight prediction over the §7.7.3 resampled lower frame. **No `.ref.yuv`**: no black-box decoder in reach consumes a spatial enhancement layer, so it is pinned bit-exactly with `decode_spatial_scalable_sequence` held sample-exact against the encoder's own reconstruction |
 
 All MPEG-2 streams except 18–20 and 23–26: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -174,7 +176,7 @@ packet diagnostic while still decoding every frame (as for streams 13
 and 17). All twenty-two pre-existing streams regenerate
 byte-identical.
 
-The SNR pair (27) and the temporal pair (28) were generated 2026-09-05: the lower layer's default
+The SNR pair (27), the temporal pair (28) and the spatial pair (29) were generated 2026-09-05: the lower layer's default
 black-box decode is the committed reference (strict pass clean); the
 enhancement layers are pinned by the encoder only, as recorded in the
 table.
@@ -182,6 +184,9 @@ table.
 ## SHA-256
 
 ```
+ed3b9844336c4410229805c42bad7ac9ca848ecc956241d6dc41da75fba113b5  selfenc-spatial-base-32x24.m2v
+4bee19a8912f6475e855092fb9082fb09eb74e96a13de9a927a8f72794238032  selfenc-spatial-base-32x24.m2v.ref.yuv
+dddf7ab5fcf8c084d574245912b1436ec17975586f77c449539d7c6df242f05a  selfenc-spatial-enh-64x48.m2v
 8ccf77e19667aee7e200706b5cf13ef2b3d8af76868f1def9ced10746417e56b  selfenc-temporal-base-64x48.m2v
 76ad6d93140fbf1a6359a7a330e8316687cba435b0a6bbb5dd5a9f083edaf1e1  selfenc-temporal-base-64x48.m2v.ref.yuv
 68095e2ad3260929bf036cb3ee48ec4ffe1fe62e5bd60e53becaed7818e67291  selfenc-temporal-enh-64x48.m2v

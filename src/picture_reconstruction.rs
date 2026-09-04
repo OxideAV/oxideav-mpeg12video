@@ -441,7 +441,9 @@ pub(crate) fn reconstruct_skipped_macroblock(
 /// macroblock into a [`FrameMotion`]. The first reconstructed forward
 /// / backward vector's `vector_prime` components are the luminance
 /// motion vector the §7.6.4 reader consumes.
-fn frame_motion_from_reconstructed(reconstructed: &ReconstructedMotionVectors) -> FrameMotion {
+pub(crate) fn frame_motion_from_reconstructed(
+    reconstructed: &ReconstructedMotionVectors,
+) -> FrameMotion {
     let forward = reconstructed
         .forward
         .as_ref()
@@ -1085,6 +1087,7 @@ mod tests {
             })
             .collect();
         MacroblockRecord {
+            spatial_temporal_weight: None,
             macroblock_address: 0,
             address_increment: 1,
             address_escape_count: 0,

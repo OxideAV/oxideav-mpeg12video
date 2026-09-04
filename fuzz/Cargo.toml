@@ -10,6 +10,8 @@
 #   reset). A structure-aware prefix splices attacker payloads behind
 #   a valid sequence-header + picture-header skeleton so the deep
 #   slice/macroblock/block walk is reached on most iterations.
+# * `spatial_decode` — the same shape for the §7.7 spatial two-layer
+#   loop (decode_spatial_scalable_sequence).
 # * `temporal_decode` — the same shape for the §7.9 temporal two-layer
 #   loop (decode_temporal_scalable_sequence).
 # * `snr_decode` — attacker bytes (raw, or a corrupted self-encoded
@@ -79,5 +81,11 @@ doc = false
 [[bin]]
 name = "temporal_decode"
 path = "fuzz_targets/temporal_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "spatial_decode"
+path = "fuzz_targets/spatial_decode.rs"
 test = false
 doc = false

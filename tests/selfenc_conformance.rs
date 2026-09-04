@@ -1305,3 +1305,115 @@ fn selfenc_temporal_pair_is_pinned_base_reference_conformant_and_loop_exact() {
         assert!((total as f64 / (64.0 * 48.0)) < 8.0);
     }
 }
+
+/// Lock-step with `examples/gen_selfenc_corpus.rs` (`spatial_full_frame`).
+fn spatial_full_frame(width: usize, height: usize, t: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + 2 * t;
+            let g = 40 + ((sx * 2 + y * 3) % 160);
+            let n = (sx * 7 + y * 11) % 13;
+            f.y.put_sample(x, y, (g + n).min(235) as u8);
+        }
+    }
+    let (bx, by) = (12 + 2 * t, 10);
+    for y in by..(by + 12).min(height) {
+        for x in bx..(bx + 12).min(width) {
+            f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            f.cb.put_sample(x, y, (96 + (x + y + t) % 64) as u8);
+            f.cr.put_sample(x, y, (160u8).saturating_sub(((x * 2 + y + t) % 64) as u8));
+        }
+    }
+    f
+}
+
+fn spatial_downsample(full: &FrameBuffer) -> FrameBuffer {
+    let (w, h) = (full.width / 2, full.height / 2);
+    let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+    for y in 0..h {
+        for x in 0..w {
+            let s = (0..2)
+                .flat_map(|dy| (0..2).map(move |dx| (dx, dy)))
+                .map(|(dx, dy)| u32::from(full.y.get(2 * x + dx, 2 * y + dy).unwrap()))
+                .sum::<u32>();
+            f.y.put_sample(x, y, ((s + 2) / 4) as u8);
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    let (fcw, fch) = full.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            let sx = (x * fcw / cw).min(fcw - 1);
+            let sy = (y * fch / ch).min(fch - 1);
+            f.cb.put_sample(x, y, full.cb.get(sx, sy).unwrap());
+            f.cr.put_sample(x, y, full.cr.get(sx, sy).unwrap());
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_spatial_pair_is_pinned_base_reference_conformant_and_loop_exact() {
+    let (base, reference) = fixture("selfenc-spatial-base-32x24.m2v");
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/selfenc/");
+    let enh = std::fs::read(format!("{dir}selfenc-spatial-enh-64x48.m2v")).expect("enhancement");
+    let sources: Vec<FrameBuffer> = (0..5).map(|t| spatial_full_frame(64, 48, t)).collect();
+    let lower: Vec<FrameBuffer> = sources.iter().map(spatial_downsample).collect();
+
+    let regenerated_base = encode_display_order_gop_sequence(&lower, 1, 2, params(32, 24), 6, 3, 3)
+        .expect("lower layer re-encode");
+    assert_eq!(
+        regenerated_base, base,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = lower.iter().collect();
+    assert_reference_conformant("selfenc-spatial-base-32x24", &base, &reference, &inputs);
+
+    let regenerated = oxideav_mpeg12video::encode_spatial_enhancement_layer(
+        &base,
+        &sources,
+        &oxideav_mpeg12video::SpatialLayerConfig {
+            quantiser_scale_code: 5,
+            f_code: 3,
+        },
+    )
+    .expect("enhancement re-encode");
+    assert_eq!(
+        regenerated.stream, enh,
+        "enhancement encoder output moved — refresh the fixture"
+    );
+    let decoded = oxideav_mpeg12video::decode_spatial_scalable_sequence(&base, &enh)
+        .expect("two-layer decode");
+    assert_eq!(decoded.enhancement.len(), 5);
+    for (i, (a, b)) in decoded
+        .enhancement
+        .iter()
+        .zip(&regenerated.enhancement)
+        .enumerate()
+    {
+        assert_eq!(a.frame.y.samples(), b.frame.y.samples(), "frame {i} luma");
+        assert_eq!(a.frame.cb.samples(), b.frame.cb.samples(), "frame {i} cb");
+        assert_eq!(a.frame.cr.samples(), b.frame.cr.samples(), "frame {i} cr");
+    }
+    for (d, s) in decoded.enhancement.iter().zip(&sources) {
+        let mut total = 0u64;
+        for y in 0..48 {
+            for x in 0..64 {
+                total += u64::from(
+                    d.frame
+                        .y
+                        .get(x, y)
+                        .unwrap()
+                        .abs_diff(s.y.get(x, y).unwrap()),
+                );
+            }
+        }
+        assert!((total as f64 / (64.0 * 48.0)) < 5.0);
+    }
+}

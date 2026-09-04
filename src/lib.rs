@@ -470,6 +470,7 @@ pub mod snr_scalability;
 pub mod spatial_prediction_picture;
 #[doc(hidden)] // internal: §7.7 spatial-resampling stage
 pub mod spatial_resampling;
+pub mod spatial_scalability;
 #[doc(hidden)] // internal: §7.7 spatial/temporal weight combining
 pub mod spatial_temporal_combine;
 #[doc(hidden)] // internal: encoder bitstream-writer stage
@@ -541,6 +542,10 @@ pub use rate_control::{
 };
 pub use sequence_extension::ChromaFormat;
 pub use snr_scalability::{decode_snr_scalable_sequence, encode_snr_enhancement_layer, SnrEncoded};
+pub use spatial_scalability::{
+    decode_spatial_scalable_sequence, encode_spatial_enhancement_layer, SpatialEncoded,
+    SpatialLayerConfig, SpatialScalableDecoded, SpatialStats,
+};
 pub use temporal_scalability::{
     decode_temporal_scalable_sequence, encode_temporal_enhancement_layer, remultiplex,
     TemporalEncoded, TemporalLayerConfig, TemporalScalableDecoded,

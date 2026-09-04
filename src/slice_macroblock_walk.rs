@@ -152,8 +152,11 @@ use oxideav_core::bits::BitReader;
 
 use crate::coded_block_pattern::CodedBlockPattern;
 use crate::combine_predictions::PredictionDirection;
-use crate::macroblock_modes::{MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat};
+use crate::macroblock_modes::{
+    MacroblockModesContext, MacroblockModesTail, MotionType, MvFormat, SpatialTemporalWeight,
+};
 use crate::macroblock_type::MacroblockType;
+use crate::macroblock_type::MacroblockTypeTable;
 use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 use crate::motion_vector::{MotionVectors, MotionVectorsContext, MotionVectorsKind};
 use crate::mpeg2_block_dc::DcPredictors;
@@ -331,6 +334,15 @@ pub struct SliceWalkContext {
     /// and then passes the (possibly default) state into this
     /// walker on its next call.
     pub quantiser_matrices: QuantiserMatrixState,
+    /// The `macroblock_type` table family (Table 6-10): the
+    /// non-scalable Tables B-2 / B-3 / B-4 unless the sequence is
+    /// spatially (B-5 / B-6 / B-7) or SNR (B-8) scalable.
+    pub macroblock_type_table: MacroblockTypeTable,
+    /// `spatial_temporal_weight_code_table_index` from the
+    /// `picture_spatial_scalable_extension()` (§6.3.14); gates the
+    /// `spatial_temporal_weight_code` read in `macroblock_modes()`.
+    /// `0` outside spatial scalability.
+    pub spatial_temporal_weight_code_table_index: u8,
 }
 
 impl SliceWalkContext {
@@ -374,6 +386,8 @@ impl SliceWalkContext {
             q_scale_type: false,
             block_decoding_enabled: false,
             quantiser_matrices: QuantiserMatrixState::defaults(),
+            macroblock_type_table: MacroblockTypeTable::NonScalable,
+            spatial_temporal_weight_code_table_index: 0,
         }
     }
 
@@ -410,6 +424,8 @@ impl SliceWalkContext {
             q_scale_type: false,
             block_decoding_enabled: false,
             quantiser_matrices: QuantiserMatrixState::defaults(),
+            macroblock_type_table: MacroblockTypeTable::NonScalable,
+            spatial_temporal_weight_code_table_index: 0,
         }
     }
 
@@ -470,6 +486,8 @@ impl SliceWalkContext {
             q_scale_type: false,
             block_decoding_enabled: false,
             quantiser_matrices: QuantiserMatrixState::defaults(),
+            macroblock_type_table: MacroblockTypeTable::NonScalable,
+            spatial_temporal_weight_code_table_index: 0,
         }
     }
 
@@ -506,6 +524,8 @@ impl SliceWalkContext {
             q_scale_type: false,
             block_decoding_enabled: false,
             quantiser_matrices: QuantiserMatrixState::defaults(),
+            macroblock_type_table: MacroblockTypeTable::NonScalable,
+            spatial_temporal_weight_code_table_index: 0,
         }
     }
 
@@ -575,6 +595,8 @@ impl SliceWalkContext {
             q_scale_type,
             block_decoding_enabled: true,
             quantiser_matrices: QuantiserMatrixState::defaults(),
+            macroblock_type_table: MacroblockTypeTable::NonScalable,
+            spatial_temporal_weight_code_table_index: 0,
         }
     }
 
@@ -615,6 +637,19 @@ impl SliceWalkContext {
         self.quantiser_matrices = quantiser_matrices;
         self
     }
+
+    /// Select the scalable `macroblock_type` table family and the
+    /// `spatial_temporal_weight_code_table_index` (Table 6-10 /
+    /// §6.3.14) for an enhancement-layer picture.
+    pub const fn with_scalable_tables(
+        mut self,
+        macroblock_type_table: MacroblockTypeTable,
+        spatial_temporal_weight_code_table_index: u8,
+    ) -> Self {
+        self.macroblock_type_table = macroblock_type_table;
+        self.spatial_temporal_weight_code_table_index = spatial_temporal_weight_code_table_index;
+        self
+    }
 }
 
 /// Per-macroblock summary the walker emits for one iteration of the
@@ -647,6 +682,12 @@ pub struct MacroblockRecord {
     /// from Tables B-2 / B-3 / B-4 against
     /// [`SliceWalkContext::picture_coding_type`].
     pub macroblock_type: MacroblockType,
+    /// The §7.7.4 spatial/temporal weight resolved for this macroblock
+    /// (Table 7-21) when the `macroblock_type` row set
+    /// `spatial_temporal_weight_code_flag`; `None` otherwise (the
+    /// class is then `macroblock_type.spatial_temporal_weight_class`
+    /// — `4` on a spatial-only row — or `0`).
+    pub spatial_temporal_weight: Option<SpatialTemporalWeight>,
     /// `frame_motion_type` (frame pictures) or `field_motion_type`
     /// (field pictures) decoded against Tables 6-17 / 6-18; `None`
     /// when the field is absent (no motion flag set, or
@@ -1080,7 +1121,11 @@ pub fn walk_slice_at(
 
         // §6.2.5.1: macroblock_modes() opens with macroblock_type
         // (Tables B-2 / B-3 / B-4 keyed on picture_coding_type).
-        let macroblock_type = MacroblockType::parse(&mut br, ctx.picture_coding_type)?;
+        let macroblock_type = MacroblockType::parse_with_table(
+            &mut br,
+            ctx.picture_coding_type,
+            ctx.macroblock_type_table,
+        )?;
 
         // §6.2.5.1: the remainder of macroblock_modes() —
         // `spatial_temporal_weight_code` (gated on
@@ -1099,8 +1144,11 @@ pub fn walk_slice_at(
         // motion-type / dct_type read is gated off — MPEG-1's
         // macroblock layer keeps its own §2.4.2.7 fields out of
         // this driver.
-        let modes_ctx =
-            MacroblockModesContext::new(ctx.picture_structure, ctx.frame_pred_frame_dct);
+        let modes_ctx = MacroblockModesContext::scalable(
+            ctx.picture_structure,
+            ctx.frame_pred_frame_dct,
+            ctx.spatial_temporal_weight_code_table_index,
+        );
         let modes_tail = MacroblockModesTail::parse(&mut br, &macroblock_type, &modes_ctx)?;
 
         // §6.2.5: if (macroblock_quant) read 5-bit
@@ -1397,6 +1445,7 @@ pub fn walk_slice_at(
             address_escape_count: increment.escape_count,
             address_stuffing_count: increment.stuffing_count,
             macroblock_type,
+            spatial_temporal_weight: modes_tail.spatial_temporal_weight,
             motion_type: modes_tail.motion_type,
             dct_type: modes_tail.dct_type,
             quantiser_scale_code,
@@ -1783,7 +1832,7 @@ fn record_direction(macroblock_type: &MacroblockType) -> PredictionDirection {
 /// is replayed from the record's `body_bit_position` snapshot.
 fn derive_tail(record: &MacroblockRecord) -> MacroblockModesTail {
     MacroblockModesTail {
-        spatial_temporal_weight: None,
+        spatial_temporal_weight: record.spatial_temporal_weight,
         motion_type: record.motion_type,
         dct_type: record.dct_type,
         bit_position_after: record.body_bit_position,

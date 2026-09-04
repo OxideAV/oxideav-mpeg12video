@@ -797,6 +797,85 @@ fn main() {
     );
     write("selfenc-temporal-base-64x48.m2v", &tmp_base);
     write("selfenc-temporal-enh-64x48.m2v", &tmp_enh.stream);
+
+    // 29. Spatial scalability: a 32x24 I B P B P lower layer (the 2:1
+    //     box-filtered source) plus its self-encoded 64x48 spatial
+    //     enhancement layer — weight table 00, intra / temporal /
+    //     spatial-only / half-weight macroblocks, a
+    //     picture_spatial_scalable_extension() per picture.
+    let sp_sources: Vec<FrameBuffer> = (0..5).map(|t| spatial_full_frame(64, 48, t)).collect();
+    let sp_lower: Vec<FrameBuffer> = sp_sources.iter().map(spatial_downsample).collect();
+    let sp_base = encode_display_order_gop_sequence(&sp_lower, 1, 2, params(32, 24), 6, 3, 3)
+        .expect("spatial lower layer");
+    let sp_enh = oxideav_mpeg12video::encode_spatial_enhancement_layer(
+        &sp_base,
+        &sp_sources,
+        &oxideav_mpeg12video::SpatialLayerConfig {
+            quantiser_scale_code: 5,
+            f_code: 3,
+        },
+    )
+    .expect("spatial enhancement layer");
+    eprintln!("spatial enhancement stats: {:?}", sp_enh.stats);
+    write("selfenc-spatial-base-32x24.m2v", &sp_base);
+    write("selfenc-spatial-enh-64x48.m2v", &sp_enh.stream);
+}
+
+/// Full-resolution spatial-scalability source (lock-step with
+/// `tests/selfenc_conformance.rs`): a smooth gradient the lower layer
+/// captures, fine texture only the enhancement layer can code, a
+/// translating high-contrast stamp.
+fn spatial_full_frame(width: usize, height: usize, t: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + 2 * t;
+            let g = 40 + ((sx * 2 + y * 3) % 160);
+            let n = (sx * 7 + y * 11) % 13;
+            f.y.put_sample(x, y, (g + n).min(235) as u8);
+        }
+    }
+    let (bx, by) = (12 + 2 * t, 10);
+    for y in by..(by + 12).min(height) {
+        for x in bx..(bx + 12).min(width) {
+            f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            f.cb.put_sample(x, y, (96 + (x + y + t) % 64) as u8);
+            f.cr.put_sample(x, y, (160u8).saturating_sub(((x * 2 + y + t) % 64) as u8));
+        }
+    }
+    f
+}
+
+/// 2:1 box-filtered luma / point-sampled chroma lower-resolution
+/// version of `full`.
+fn spatial_downsample(full: &FrameBuffer) -> FrameBuffer {
+    let (w, h) = (full.width / 2, full.height / 2);
+    let mut f = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+    for y in 0..h {
+        for x in 0..w {
+            let s = (0..2)
+                .flat_map(|dy| (0..2).map(move |dx| (dx, dy)))
+                .map(|(dx, dy)| u32::from(full.y.get(2 * x + dx, 2 * y + dy).unwrap()))
+                .sum::<u32>();
+            f.y.put_sample(x, y, ((s + 2) / 4) as u8);
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    let (fcw, fch) = full.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            let sx = (x * fcw / cw).min(fcw - 1);
+            let sy = (y * fch / ch).min(fch - 1);
+            f.cb.put_sample(x, y, full.cb.get(sx, sy).unwrap());
+            f.cr.put_sample(x, y, full.cr.get(sx, sy).unwrap());
+        }
+    }
+    f
 }
 
 /// Busy, translating content with fine texture the coarse lower layer

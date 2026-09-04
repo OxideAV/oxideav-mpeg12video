@@ -186,6 +186,30 @@ impl PictureSpatialScalableExtension {
     }
 }
 
+/// Write a §6.2.3.5 `picture_spatial_scalable_extension()` —
+/// `extension_start_code`, the `'1001'` identifier and every field,
+/// byte-aligned with zero stuffing (§5.2.3 `next_start_code()`). The
+/// 15-bit offsets are written two's-complement (`simsbf`).
+pub fn write_picture_spatial_scalable_extension(
+    bw: &mut oxideav_core::bits::BitWriter,
+    ext: &PictureSpatialScalableExtension,
+) {
+    bw.write_u32(EXTENSION_START_CODE, 32);
+    bw.write_u32(PICTURE_SPATIAL_SCALABLE_EXTENSION_ID, 4);
+    bw.write_u32(u32::from(ext.lower_layer_temporal_reference & 0x3FF), 10);
+    bw.write_bit(true); // marker_bit
+    bw.write_u32((ext.lower_layer_horizontal_offset as u32) & 0x7FFF, 15);
+    bw.write_bit(true); // marker_bit
+    bw.write_u32((ext.lower_layer_vertical_offset as u32) & 0x7FFF, 15);
+    bw.write_u32(
+        u32::from(ext.spatial_temporal_weight_code_table_index & 0b11),
+        2,
+    );
+    bw.write_bit(ext.lower_layer_progressive_frame);
+    bw.write_bit(ext.lower_layer_deinterlaced_field_select);
+    bw.align_to_byte_zero();
+}
+
 #[cfg(test)]
 mod tests {
     //! Hand-built bit-exact `picture_spatial_scalable_extension()`
