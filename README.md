@@ -26,9 +26,16 @@ macroblock enclosed in a slice, Table 8-5) — a picture with missing
 or slice-less macroblock rows is rejected rather than reconstructed.
 §7.10 **data-partitioned** streams decode through
 `decode_data_partitioned` (partition pair → merged non-scalable
-stream → the same driver), and a three-target cargo-fuzz harness
-(`fuzz/`) runs daily against the decoder, the encode→decode round
-trip and the partition merge.
+stream → the same driver), and the three **scalable** profiles have
+their two-layer loops: `decode_snr_scalable_sequence` (§7.8),
+`decode_temporal_scalable_sequence` (§7.9) and
+`decode_spatial_scalable_sequence` (§7.7, progressive layers), each
+paired with a self-made enhancement-layer encoder that is its oracle.
+Slices may start anywhere in a row (§6.1.2) — and, for ISO/IEC
+11172-2, span rows (§2.4.1). A six-target cargo-fuzz harness (`fuzz/`)
+runs daily against the decoder, the encode→decode round trip (frame,
+field and frame-field pictures, every chroma format, tall pictures),
+the partition merge and the three scalable loops.
 
 ## What works today
 
@@ -498,7 +505,7 @@ generic**:
   `encode_display_order_gop_sequence_with_matrices`).
 
 Both encoders are **externally conformance-validated**: a pinned
-self-encoded corpus (`tests/fixtures/selfenc/` — twenty-two streams:
+self-encoded corpus (`tests/fixtures/selfenc/` — thirty-one streams (twenty-two through round 453, nine more in round 456 — see the fixture README):
 MPEG-2 all-intra 64×48 and non-macroblock-multiple 100×62, an I+3P
 motion-compensated chain with intra fallback, an I/B/P group, a
 7-frame IBBP display-order sequence, a two-GOP MPEG-2 stream with GOP
@@ -635,55 +642,130 @@ the whole-sequence `FrameEncodeStats` macroblock counts):
   so the whole picture-coding-extension flag set is encodable in
   every picture structure at 4:2:0.
 
+Round 456 closed the interlaced chroma gap and the remaining syntax
+corners:
+
+- **4:2:2 / 4:4:4 on the interlaced encode paths** — the field-picture
+  encoders (plain and adaptive), the field assembler, the field CBR
+  controller and the frame-picture field-based encoder are
+  chroma-format generic: Figure 6-11 / 6-12 macroblocks in field
+  pictures, the §6.1.3 rule that 4:2:2 / 4:4:4 chroma blocks follow
+  the luma field / frame organisation under `dct_type` (only 4:2:0
+  chroma stays frame-organised), the per-macroblock `dct_type`
+  decision costed over every block, and `coded_block_pattern_1` /
+  `_2` emission. Four black-box-validated interlaced 4:2:2 / 4:4:4
+  streams pin it (`tests/encode_field_chroma.rs`,
+  `tests/encode_frame_field_chroma.rs`).
+- **`vertical_size > 2800`** — every MPEG-2 encoder emits the §6.2.4 /
+  §6.3.16 `slice_vertical_position_extension`
+  (`write_slice_header_in`; field pictures gate it on the sequence
+  `vertical_size`), the frame / field decode drivers derive `mb_row`
+  from it, and the §7.10 data-partitioning split / merge carries it in
+  both partitions ahead of `priority_breakpoint`
+  (`tests/tall_pictures.rs`: a 16×2816 stream, black-box decoded).
+- **Arbitrary slice structures** — a slice's first
+  `macroblock_address_increment` positions it within the row against
+  the §6.3.17.1 / §2.4.3.6 reset instead of being rejected, so several
+  slices per row (§6.1.2) and, for 11172-2, row-spanning /
+  mid-row-starting slices (§2.4.1) decode;
+  `encode_intra_picture_with_slice_length` /
+  `encode_mpeg1_intra_picture_with_slice_length` emit both shapes
+  (black-box validated, reconstruction identical to the
+  one-slice-per-row encodes).
+
+## Scalable layers
+
+The three scalable profiles are composed from the per-stage modules
+into top-level two-layer loops, each with a **self-made
+enhancement-layer encoder** — the only oracle in reach, since no
+black-box reference decoder produces or consumes MPEG-2 enhancement
+layers (the lower layer of every pair stays an ordinary 13818-2 stream
+and is black-box validated like the rest of the corpus). Every loop
+reproduces its encoder's reconstruction sample for sample, the pairs
+are pinned in the corpus, and each loop has a fuzz target.
+
+- **SNR (§7.8)** — `decode_snr_scalable_sequence` /
+  `encode_snr_enhancement_layer`: Table B-8 enhancement macroblocks,
+  refinement blocks decoded as non-intra with the enhancement layer's
+  own `q_scale_type` / `alternate_scan` / non-intra matrices, the
+  §7.8.3.4 coefficient addition **before** saturation
+  (`inverse_quantise_arithmetic` / `saturate_and_mismatch`), one
+  combined frame store, the §7.8.2.1 `dct_type` coincidence,
+  `F''lower = 0` for lower-layer skips. Frame pictures (both
+  `frame_pred_frame_dct` values), 13818-2 lower layers, equal chroma
+  formats (`chroma_simulcast` is not composed).
+- **Temporal (§7.9)** — `decode_temporal_scalable_sequence` /
+  `encode_temporal_enhancement_layer` / `remultiplex`: Table 7-28 /
+  7-29 reference selection (most recent enhancement picture, most
+  recent / next lower-layer frame) resolved by the picture's position
+  in the §6.3.7 multiplex (`picture_mux_order` /
+  `picture_mux_factor`, `picture_mux_enable = 1` required) with the
+  §6.3.13 temporal-reference cross-check, no enhancement reorder; the
+  encoder codes leading pictures as P from the next lower frame and
+  in-between pictures as B from the surrounding lower frames or the
+  most recent enhancement picture.
+- **Spatial (§7.7)** — `decode_spatial_scalable_sequence` /
+  `encode_spatial_enhancement_layer`: the §7.7.3 resampled
+  `spat_pred_pic` per picture (`spatial_prediction_picture`), Tables
+  B-5 / B-6 / B-7 through the walker's scalable-table plumbing
+  (`SliceWalkContext::with_scalable_tables`), §7.7.4 class 0
+  (temporal / intra), class 1 (half weight) and class 4 (spatial-only)
+  prediction, §7.7.6 skips, §7.7.5.1 resets, Table 7-18 chroma
+  upgrades (4:2:0 lower → 4:2:2 enhancement), §6.3.7 non-scalable
+  pictures; the encoder mirrors the lower layer's GOP structure and
+  decides per macroblock among intra / temporal / spatial-only /
+  half-weight prediction. **Progressive layers with weight table
+  `00`** — the interlaced weight tables `01` / `10` / `11` (per-field
+  weights, classes 2 / 3, field prediction under a weight) and field
+  pictures are not composed.
+
 ## Runtime encoder
 
 `register` installs `oxideav_core::Encoder` factories under both the
 `mpeg1video` and `mpeg2video` codec ids beside the decoders (the
 direct `encoder::make_encoder` factory is exported too). The
-`encoder::Mpeg12Encoder` adapter drives the display-order GOP
-assemblers behind the frame-to-packet `Encoder` contract, mirroring
-the runtime decoder's whole-elementary-stream framing: display-order
-frames buffered via `send_frame` are assembled at `flush()` into one
+`encoder::Mpeg12Encoder` adapter drives the display-order assemblers
+behind the frame-to-packet `Encoder` contract, mirroring the runtime
+decoder's whole-elementary-stream framing: display-order frames
+buffered via `send_frame` are assembled at `flush()` into one
 keyframe-flagged packet carrying the finished elementary stream
-(`NeedMore` before the flush, `Eof` after the drain). Four optional
-`CodecParameters` options — `quantiser_scale_code`, `b_between`,
-`anchors_per_gop`, `f_code` — are range-validated at construction.
-`tests/runtime_encoder.rs` proves registry resolution under both ids,
-round-trips through both decode paths, and the 11172-2 classification
-of the `mpeg1video` output (no extension start codes).
+(`NeedMore` before the flush, `Eof` after the drain; two partition
+packets under data partitioning).
 
-The frame-picture encode path covers 4:2:0 / 4:2:2 / 4:4:4 with
-downloadable quantiser matrices, every picture-coding-extension
-entropy flag, skipped macroblocks, concealment motion vectors and the
-§6.3.10 output-cadence flags; the **field / frame-field** encoders
-honour every entropy flag but remain 4:2:0-only. The runtime
-`Encoder` adapter drives the baseline (no-options) assemblers.
+The **whole assembler surface** is reachable through the typed option
+schema `Mpeg12EncoderOptions` (`oxideav_core::CodecOptionsStruct`,
+parsed from `CodecParameters::options` — unknown keys and malformed
+values are rejected at construction): `picture_structure` (`frame` /
+`field` / `frame_field` / `field_adaptive`), `interlaced`, the entropy
+flags (`intra_vlc_format`, `alternate_scan`, `q_scale_type`,
+`intra_dc_precision`), `FrameEncodeOptions` (`skipped_macroblocks`,
+`concealment_motion_vectors`, `top_field_first`, `repeat_first_field`,
+`pulldown = 3:2`), `dual_prime`, Annex C `rate_control = cbr`
+(`bit_rate_value` / `vbv_buffer_size_value`, with `bit_rate` and the
+Table 6-4 `frame_rate` taken from `CodecParameters`), §7.10
+`data_partitioning` (a `priority_breakpoint`) and `mpeg1_d_pictures`,
+plus the GOP knobs `quantiser_scale_code` / `b_between` /
+`anchors_per_gop` / `f_code` / `backward_f_code`. The pixel format
+selects 4:2:0 / 4:2:2 / 4:4:4. `tests/runtime_encoder_options.rs`
+round-trips every option through `oxideav_core::make_encoder` and the
+registry.
 
 ## Not yet supported
 
-- **Scalable multi-layer decode loops** for the spatial (§7.7), SNR
-  (§7.8) and temporal (§7.9) profiles. Every per-stage building block
-  is implemented and unit-tested — the §7.7.3 deinterlace / resample /
-  reinterlace chain with the Table 7-15 case dispatch and the
-  picture-level `spatial_prediction_picture` driver, the §7.7.4
-  spatial/temporal combiner, the §7.8.3.4 coefficient addition (with
-  the `chroma_simulcast` Table 7-27 case), the Table 7-28 / 7-29
-  temporal reference selection, and all the extension parsers — but
-  the top-level loop that demultiplexes an enhancement-layer bitstream
-  and feeds those combiners picture by picture is not composed. No
-  clean-room fixture source exists for these layers (the black-box
-  reference binary neither produces nor decodes them), so a self-made
-  layered encoder would be the only oracle. Data partitioning (§7.10)
-  **is** supported (see above).
-- **4:2:2 / 4:4:4 on the interlaced encode paths** — the field-picture
-  and frame-field encoders are 4:2:0-only (the frame-picture encoders
-  cover all three chroma formats).
-- **Scalable-layer encoding** (spatial / SNR / temporal enhancement
-  layers) and `vertical_size > 2800` (`slice_vertical_position_extension`)
-  on the data-partitioning split / merge.
-- The runtime `Encoder` adapter exposes the baseline assemblers only
-  (`FrameEncodeOptions`, the interlaced encoders and CBR rate control
-  are reached through the direct APIs).
+- **Interlaced spatial scalability** — the `spatial_temporal_weight_code_table_index`
+  `01` / `10` / `11` weight tables (per-field weights, classes 2 / 3
+  with field prediction under a weight, Tables 7-22 / 7-24 / 7-25) and
+  field pictures in the spatial loop; negative `lower_layer_*_offset`
+  cropping. The progressive table-`00` loop above is complete.
+- **Scalable corner cases** — SNR `chroma_simulcast` (Table 7-26 /
+  7-27 differing chroma formats), ISO/IEC 11172-2 lower layers (the
+  spec allows them under SNR / spatial scalability), field pictures in
+  the SNR loop, temporal layers with `picture_mux_enable = 0` (the
+  alignment is a systems-layer matter, §7.9.2).
+- **Runtime adapter** — `FrameEncodeOptions` ride the constant-quantiser
+  frame-picture assembler only (the CBR controllers drive the baseline
+  encoders), and the scalable encoders are reached through the direct
+  APIs (the registry contract emits one elementary stream).
 
 ## Clean-room provenance
 

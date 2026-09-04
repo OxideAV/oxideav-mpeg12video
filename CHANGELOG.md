@@ -6,6 +6,10 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Other
+
+- README + CHANGELOG — round 456: interlaced 4:2:2 / 4:4:4, vertical_size > 2800, typed runtime options, the three scalable loops + encoders, arbitrary slice structures; Not-yet-supported rewritten to the remaining scalable corners
+
 ### Added
 
 - arbitrary slice structures decode: a slice's first `macroblock_address_increment` positions it within the row against the §6.3.17.1 / ISO/IEC 11172-2 §2.4.3.6 reset instead of being rejected — several slices per row (13818-2 §6.1.2) and row-spanning, mid-row-starting slices (11172-2 §2.4.1) now decode; `encode_intra_picture_with_slice_length` / `encode_mpeg1_intra_picture_with_slice_length` emit both shapes; two black-box-validated slice-structure streams join the corpus
