@@ -474,6 +474,7 @@ pub mod spatial_resampling;
 pub mod spatial_temporal_combine;
 #[doc(hidden)] // internal: encoder bitstream-writer stage
 pub mod stream_writer;
+pub mod temporal_scalability;
 pub mod vbv;
 pub mod video_sequence;
 
@@ -540,6 +541,10 @@ pub use rate_control::{
 };
 pub use sequence_extension::ChromaFormat;
 pub use snr_scalability::{decode_snr_scalable_sequence, encode_snr_enhancement_layer, SnrEncoded};
+pub use temporal_scalability::{
+    decode_temporal_scalable_sequence, encode_temporal_enhancement_layer, remultiplex,
+    TemporalEncoded, TemporalLayerConfig, TemporalScalableDecoded,
+};
 pub use video_sequence::{
     decode_video_sequence, display_indices_from_coded_pictures,
     display_indices_from_temporal_references, verify_display_order,

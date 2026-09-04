@@ -51,6 +51,8 @@ they pin two facts:
 | `selfenc-444-framefield-64x64.m2v` | `encode_ff_display_order_gop_sequence` | **4:4:4 frame-picture field-based** I B P (round 456): Figure 6-12 twelve-block macroblocks under per-macroblock `dct_type` with full-resolution chroma following the luma field organisation (non-intra blocks 6/7 stay uncoded per the printed §6.3.17.4 derivation) |
 | `selfenc-snr-base-64x48.m2v` | `encode_display_order_gop_sequence` | **SNR-scalable lower layer** (round 456): a coarse (`quantiser_scale_code = 14`) progressive I B P B P over busy content — an ordinary 13818-2 stream, black-box validated like every other corpus stream |
 | `selfenc-snr-enh-64x48.m2v` | `encode_snr_enhancement_layer` | **§7.8 SNR enhancement layer** (round 456) for the stream above at `quantiser_scale_code = 4`: `sequence_scalable_extension()` (SNR, `layer_id = 1`), coincident GOP / picture / slice layers, Table B-8 macroblocks with non-intra refinement blocks. **No `.ref.yuv`**: no black-box decoder in reach consumes an SNR enhancement layer (the reference binary misreads it as a plain stream), so `tests/selfenc_conformance.rs` pins it bit-exactly and holds `decode_snr_scalable_sequence` sample-exact against the encoder's own combined reconstruction |
+| `selfenc-temporal-base-64x48.m2v` | `encode_display_order_gop_sequence` | **Temporal-scalable lower layer** (round 456): a progressive I B P B P at the even half-frame instants — an ordinary 13818-2 stream, black-box validated like every other corpus stream |
+| `selfenc-temporal-enh-64x48.m2v` | `encode_temporal_enhancement_layer` | **§7.9 temporal enhancement layer** (round 456) at the odd instants: `sequence_scalable_extension()` (temporal, `layer_id = 1`, `picture_mux_enable = 1`, `mux_to_progressive_sequence = 1`, order 0 / factor 1), one GOP, four B pictures each with a `picture_temporal_scalable_extension()` (`reference_select_code = 11`: forward = most recent lower frame, backward = next lower frame). **No `.ref.yuv`**: no black-box decoder in reach resolves the lower-layer references, so the layer is pinned bit-exactly with `decode_temporal_scalable_sequence` held sample-exact against the encoder's own reconstruction |
 
 All MPEG-2 streams except 18–20 and 23–26: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -172,14 +174,17 @@ packet diagnostic while still decoding every frame (as for streams 13
 and 17). All twenty-two pre-existing streams regenerate
 byte-identical.
 
-The SNR pair (27) was generated 2026-09-05: the lower layer's default
+The SNR pair (27) and the temporal pair (28) were generated 2026-09-05: the lower layer's default
 black-box decode is the committed reference (strict pass clean); the
-enhancement layer is pinned by the encoder only, as recorded in the
+enhancement layers are pinned by the encoder only, as recorded in the
 table.
 
 ## SHA-256
 
 ```
+8ccf77e19667aee7e200706b5cf13ef2b3d8af76868f1def9ced10746417e56b  selfenc-temporal-base-64x48.m2v
+76ad6d93140fbf1a6359a7a330e8316687cba435b0a6bbb5dd5a9f083edaf1e1  selfenc-temporal-base-64x48.m2v.ref.yuv
+68095e2ad3260929bf036cb3ee48ec4ffe1fe62e5bd60e53becaed7818e67291  selfenc-temporal-enh-64x48.m2v
 50bdd9e4224aafc44d2b3fbac5a2f9a06f67c282f4cabf1df679b50aa5970d0f  selfenc-snr-base-64x48.m2v
 d7c693b1be198b1467f341ad1d1f45e6a328ee65bb4804fd1289fc8d04ed3adc  selfenc-snr-base-64x48.m2v.ref.yuv
 14cf831394930376a75657e415ec2c592ec67442cc8ab318b32c8f4461caf1f4  selfenc-snr-enh-64x48.m2v

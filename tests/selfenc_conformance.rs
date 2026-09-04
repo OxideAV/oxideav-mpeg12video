@@ -1246,3 +1246,62 @@ fn selfenc_snr_pair_is_pinned_base_reference_conformant_and_loop_exact() {
     let lower = decode_video_sequence(&base).unwrap();
     assert!(mae(&combined) < mae(&lower));
 }
+
+#[test]
+fn selfenc_temporal_pair_is_pinned_base_reference_conformant_and_loop_exact() {
+    let (base, reference) = fixture("selfenc-temporal-base-64x48.m2v");
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/selfenc/");
+    let enh = std::fs::read(format!("{dir}selfenc-temporal-enh-64x48.m2v")).expect("enhancement");
+    let lower: Vec<FrameBuffer> = (0..5).map(|j| snr_frame_at(64, 48, 2 * j)).collect();
+    let sources: Vec<FrameBuffer> = (0..4).map(|j| snr_frame_at(64, 48, 2 * j + 1)).collect();
+
+    let regenerated_base = encode_display_order_gop_sequence(&lower, 1, 2, params(64, 48), 8, 3, 3)
+        .expect("lower layer re-encode");
+    assert_eq!(
+        regenerated_base, base,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = lower.iter().collect();
+    assert_reference_conformant("selfenc-temporal-base-64x48", &base, &reference, &inputs);
+
+    let regenerated = oxideav_mpeg12video::encode_temporal_enhancement_layer(
+        &base,
+        &sources,
+        &oxideav_mpeg12video::TemporalLayerConfig::default(),
+    )
+    .expect("enhancement re-encode");
+    assert_eq!(
+        regenerated.stream, enh,
+        "enhancement encoder output moved — refresh the fixture"
+    );
+    let decoded = oxideav_mpeg12video::decode_temporal_scalable_sequence(&base, &enh)
+        .expect("two-layer decode");
+    assert_eq!(decoded.enhancement.len(), 4);
+    for (i, (a, b)) in decoded
+        .enhancement
+        .iter()
+        .zip(&regenerated.enhancement)
+        .enumerate()
+    {
+        assert_eq!(a.frame.y.samples(), b.frame.y.samples(), "frame {i} luma");
+        assert_eq!(a.frame.cb.samples(), b.frame.cb.samples(), "frame {i} cb");
+        assert_eq!(a.frame.cr.samples(), b.frame.cr.samples(), "frame {i} cr");
+    }
+    assert_eq!(decoded.remultiplex().len(), 9);
+    // The in-between instants are faithfully reconstructed.
+    for (d, s) in decoded.enhancement.iter().zip(&sources) {
+        let mut total = 0u64;
+        for y in 0..48 {
+            for x in 0..64 {
+                total += u64::from(
+                    d.frame
+                        .y
+                        .get(x, y)
+                        .unwrap()
+                        .abs_diff(s.y.get(x, y).unwrap()),
+                );
+            }
+        }
+        assert!((total as f64 / (64.0 * 48.0)) < 8.0);
+    }
+}

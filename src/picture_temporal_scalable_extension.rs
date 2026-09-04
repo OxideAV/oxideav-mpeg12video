@@ -287,6 +287,24 @@ pub enum PictureReferences {
     },
 }
 
+/// Write a §6.2.3.4 `picture_temporal_scalable_extension()` —
+/// `extension_start_code`, the `'1010'` identifier,
+/// `reference_select_code`, `forward_temporal_reference`, the
+/// `marker_bit` and `backward_temporal_reference` — byte-aligned with
+/// zero stuffing (§5.2.3 `next_start_code()`).
+pub fn write_picture_temporal_scalable_extension(
+    bw: &mut oxideav_core::bits::BitWriter,
+    ext: &PictureTemporalScalableExtension,
+) {
+    bw.write_u32(EXTENSION_START_CODE, 32);
+    bw.write_u32(PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID, 4);
+    bw.write_u32(u32::from(ext.reference_select_code & 0b11), 2);
+    bw.write_u32(u32::from(ext.forward_temporal_reference & 0x3FF), 10);
+    bw.write_bit(true); // marker_bit
+    bw.write_u32(u32::from(ext.backward_temporal_reference & 0x3FF), 10);
+    bw.align_to_byte_zero();
+}
+
 #[cfg(test)]
 mod tests {
     //! Hand-built bit-exact `picture_temporal_scalable_extension()`

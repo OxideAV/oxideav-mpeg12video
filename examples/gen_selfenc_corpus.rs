@@ -775,6 +775,28 @@ fn main() {
     );
     write("selfenc-snr-base-64x48.m2v", &snr_base);
     write("selfenc-snr-enh-64x48.m2v", &snr_enh.stream);
+
+    // 28. Temporal scalability: a progressive I B P B P lower layer at
+    //     the even half-frame instants plus its self-encoded temporal
+    //     enhancement layer (picture_mux_order 0, factor 1) carrying
+    //     the odd instants as B pictures predicted from the two
+    //     surrounding lower frames (reference_select_code 11).
+    let tmp_lower: Vec<FrameBuffer> = (0..5).map(|j| snr_frame_at(64, 48, 2 * j)).collect();
+    let tmp_base = encode_display_order_gop_sequence(&tmp_lower, 1, 2, params(64, 48), 8, 3, 3)
+        .expect("temporal lower layer");
+    let tmp_sources: Vec<FrameBuffer> = (0..4).map(|j| snr_frame_at(64, 48, 2 * j + 1)).collect();
+    let tmp_enh = oxideav_mpeg12video::encode_temporal_enhancement_layer(
+        &tmp_base,
+        &tmp_sources,
+        &oxideav_mpeg12video::TemporalLayerConfig::default(),
+    )
+    .expect("temporal enhancement layer");
+    eprintln!(
+        "temporal enhancement codes: {:?}",
+        tmp_enh.reference_select_codes
+    );
+    write("selfenc-temporal-base-64x48.m2v", &tmp_base);
+    write("selfenc-temporal-enh-64x48.m2v", &tmp_enh.stream);
 }
 
 /// Busy, translating content with fine texture the coarse lower layer
