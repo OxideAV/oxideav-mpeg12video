@@ -56,7 +56,7 @@ use crate::p_picture_encoder::{
 };
 use crate::picture_header::PictureCodingType;
 use crate::stream_writer::{
-    write_picture_coding_extension, write_picture_header, write_slice_header,
+    write_picture_coding_extension, write_picture_header, write_slice_header_in,
 };
 use crate::Result;
 
@@ -336,7 +336,12 @@ pub fn encode_b_picture_with_stats(
     };
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            params.height as u32,
+        );
         // §7.6.3.4: forward and backward PMV slots both reset at slice
         // start.
         let mut pmv_fwd = (0i32, 0i32);

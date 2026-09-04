@@ -513,13 +513,14 @@ pub fn write_data_partitioning_scalable_extension(bw: &mut BitWriter, layer_id: 
     bw.align_to_byte_zero();
 }
 
-/// Bit offset of the bits following `quantiser_scale_code` in a
-/// non-scalable slice header with `vertical_size <= 2800`:
-/// start code (32) + quantiser_scale_code (5).
-const SLICE_TAIL_BIT_NON_SCALABLE: u64 = 32 + 5;
-/// The same offset in a data-partitioned slice header: start code
-/// (32) + priority_breakpoint (7) + quantiser_scale_code (5).
-const SLICE_TAIL_BIT_PARTITIONED: u64 = 32 + 7 + 5;
+/// Bit offset of the bits following `quantiser_scale_code` in a slice
+/// header: start code (32) + the 3-bit
+/// `slice_vertical_position_extension` when `vertical_size > 2800`
+/// (§6.2.4) + the 7-bit `priority_breakpoint` in a data-partitioned
+/// header + `quantiser_scale_code` (5).
+fn slice_tail_bit(vertical_size: u32, partitioned: bool) -> u64 {
+    32 + if vertical_size > 2800 { 3 } else { 0 } + if partitioned { 7 } else { 0 } + 5
+}
 
 // -------------------------------------------------------------------
 // Split
@@ -543,7 +544,7 @@ const SLICE_TAIL_BIT_PARTITIONED: u64 = 32 + 7 + 5;
 /// # Errors
 /// [`Error::InvalidBitstream`] for an unsupported breakpoint, an
 /// ISO/IEC 11172-2 stream (no `sequence_extension()`), a stream that
-/// is already scalable, `vertical_size > 2800`, or any syntax error
+/// is already scalable, or any syntax error
 /// in the macroblock layer; [`Error::ShortHeader`] on truncation.
 pub fn split_data_partitions(stream: &[u8], priority_breakpoint: u8) -> Result<(Vec<u8>, Vec<u8>)> {
     check_breakpoint(priority_breakpoint)?;
@@ -569,11 +570,6 @@ pub fn split_data_partitions(stream: &[u8], priority_breakpoint: u8) -> Result<(
                 Some(SEQUENCE_EXTENSION_ID) => {
                     let (chroma_format, vext) = parse_sequence_extension_fields(data)?;
                     let vertical_size = (vext << 12) | vertical_size_value;
-                    if vertical_size > 2800 {
-                        return Err(Error::InvalidBitstream(
-                            "data partitioning: vertical_size > 2800 (slice_vertical_position_extension) is not supported",
-                        ));
-                    }
                     seq = Some(SequenceSyntax {
                         chroma_format,
                         vertical_size,
@@ -630,11 +626,16 @@ pub fn split_data_partitions(stream: &[u8], priority_breakpoint: u8) -> Result<(
                 for (w, pb) in [(&mut w0, priority_breakpoint), (&mut w1, 0u8)] {
                     w.write_u32(0x0000_0001, 24);
                     w.write_u32(u32::from(header.slice_vertical_position), 8);
+                    // §6.2.4 order: slice_vertical_position_extension
+                    // (vertical_size > 2800) precedes priority_breakpoint.
+                    if let Some(ext) = header.slice_vertical_position_extension {
+                        w.write_u32(u32::from(ext), 3);
+                    }
                     w.write_u32(u32::from(pb), 7);
                     w.write_u32(u32::from(header.quantiser_scale_code), 5);
                     copy_bits(
                         data,
-                        SLICE_TAIL_BIT_NON_SCALABLE,
+                        slice_tail_bit(seq.vertical_size, false),
                         header.body_bit_position,
                         w,
                     )?;
@@ -736,11 +737,6 @@ pub fn merge_data_partitions(partition0: &[u8], partition1: &[u8]) -> Result<Vec
                 Some(SEQUENCE_EXTENSION_ID) => {
                     let (chroma_format, vext) = parse_sequence_extension_fields(data)?;
                     let vertical_size = (vext << 12) | vertical_size_value;
-                    if vertical_size > 2800 {
-                        return Err(Error::InvalidBitstream(
-                            "data partitioning: vertical_size > 2800 is not supported",
-                        ));
-                    }
                     seq = Some(SequenceSyntax {
                         chroma_format,
                         vertical_size,
@@ -807,6 +803,8 @@ pub fn merge_data_partitions(partition0: &[u8], partition1: &[u8]) -> Result<Vec
                     ));
                 }
                 if header1.slice_vertical_position != header0.slice_vertical_position
+                    || header1.slice_vertical_position_extension
+                        != header0.slice_vertical_position_extension
                     || header1.quantiser_scale_code != header0.quantiser_scale_code
                 {
                     return Err(Error::InvalidBitstream(
@@ -816,10 +814,13 @@ pub fn merge_data_partitions(partition0: &[u8], partition1: &[u8]) -> Result<Vec
 
                 out.write_u32(0x0000_0001, 24);
                 out.write_u32(u32::from(header0.slice_vertical_position), 8);
+                if let Some(ext) = header0.slice_vertical_position_extension {
+                    out.write_u32(u32::from(ext), 3);
+                }
                 out.write_u32(u32::from(header0.quantiser_scale_code), 5);
                 copy_bits(
                     data,
-                    SLICE_TAIL_BIT_PARTITIONED,
+                    slice_tail_bit(seq.vertical_size, true),
                     header0.body_bit_position,
                     &mut out,
                 )?;

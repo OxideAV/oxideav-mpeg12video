@@ -74,7 +74,7 @@ use crate::picture_header::PictureCodingType;
 use crate::pmv::vector_range;
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::stream_writer::{
-    write_picture_coding_extension, write_picture_header, write_slice_header,
+    write_picture_coding_extension, write_picture_header, write_slice_header_in,
 };
 use crate::Result;
 
@@ -666,7 +666,12 @@ pub fn encode_p_picture_with_stats(
     };
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            params.height as u32,
+        );
         // §7.6.3.4: the motion-vector predictor resets at slice start.
         let mut pmv_x = 0i32;
         let mut pmv_y = 0i32;

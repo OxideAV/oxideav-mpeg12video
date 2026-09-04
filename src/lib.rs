@@ -796,8 +796,8 @@ pub use spatial_temporal_combine::{
 #[doc(hidden)] // internal: encoder bitstream-writer re-exports
 pub use stream_writer::{
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
-    SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header, write_slice_header_in, PictureCodingExtensionParams,
+    SequenceHeaderParams, SEQUENCE_END_CODE,
 };
 
 /// Crate-local error type. Each variant is raised at most by the

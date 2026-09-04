@@ -38,8 +38,8 @@ use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::picture_header::PictureCodingType;
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
-    SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header_in, PictureCodingExtensionParams,
+    SequenceHeaderParams, SEQUENCE_END_CODE,
 };
 use crate::{Error, Result};
 
@@ -144,7 +144,12 @@ pub fn encode_p_copy_picture(
     let mb_width = params.mb_width();
     let mb_height = params.mb_height();
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            params.height as u32,
+        );
         for _ in 0..mb_width {
             // macroblock_address_increment = 1 (Table B-1 `1`).
             bw.write_bit(true);

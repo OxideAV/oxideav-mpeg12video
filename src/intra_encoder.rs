@@ -60,7 +60,7 @@ use crate::picture_header::PictureCodingType;
 use crate::quant_matrix_extension::{write_quant_matrix_extension, QuantMatrixExtension};
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header, SequenceHeaderParams, SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header_in, SequenceHeaderParams, SEQUENCE_END_CODE,
 };
 use crate::{Error, Result};
 
@@ -390,7 +390,12 @@ pub fn encode_intra_picture_with_options(
 
     // ----- Slice layer: one slice per macroblock row -----
     for mb_row in 0..mb_height {
-        write_slice_header(&mut bw, mb_row as u32, quantiser_scale_code);
+        write_slice_header_in(
+            &mut bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            params.height as u32,
+        );
         // §7.2.1: the DC predictor resets at the start of every slice.
         let mut pred = DcPredictorState::reset(params.intra_dc_precision);
         // §7.6.3.4: PMV[0][0] resets at slice start (only consumed by

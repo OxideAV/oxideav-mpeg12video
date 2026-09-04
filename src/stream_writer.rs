@@ -406,11 +406,34 @@ pub fn write_field_picture_coding_extension(
 /// (`1..=31`). After this header the caller writes the macroblock body
 /// at the now non-byte-aligned bit position.
 pub fn write_slice_header(bw: &mut BitWriter, mb_row: u32, quantiser_scale_code: u8) {
-    // slice_start_code = 0x00000100 + slice_vertical_position; the
-    // slice_vertical_position is mb_row + 1 (1..=174 for the 8-bit
-    // start-code byte range 0x01..=0xAF).
+    write_slice_header_in(bw, mb_row, quantiser_scale_code, 0);
+}
+
+/// Write a §6.2.4 `slice()` header for the macroblock row `mb_row` of
+/// a picture in a sequence whose (frame) `vertical_size` is given —
+/// the general form of [`write_slice_header`]. For `vertical_size >
+/// 2800` the 3-bit `slice_vertical_position_extension` is emitted and
+/// the row is split per §6.3.16 (`mb_row = (extension << 7) +
+/// slice_vertical_position - 1`, `slice_vertical_position` in
+/// `1..=128`); otherwise `slice_vertical_position = mb_row + 1`
+/// (`1..=175`). Field pictures pass the **sequence** `vertical_size`
+/// (the frame height), not the field height — §6.2.4 gates the
+/// extension on `vertical_size` alone.
+pub fn write_slice_header_in(
+    bw: &mut BitWriter,
+    mb_row: u32,
+    quantiser_scale_code: u8,
+    vertical_size: u32,
+) {
     bw.write_u32(0x00_00_01, 24); // start-code prefix
-    bw.write_u32(mb_row + 1, 8); // slice_vertical_position byte
+    if vertical_size > 2800 {
+        // §6.3.16: slice_vertical_position in [1:128] with the
+        // extension carrying the upper bits of the row.
+        bw.write_u32((mb_row % 128) + 1, 8); // slice_vertical_position byte
+        bw.write_u32(mb_row / 128, 3); // slice_vertical_position_extension
+    } else {
+        bw.write_u32(mb_row + 1, 8); // slice_vertical_position byte
+    }
     bw.write_u32(u32::from(quantiser_scale_code), 5);
     bw.write_bit(false); // extra_bit_slice = 0
 }

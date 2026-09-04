@@ -110,8 +110,8 @@ use crate::picture_header::PictureCodingType;
 use crate::sequence_extension::ChromaFormat;
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
-    SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header_in, PictureCodingExtensionParams,
+    SequenceHeaderParams, SEQUENCE_END_CODE,
 };
 use crate::{Error, Result};
 
@@ -958,7 +958,12 @@ pub fn encode_ff_intra_picture(
     let mb_width = params.mb_width();
     let mb_height = params.mb_height();
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            params.height as u32,
+        );
         let mut pred = IntraDcPred::reset(params.intra_dc_precision);
         for mb_col in 0..mb_width {
             // macroblock_address_increment = 1; macroblock_type = Intra
@@ -1064,7 +1069,12 @@ pub fn encode_ff_p_picture(
     let mb_height = params.mb_height();
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            params.height as u32,
+        );
         // §7.6.3.4: the predictor bank resets at slice start.
         let mut pmv = PmvMirror::new();
         let mut intra_pred = IntraDcPred::reset(params.intra_dc_precision);
@@ -1427,7 +1437,12 @@ pub fn encode_ff_b_picture(
     let mb_height = params.mb_height();
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            params.height as u32,
+        );
         let mut pmv = PmvMirror::new();
 
         for mb_col in 0..mb_width {

@@ -90,8 +90,8 @@ use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::sequence_extension::ChromaFormat;
 use crate::stream_writer::{
     write_field_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header, PictureCodingExtensionParams, SequenceHeaderParams,
-    SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header_in, PictureCodingExtensionParams,
+    SequenceHeaderParams, SEQUENCE_END_CODE,
 };
 use crate::video_sequence::{extract_field, reference_frame_for_second_p_field};
 use crate::{Error, Result};
@@ -356,7 +356,14 @@ pub fn encode_field_intra_picture(
     let mb_height = params.mb_height();
     let nblocks = block_count(params.chroma_format);
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        // §6.2.4: the extension is gated on the sequence vertical_size
+        // (the frame height), not on the field height.
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            (params.height * 2) as u32,
+        );
         // §7.2.1: the DC predictors reset at slice start.
         let mut pred = IntraDcPred::reset(params.intra_dc_precision);
         for mb_col in 0..mb_width {
@@ -447,7 +454,14 @@ pub fn encode_field_p_picture(
     let nblocks = block_count(params.chroma_format);
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        // §6.2.4: the extension is gated on the sequence vertical_size
+        // (the frame height), not on the field height.
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            (params.height * 2) as u32,
+        );
         // §7.6.3.4: PMV resets at slice start. In a field picture the
         // §7.6.3.3 Table 7-9 update copies the coded vector into both
         // PMV slots, so one running pair mirrors the decoder exactly.
@@ -616,7 +630,14 @@ pub fn encode_field_b_picture(
     let nblocks = block_count(params.chroma_format);
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        // §6.2.4: the extension is gated on the sequence vertical_size
+        // (the frame height), not on the field height.
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            (params.height * 2) as u32,
+        );
         // §7.6.3.4: per-direction PMV slots reset at slice start.
         let mut pmv_fwd = (0i32, 0i32);
         let mut pmv_bwd = (0i32, 0i32);
@@ -1364,7 +1385,14 @@ pub fn encode_field_p_picture_adaptive(
     let nblocks = block_count(params.chroma_format);
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        // §6.2.4: the extension is gated on the sequence vertical_size
+        // (the frame height), not on the field height.
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            (params.height * 2) as u32,
+        );
         let mut pmv = PmvMirror::new();
         let mut intra_pred = IntraDcPred::reset(params.intra_dc_precision);
         let slice_first_addr = (mb_row * mb_width) as i32;
@@ -1742,7 +1770,14 @@ pub fn encode_field_b_picture_adaptive(
     let nblocks = block_count(params.chroma_format);
 
     for mb_row in 0..mb_height {
-        write_slice_header(bw, mb_row as u32, quantiser_scale_code);
+        // §6.2.4: the extension is gated on the sequence vertical_size
+        // (the frame height), not on the field height.
+        write_slice_header_in(
+            bw,
+            mb_row as u32,
+            quantiser_scale_code,
+            (params.height * 2) as u32,
+        );
         let mut pmv = PmvMirror::new();
 
         for mb_col in 0..mb_width {

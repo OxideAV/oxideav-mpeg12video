@@ -8,6 +8,8 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `vertical_size > 2800` end to end — the encoders emit the §6.2.4 / §6.3.16 `slice_vertical_position_extension` (`write_slice_header_in`), the frame / field decode drivers derive `mb_row` from it, and the §7.10 data-partitioning split / merge carries it in both partitions ahead of `priority_breakpoint`
+- the encode round-trip fuzz target now covers field-picture pairs, frame-field pictures, every chroma format on every path and tall (> 2800-line) pictures
 - four black-box-validated interlaced 4:2:2 / 4:4:4 streams join the pinned self-encoded corpus (twenty-six): 4:2:2 field pairs, 4:2:2 frame-field, 4:2:2 adaptive field modes, 4:4:4 frame-field
 - 4:2:2 / 4:4:4 on the frame-picture field-based encode path — §6.1.3 field-DCT chroma organisation for the full-height chroma formats, the per-macroblock `dct_type` decision costed over every block, chroma-generic `coded_block_pattern()` emission
 - 4:2:2 / 4:4:4 on the field-picture encode paths — plain and adaptive I/P/B field encoders, the field display-order assembler and the Annex C field CBR controller are chroma-format generic (Figures 6-11 / 6-12 macroblocks, §6.2.5.3 `coded_block_pattern_1` / `_2`)

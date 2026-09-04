@@ -688,8 +688,9 @@ pub fn decode_intra_picture_with_context(
 
         let header = SliceHeader::parse(slice_buf, slice_ctx)?;
         // §6.3.16: for vertical_size <= 2800 the macroblock row is
-        // slice_vertical_position - 1 (no slice_vertical_position_extension).
-        let mb_row = u32::from(header.slice_vertical_position) - 1;
+        // §6.3.16: slice_vertical_position - 1, extended by the 3-bit
+        // slice_vertical_position_extension when vertical_size > 2800.
+        let mb_row = header.mb_row();
 
         let ctx = SliceWalkContext::first_slice_with_block_decoding(
             mb_width,

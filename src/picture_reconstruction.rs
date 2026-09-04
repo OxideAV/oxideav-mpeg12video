@@ -189,7 +189,7 @@ pub fn decode_inter_picture_with_matrices(
         let slice_buf = &picture[start..(start + end + 4).min(picture.len())];
 
         let header = SliceHeader::parse(slice_buf, slice_ctx)?;
-        let mb_row = u32::from(header.slice_vertical_position) - 1;
+        let mb_row = header.mb_row();
 
         let ctx = SliceWalkContext::first_slice_with_block_decoding(
             mb_width,
@@ -757,8 +757,10 @@ pub fn decode_field_picture_with_matrices(
     // The destination is one field: a field-height frame buffer.
     let mut field = geom.new_frame_buffer();
     let mb_width = geom.mb_width() as u32;
-    // The §6.2.3 slice_vertical_position spans the *field* height.
-    let slice_ctx = SliceContext::non_scalable(geom.height as u32);
+    // The slice_vertical_position spans the *field* height, but §6.2.4
+    // gates slice_vertical_position_extension on the sequence
+    // vertical_size (the frame height); `geom` is the field geometry.
+    let slice_ctx = SliceContext::non_scalable((geom.height * 2) as u32);
 
     let mut placed = 0usize;
     let mut offset = 0usize;
@@ -772,7 +774,7 @@ pub fn decode_field_picture_with_matrices(
         let slice_buf = &picture[start..(start + end + 4).min(picture.len())];
 
         let header = SliceHeader::parse(slice_buf, slice_ctx)?;
-        let mb_row = u32::from(header.slice_vertical_position) - 1;
+        let mb_row = header.mb_row();
 
         let ctx = SliceWalkContext::first_slice_with_block_decoding(
             mb_width,
