@@ -131,9 +131,13 @@ fn is_slice_code(code: u8) -> bool {
     (0x01..=0xAF).contains(&code)
 }
 
-/// Pictures (`start`, `end_with_terminator`) and GOP headers
-/// (`picture_index_before`, `start`, `end`) of an elementary stream.
-fn layout(stream: &[u8]) -> (Vec<(usize, usize)>, Vec<(usize, usize, usize)>) {
+/// `(start, end_with_terminator)` of a picture.
+type PictureSpan = (usize, usize);
+/// `(picture_index_before, start, end)` of a GOP header.
+type GopSpan = (usize, usize, usize);
+
+/// Pictures and GOP headers of an elementary stream.
+fn layout(stream: &[u8]) -> (Vec<PictureSpan>, Vec<GopSpan>) {
     let codes = scan_start_codes(stream);
     let mut pictures = Vec::new();
     let mut gops = Vec::new();
@@ -1356,7 +1360,7 @@ pub fn encode_spatial_enhancement_layer(
         lower_seq.horizontal_size as usize,
         lower_seq.vertical_size as usize,
     );
-    if ew < lw || eh < lh || ew % lw != 0 && ew * 1 != lw || ew == 0 || eh == 0 {
+    if ew < lw || eh < lh || ew == 0 || eh == 0 {
         return Err(Error::InvalidBitstream(
             "spatial encoder: enhancement geometry must be at least the lower layer's",
         ));

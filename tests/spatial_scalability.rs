@@ -319,7 +319,7 @@ fn mismatched_pairs_and_garbage_are_rejected_not_panicked() {
     // A lower layer of a different geometry than the extension declares.
     let other: Vec<FrameBuffer> = sources
         .iter()
-        .map(|f| full_frame(48, 24, ChromaFormat::Yuv420, 0))
+        .map(|_| full_frame(48, 24, ChromaFormat::Yuv420, 0))
         .collect();
     let other_base = encode_display_order_gop_sequence(
         &other,
