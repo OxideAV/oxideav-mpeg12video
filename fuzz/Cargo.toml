@@ -10,6 +10,9 @@
 #   reset). A structure-aware prefix splices attacker payloads behind
 #   a valid sequence-header + picture-header skeleton so the deep
 #   slice/macroblock/block walk is reached on most iterations.
+# * `snr_decode` — attacker bytes (raw, or a corrupted self-encoded
+#   enhancement layer) as the §7.8 SNR enhancement layer over a fixed
+#   valid lower layer, through decode_snr_scalable_sequence.
 # * `encode_roundtrip` — attacker-shaped synthetic frames (dimensions,
 #   chroma format, flags and pixel content all fuzzer-chosen) through
 #   the display-order GOP assembler with FrameEncodeOptions, then
@@ -62,5 +65,11 @@ doc = false
 [[bin]]
 name = "partition_merge"
 path = "fuzz_targets/partition_merge.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "snr_decode"
+path = "fuzz_targets/snr_decode.rs"
 test = false
 doc = false

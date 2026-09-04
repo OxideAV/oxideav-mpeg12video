@@ -311,6 +311,27 @@ pub fn inverse_quantise_block(
     quantiser_scale_value: u8,
     intra_dc_mult_value: i32,
 ) -> [[i32; 8]; 8] {
+    saturate_and_mismatch(&inverse_quantise_arithmetic(
+        qf,
+        coding,
+        weight,
+        quantiser_scale_value,
+        intra_dc_mult_value,
+    ))
+}
+
+/// The §7.4.1 / §7.4.2.3 **inverse quantisation arithmetic** alone —
+/// `F''[v][u]` *before* the §7.4.3 saturation and §7.4.4 mismatch
+/// control. This is the point at which §7.8.3.4 SNR scalability adds
+/// the two layers' coefficients (`F'' = F''lower + F''enhance`) before
+/// the remaining steps run once on the sum.
+pub fn inverse_quantise_arithmetic(
+    qf: &[[i32; 8]; 8],
+    coding: BlockCoding,
+    weight: &[[u8; 8]; 8],
+    quantiser_scale_value: u8,
+    intra_dc_mult_value: i32,
+) -> [[i32; 8]; 8] {
     // ----- §7.4.2.3 inverse quantisation arithmetic -----
     let mut f_double_prime = [[0i32; 8]; 8];
     let qs = i32::from(quantiser_scale_value);
@@ -331,7 +352,11 @@ pub fn inverse_quantise_block(
             };
         }
     }
+    f_double_prime
+}
 
+/// §7.4.3 saturation followed by §7.4.4 mismatch control: `F''` → `F`.
+pub fn saturate_and_mismatch(f_double_prime: &[[i32; 8]; 8]) -> [[i32; 8]; 8] {
     // ----- §7.4.3 saturation -----
     let mut f_prime = [[0i32; 8]; 8];
     for v in 0..8 {

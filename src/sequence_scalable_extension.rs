@@ -338,6 +338,41 @@ impl SequenceScalableExtension {
     }
 }
 
+/// Write a §6.2.2.5 `sequence_scalable_extension()` — the
+/// `extension_start_code`, the `'0101'` identifier, `scalable_mode`,
+/// `layer_id` and the mode-specific fields — byte-aligned with zero
+/// stuffing (§5.2.3 `next_start_code()`).
+pub fn write_sequence_scalable_extension(
+    bw: &mut oxideav_core::bits::BitWriter,
+    ext: &SequenceScalableExtension,
+) {
+    bw.write_u32(EXTENSION_START_CODE, 32);
+    bw.write_u32(SEQUENCE_SCALABLE_EXTENSION_ID, 4);
+    bw.write_u32(u32::from(ext.scalable_mode.code()), 2);
+    bw.write_u32(u32::from(ext.layer_id & 0xF), 4);
+    match ext.scalable_mode {
+        ScalableMode::DataPartitioning | ScalableMode::SnrScalability => {}
+        ScalableMode::SpatialScalability(p) => {
+            bw.write_u32(u32::from(p.lower_layer_prediction_horizontal_size), 14);
+            bw.write_bit(true); // marker_bit
+            bw.write_u32(u32::from(p.lower_layer_prediction_vertical_size), 14);
+            bw.write_u32(u32::from(p.horizontal_subsampling_factor_m), 5);
+            bw.write_u32(u32::from(p.horizontal_subsampling_factor_n), 5);
+            bw.write_u32(u32::from(p.vertical_subsampling_factor_m), 5);
+            bw.write_u32(u32::from(p.vertical_subsampling_factor_n), 5);
+        }
+        ScalableMode::TemporalScalability(p) => {
+            bw.write_bit(p.picture_mux_enable);
+            if p.picture_mux_enable {
+                bw.write_bit(p.mux_to_progressive_sequence.unwrap_or(false));
+            }
+            bw.write_u32(u32::from(p.picture_mux_order), 3);
+            bw.write_u32(u32::from(p.picture_mux_factor), 3);
+        }
+    }
+    bw.align_to_byte_zero();
+}
+
 #[cfg(test)]
 mod tests {
     //! Hand-built bit-exact `sequence_scalable_extension()` fixtures

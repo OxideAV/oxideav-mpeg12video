@@ -49,6 +49,8 @@ they pin two facts:
 | `selfenc-422-framefield-64x64.m2v` | `encode_ff_display_order_gop_sequence` | **4:2:2 frame-picture field-based** I B P B P (round 456): per-field opposite pans in luma *and* the full-height chroma — Field-based macroblocks plus the §6.1.3 **field-DCT chroma organisation** (4:2:2 chroma blocks follow the luma under `dct_type`), `dct_type` costed over every block |
 | `selfenc-422-fieldmodes-64x64.m2v` | `encode_field_adaptive_display_order_gop_sequence` | **4:2:2 adaptive field modes** I P P (round 456): the stream-17 luma over eight-block macroblocks — simple field / §7.6.7.3 16×8 / §7.6.3.6 dual-prime (18 / 9 / 5) with `coded_block_pattern_1` |
 | `selfenc-444-framefield-64x64.m2v` | `encode_ff_display_order_gop_sequence` | **4:4:4 frame-picture field-based** I B P (round 456): Figure 6-12 twelve-block macroblocks under per-macroblock `dct_type` with full-resolution chroma following the luma field organisation (non-intra blocks 6/7 stay uncoded per the printed §6.3.17.4 derivation) |
+| `selfenc-snr-base-64x48.m2v` | `encode_display_order_gop_sequence` | **SNR-scalable lower layer** (round 456): a coarse (`quantiser_scale_code = 14`) progressive I B P B P over busy content — an ordinary 13818-2 stream, black-box validated like every other corpus stream |
+| `selfenc-snr-enh-64x48.m2v` | `encode_snr_enhancement_layer` | **§7.8 SNR enhancement layer** (round 456) for the stream above at `quantiser_scale_code = 4`: `sequence_scalable_extension()` (SNR, `layer_id = 1`), coincident GOP / picture / slice layers, Table B-8 macroblocks with non-intra refinement blocks. **No `.ref.yuv`**: no black-box decoder in reach consumes an SNR enhancement layer (the reference binary misreads it as a plain stream), so `tests/selfenc_conformance.rs` pins it bit-exactly and holds `decode_snr_scalable_sequence` sample-exact against the encoder's own combined reconstruction |
 
 All MPEG-2 streams except 18–20 and 23–26: 4:2:0, `progressive_sequence = 1` (§6.3.3
 `Ceil(h/16)` macroblock grid), `frame_pred_frame_dct = 1`, linear
@@ -170,9 +172,17 @@ packet diagnostic while still decoding every frame (as for streams 13
 and 17). All twenty-two pre-existing streams regenerate
 byte-identical.
 
+The SNR pair (27) was generated 2026-09-05: the lower layer's default
+black-box decode is the committed reference (strict pass clean); the
+enhancement layer is pinned by the encoder only, as recorded in the
+table.
+
 ## SHA-256
 
 ```
+50bdd9e4224aafc44d2b3fbac5a2f9a06f67c282f4cabf1df679b50aa5970d0f  selfenc-snr-base-64x48.m2v
+d7c693b1be198b1467f341ad1d1f45e6a328ee65bb4804fd1289fc8d04ed3adc  selfenc-snr-base-64x48.m2v.ref.yuv
+14cf831394930376a75657e415ec2c592ec67442cc8ab318b32c8f4461caf1f4  selfenc-snr-enh-64x48.m2v
 445b75da0ccc619634cc922eb9d7b3fe2628ac4f9cdba04b7fca39e5e176be54  selfenc-422-fieldseq-48x64.m2v
 6da22fbbe181a9be87b5e3757e0ebd89ba76b10f54c6a202e1438c374bd42695  selfenc-422-fieldseq-48x64.m2v.ref.yuv
 7c7becdaf05190503a8f8e5e3681b808a991345b7fea4b05c9f9915123795c2e  selfenc-422-framefield-64x64.m2v

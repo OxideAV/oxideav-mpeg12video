@@ -465,6 +465,7 @@ pub mod slice_header;
 pub mod slice_macroblock_walk;
 #[doc(hidden)] // internal: §7.8 SNR-scalability addition stage
 pub mod snr_coefficient_addition;
+pub mod snr_scalability;
 #[doc(hidden)] // internal: §7.7 spatial-scalability prediction stage
 pub mod spatial_prediction_picture;
 #[doc(hidden)] // internal: §7.7 spatial-resampling stage
@@ -538,6 +539,7 @@ pub use rate_control::{
     CbrEncoded,
 };
 pub use sequence_extension::ChromaFormat;
+pub use snr_scalability::{decode_snr_scalable_sequence, encode_snr_enhancement_layer, SnrEncoded};
 pub use video_sequence::{
     decode_video_sequence, display_indices_from_coded_pictures,
     display_indices_from_temporal_references, verify_display_order,

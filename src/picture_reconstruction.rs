@@ -262,9 +262,9 @@ pub fn decode_inter_picture_with_matrices(
 /// taken directly from the §7.6.3 motion vector predictors at the
 /// skip position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InterDirection {
-    forward: bool,
-    backward: bool,
+pub(crate) struct InterDirection {
+    pub(crate) forward: bool,
+    pub(crate) backward: bool,
 }
 
 /// Reconstruct one coded macroblock — intra via
@@ -278,7 +278,7 @@ struct InterDirection {
 // flag and the carried B-skip direction — each is required by the spec
 // path; bundling them would just nest the same parameter list.
 #[allow(clippy::too_many_arguments)]
-fn reconstruct_one_macroblock(
+pub(crate) fn reconstruct_one_macroblock(
     frame: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
     record: &MacroblockRecord,
@@ -391,7 +391,7 @@ fn reconstruct_one_macroblock(
 ///   *"taken directly from the appropriate motion vector predictors"*
 ///   (`pmv_at_skip`, the predictor bank as it stands at the skip
 ///   position — the run leaves the predictors unaffected).
-fn reconstruct_skipped_macroblock(
+pub(crate) fn reconstruct_skipped_macroblock(
     frame: &mut FrameBuffer,
     references: ReferenceFrames<'_>,
     address: usize,

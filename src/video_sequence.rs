@@ -779,7 +779,7 @@ fn sequence_geometry(sequence: &Mpeg2Sequence) -> IntraPictureParams {
 /// `extension_start_code_identifier` is the Table 6-2 Quant Matrix
 /// Extension ID (`0011`) are parsed — others (display, copyright,
 /// scalable…) are left to their own parsers.
-fn apply_quant_matrix_extensions(
+pub(crate) fn apply_quant_matrix_extensions(
     picture_region: &[u8],
     chroma_format: crate::sequence_extension::ChromaFormat,
     matrices: &mut QuantiserMatrixState,

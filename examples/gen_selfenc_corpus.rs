@@ -754,6 +754,56 @@ fn main() {
     eprintln!("4:4:4 frame-field stats: {st444_ff:?}");
     assert!(st444_ff.field_dct > 0, "stream 26 must code field DCT");
     write("selfenc-444-framefield-64x64.m2v", &s444_ff);
+
+    // ---- round 456: §7.8 SNR scalable pair ---------------------------
+
+    // 27. SNR scalability: a coarse (quantiser 14) progressive I B P B P
+    //     lower layer plus its self-encoded enhancement layer (quantiser
+    //     4). The lower layer is an ordinary 13818-2 stream (black-box
+    //     validated like every other corpus stream); the enhancement
+    //     layer has no external oracle and is pinned bit-exactly with
+    //     its combined reconstruction held sample-exact against the
+    //     two-layer decode loop.
+    let snr_sources: Vec<FrameBuffer> = (0..5).map(|t| snr_frame_at(64, 48, t)).collect();
+    let snr_base = encode_display_order_gop_sequence(&snr_sources, 1, 2, params(64, 48), 14, 3, 3)
+        .expect("SNR lower layer");
+    let snr_enh = oxideav_mpeg12video::encode_snr_enhancement_layer(&snr_base, &snr_sources, 4)
+        .expect("SNR enhancement layer");
+    eprintln!(
+        "SNR enhancement: {} coded / {} not-coded macroblocks",
+        snr_enh.coded_macroblocks, snr_enh.not_coded_macroblocks
+    );
+    write("selfenc-snr-base-64x48.m2v", &snr_base);
+    write("selfenc-snr-enh-64x48.m2v", &snr_enh.stream);
+}
+
+/// Busy, translating content with fine texture the coarse lower layer
+/// drops and a fixed high-contrast stamp (lock-step with
+/// `tests/snr_scalability.rs`).
+fn snr_frame_at(width: usize, height: usize, t: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + 2 * t;
+            let g = 24 + ((sx * 3 + y * 5) % 192);
+            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            let n = (sx * 7 + y * 13) % 9;
+            f.y.put_sample(x, y, (g + c + n).min(235) as u8);
+        }
+    }
+    for y in 8..20.min(height) {
+        for x in 8..20.min(width) {
+            f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            f.cb.put_sample(x, y, (96 + (x + t + y * 3) % 64) as u8);
+            f.cr.put_sample(x, y, (160u8).saturating_sub(((x * 2 + y + t) % 64) as u8));
+        }
+    }
+    f
 }
 
 /// Interlaced-looking source frame at the format's full chroma

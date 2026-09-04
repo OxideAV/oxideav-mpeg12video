@@ -12,6 +12,14 @@ use oxideav_mpeg12video::{
 
 const BREAKPOINTS: [u8; 7] = [1, 2, 3, 64, 65, 72, 127];
 
+/// `true` when the stream declares itself scalable (an
+/// `extension_start_code` whose identifier nibble is `0101`).
+fn carries_sequence_scalable_extension(stream: &[u8]) -> bool {
+    stream
+        .windows(5)
+        .any(|w| w[..4] == [0, 0, 1, 0xB5] && w[4] >> 4 == 0b0101)
+}
+
 fn corpus() -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
     for dir in ["conformance", "selfenc"] {
@@ -25,6 +33,12 @@ fn corpus() -> Vec<(String, Vec<u8>)> {
         names.sort();
         for n in names {
             let bytes = std::fs::read(format!("{path}{n}")).expect("read fixture");
+            // §7.10 partitions non-scalable streams only: a scalable
+            // enhancement layer (sequence_scalable_extension present)
+            // is not a split candidate.
+            if carries_sequence_scalable_extension(&bytes) {
+                continue;
+            }
             out.push((n, bytes));
         }
     }

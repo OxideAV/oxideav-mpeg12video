@@ -1158,3 +1158,91 @@ fn selfenc_444_frame_field_sequence_is_pinned_and_reference_conformant() {
     let inputs: Vec<&FrameBuffer> = display.iter().collect();
     assert_reference_conformant("selfenc-444-framefield-64x64", &stream, &reference, &inputs);
 }
+
+// ---- round 456: §7.8 SNR scalable pair -------------------------------
+
+/// Lock-step with `examples/gen_selfenc_corpus.rs` (`snr_frame_at`).
+fn snr_frame_at(width: usize, height: usize, t: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x + 2 * t;
+            let g = 24 + ((sx * 3 + y * 5) % 192);
+            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            let n = (sx * 7 + y * 13) % 9;
+            f.y.put_sample(x, y, (g + c + n).min(235) as u8);
+        }
+    }
+    for y in 8..20.min(height) {
+        for x in 8..20.min(width) {
+            f.y.put_sample(x, y, if (x + y) % 2 == 0 { 16 } else { 235 });
+        }
+    }
+    let (cw, ch) = f.visible_chroma_dims();
+    for y in 0..ch {
+        for x in 0..cw {
+            f.cb.put_sample(x, y, (96 + (x + t + y * 3) % 64) as u8);
+            f.cr.put_sample(x, y, (160u8).saturating_sub(((x * 2 + y + t) % 64) as u8));
+        }
+    }
+    f
+}
+
+#[test]
+fn selfenc_snr_pair_is_pinned_base_reference_conformant_and_loop_exact() {
+    let (base, reference) = fixture("selfenc-snr-base-64x48.m2v");
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/selfenc/");
+    let enh = std::fs::read(format!("{dir}selfenc-snr-enh-64x48.m2v")).expect("enhancement");
+    let sources: Vec<FrameBuffer> = (0..5).map(|t| snr_frame_at(64, 48, t)).collect();
+
+    // The lower layer: an ordinary stream, pinned and black-box
+    // validated like every other corpus stream.
+    let regenerated_base =
+        encode_display_order_gop_sequence(&sources, 1, 2, params(64, 48), 14, 3, 3)
+            .expect("lower layer re-encode");
+    assert_eq!(
+        regenerated_base, base,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    let inputs: Vec<&FrameBuffer> = sources.iter().collect();
+    assert_reference_conformant("selfenc-snr-base-64x48", &base, &reference, &inputs);
+
+    // The enhancement layer: pinned bit-exactly, its combined
+    // reconstruction sample-exact against the two-layer decode loop.
+    let regenerated = oxideav_mpeg12video::encode_snr_enhancement_layer(&base, &sources, 4)
+        .expect("enhancement re-encode");
+    assert_eq!(
+        regenerated.stream, enh,
+        "enhancement encoder output moved — refresh the fixture"
+    );
+    let combined =
+        oxideav_mpeg12video::decode_snr_scalable_sequence(&base, &enh).expect("two-layer decode");
+    assert_eq!(combined.len(), regenerated.recon.len());
+    for (i, (a, b)) in combined.iter().zip(&regenerated.recon).enumerate() {
+        assert_eq!(a.frame.y.samples(), b.frame.y.samples(), "frame {i} luma");
+        assert_eq!(a.frame.cb.samples(), b.frame.cb.samples(), "frame {i} cb");
+        assert_eq!(a.frame.cr.samples(), b.frame.cr.samples(), "frame {i} cr");
+    }
+    // And it enhances: combined luma MAE beats the lower layer alone.
+    let mae = |frames: &[DecodedFrame]| -> f64 {
+        let mut total = 0u64;
+        let mut n = 0u64;
+        for (d, s) in frames.iter().zip(&sources) {
+            for y in 0..48 {
+                for x in 0..64 {
+                    total += u64::from(
+                        d.frame
+                            .y
+                            .get(x, y)
+                            .unwrap()
+                            .abs_diff(s.y.get(x, y).unwrap()),
+                    );
+                    n += 1;
+                }
+            }
+        }
+        total as f64 / n as f64
+    };
+    let lower = decode_video_sequence(&base).unwrap();
+    assert!(mae(&combined) < mae(&lower));
+}
