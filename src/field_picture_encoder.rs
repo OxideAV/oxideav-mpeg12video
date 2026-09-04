@@ -65,15 +65,15 @@
 use oxideav_core::bits::BitWriter;
 
 use crate::b_picture_encoder::{write_b_macroblock_type, BDirection};
-use crate::coded_block_pattern::encode_cbp420;
+use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::dual_prime::FieldParity;
 use crate::forming_predictions::{predict_field_block, BlockSize, FieldReference, ReferencePlane};
 use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
 use crate::frame_field_encoder::PmvMirror;
 use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
 use crate::inter_reconstruction::{
-    predict_field_picture_macroblock_planes, FieldPictureDualPrimeMotion, FieldPictureMotion,
-    MotionVectorPel, ReferenceFrames,
+    chroma_mb_extent, predict_field_picture_macroblock_planes, FieldPictureDualPrimeMotion,
+    FieldPictureMotion, MotionVectorPel, ReferenceFrames,
 };
 use crate::motion_estimation::max_search_range;
 use crate::motion_vector::encode_motion_component;
@@ -81,8 +81,9 @@ use crate::mpeg2_block_dc::ColourComponent;
 use crate::mpeg2_dequantize::{intra_dc_mult, quantiser_scale, DEFAULT_NON_INTRA_WEIGHT};
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::p_picture_encoder::{
-    encode_intra_mb, gather_residual, intra_activity, quantise_inter_block, reconstruct_inter_mb,
-    wrap_delta, write_inter_block_coeffs, IntraDcPred,
+    encode_intra_mb, gather_residual, intra_activity, nonintra_block_has_cbp_slot,
+    quantise_inter_block, reconstruct_inter_mb, wrap_delta, write_inter_block_coeffs, InterBlock,
+    IntraDcPred,
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::quant_matrix_extension::QuantiserMatrixState;
@@ -95,9 +96,11 @@ use crate::stream_writer::{
 use crate::video_sequence::{extract_field, reference_frame_for_second_p_field};
 use crate::{Error, Result};
 
-/// A macroblock's chroma extent in samples for the 4:2:0 field layout
-/// (§7.6.7.2: the full 8×8 chroma block per field-picture macroblock).
-const CHROMA_MB: usize = 8;
+/// `true` when any block of a macroblock carries coded coefficients
+/// (`macroblock_pattern = 1`).
+fn any_coded(flags: &[bool; 12]) -> bool {
+    flags.iter().any(|&f| f)
+}
 
 /// The result of a per-direction field motion search: the winning
 /// vector, its reference-field parity, and the luma SAD of the exact
@@ -268,11 +271,6 @@ pub fn estimate_field_mv(
 /// Validate the field geometry / format constraints shared by the
 /// field-picture encoders.
 fn check_field_params(params: &IntraPictureParams) -> Result<()> {
-    if params.chroma_format != ChromaFormat::Yuv420 {
-        return Err(Error::InvalidBitstream(
-            "field picture encoder: only 4:2:0 is supported",
-        ));
-    }
     if params.frame_pred_frame_dct {
         return Err(Error::InvalidBitstream(
             "field picture encoder: frame_pred_frame_dct applies to frame pictures only (§6.3.10)",
@@ -509,51 +507,22 @@ pub fn encode_field_p_picture(
             .map_err(crate::Error::from)?;
 
             // 3. Residual + forward quantise per block.
-            let mut blocks = Vec::with_capacity(nblocks);
-            let mut cbp = 0u8;
-            for i in 0..nblocks {
-                let placement = block_placement(i, params.chroma_format, mb_col, mb_row, false)
-                    .expect("valid block index");
-                let component = block_component(i, params.chroma_format).expect("valid component");
-                let (cur_plane, pred, pred_w, mb_origin_x, mb_origin_y) = match component {
-                    ColourComponent::Y => {
-                        (&current.y, &luma_pred, 16usize, mb_col * 16, mb_row * 16)
-                    }
-                    ColourComponent::Cb => (
-                        &current.cb,
-                        &cb_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
-                    ColourComponent::Cr => (
-                        &current.cr,
-                        &cr_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
-                };
-                let residual = gather_residual(
-                    cur_plane,
-                    pred,
-                    pred_w,
-                    placement.base_x,
-                    placement.base_y,
-                    placement.base_x - mb_origin_x,
-                    placement.base_y - mb_origin_y,
-                );
-                let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
-                if block.is_coded() {
-                    cbp |= 1 << (5 - i);
-                }
-                blocks.push(block);
-            }
+            let (blocks, coded_flags) = quantise_field_mb(
+                current,
+                &luma_pred,
+                &cb_pred,
+                &cr_pred,
+                mb_col,
+                mb_row,
+                qscale,
+                params.chroma_format,
+            );
+            let coded = any_coded(&coded_flags);
 
             // 4. Macroblock layer: address increment, Table B-3 mode,
             // field_motion_type, field select + MV, cbp + blocks.
             bw.write_bit(true);
-            if cbp != 0 {
+            if coded {
                 bw.write_bit(true); // "MC, Coded" (Table B-3 `1`)
             } else {
                 bw.write_u32(0b001, 3); // "MC, Not Coded"
@@ -568,8 +537,8 @@ pub fn encode_field_p_picture(
             encode_motion_component(bw, dy, forward_f_code);
             pmv = (search.vector.horizontal, search.vector.vertical);
 
-            if cbp != 0 {
-                encode_cbp420(bw, cbp);
+            if coded {
+                encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
                         write_inter_block_coeffs(bw, qf, params.alternate_scan);
@@ -726,50 +695,20 @@ pub fn encode_field_b_picture(
             let (luma_pred, cb_pred, cr_pred) = (&chosen.0, &chosen.1, &chosen.2);
 
             // 3. Residual + forward quantise per block.
-            let mut blocks = Vec::with_capacity(nblocks);
-            let mut cbp = 0u8;
-            for i in 0..nblocks {
-                let placement = block_placement(i, params.chroma_format, mb_col, mb_row, false)
-                    .expect("valid block index");
-                let component = block_component(i, params.chroma_format).expect("valid component");
-                let (cur_plane, pred, pred_w, mb_origin_x, mb_origin_y) = match component {
-                    ColourComponent::Y => {
-                        (&current.y, luma_pred, 16usize, mb_col * 16, mb_row * 16)
-                    }
-                    ColourComponent::Cb => (
-                        &current.cb,
-                        cb_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
-                    ColourComponent::Cr => (
-                        &current.cr,
-                        cr_pred,
-                        CHROMA_MB,
-                        mb_col * CHROMA_MB,
-                        mb_row * CHROMA_MB,
-                    ),
-                };
-                let residual = gather_residual(
-                    cur_plane,
-                    pred,
-                    pred_w,
-                    placement.base_x,
-                    placement.base_y,
-                    placement.base_x - mb_origin_x,
-                    placement.base_y - mb_origin_y,
-                );
-                let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
-                if block.is_coded() {
-                    cbp |= 1 << (5 - i);
-                }
-                blocks.push(block);
-            }
+            let (blocks, coded_flags) = quantise_field_mb(
+                current,
+                luma_pred,
+                cb_pred,
+                cr_pred,
+                mb_col,
+                mb_row,
+                qscale,
+                params.chroma_format,
+            );
+            let coded = any_coded(&coded_flags);
 
             // 4. Macroblock layer.
             bw.write_bit(true); // macroblock_address_increment = 1
-            let coded = cbp != 0;
             write_b_macroblock_type(bw, dir, coded);
             // field_motion_type = 01 (Table 6-18 Field-based).
             bw.write_u32(0b01, 2);
@@ -794,7 +733,7 @@ pub fn encode_field_b_picture(
             }
 
             if coded {
-                encode_cbp420(bw, cbp);
+                encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for i in 0..nblocks {
                     if let Some(qf) = blocks[i].qf_ref() {
                         write_inter_block_coeffs(bw, qf, params.alternate_scan);
@@ -1302,8 +1241,10 @@ fn emit_field_picture_vector(
     Ok(())
 }
 
-/// Quantise the six 4:2:0 blocks of a field-picture macroblock against
-/// its prediction planes, returning `(blocks, cbp)`.
+/// Quantise the 6 / 8 / 12 blocks (Figures 6-10 .. 6-12) of a field-picture macroblock against
+/// its prediction planes, returning `(blocks, coded_flags)` — the
+/// per-block `pattern_code` flags the §6.2.5.3 `coded_block_pattern()`
+/// writer consumes (chroma-format generic: 6 / 8 / 12 blocks).
 fn quantise_field_mb(
     current: &FrameBuffer,
     luma_pred: &[u8],
@@ -1313,30 +1254,19 @@ fn quantise_field_mb(
     mb_row: usize,
     qscale: u8,
     chroma_format: ChromaFormat,
-) -> (Vec<crate::p_picture_encoder::InterBlock>, u8) {
+) -> (Vec<InterBlock>, [bool; 12]) {
     let nblocks = block_count(chroma_format);
+    let (cmb_w, cmb_h) = chroma_mb_extent(chroma_format);
     let mut blocks = Vec::with_capacity(nblocks);
-    let mut cbp = 0u8;
+    let mut coded_flags = [false; 12];
     for i in 0..nblocks {
         let placement =
             block_placement(i, chroma_format, mb_col, mb_row, false).expect("valid block index");
         let component = block_component(i, chroma_format).expect("valid component");
         let (cur_plane, pred, pred_w, origin_x, origin_y) = match component {
             ColourComponent::Y => (&current.y, luma_pred, 16usize, mb_col * 16, mb_row * 16),
-            ColourComponent::Cb => (
-                &current.cb,
-                cb_pred,
-                CHROMA_MB,
-                mb_col * CHROMA_MB,
-                mb_row * CHROMA_MB,
-            ),
-            ColourComponent::Cr => (
-                &current.cr,
-                cr_pred,
-                CHROMA_MB,
-                mb_col * CHROMA_MB,
-                mb_row * CHROMA_MB,
-            ),
+            ColourComponent::Cb => (&current.cb, cb_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h),
+            ColourComponent::Cr => (&current.cr, cr_pred, cmb_w, mb_col * cmb_w, mb_row * cmb_h),
         };
         let residual = gather_residual(
             cur_plane,
@@ -1347,13 +1277,18 @@ fn quantise_field_mb(
             placement.base_x - origin_x,
             placement.base_y - origin_y,
         );
-        let block = quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT);
-        if block.is_coded() {
-            cbp |= 1 << (5 - i);
-        }
+        // §6.3.17.4 (printed derivation): at 4:4:4 non-intra blocks
+        // 6 / 7 have no coded_block_pattern slot, so their residual
+        // stays untransmitted (see p_picture_encoder).
+        let block = if nonintra_block_has_cbp_slot(i, chroma_format) {
+            quantise_inter_block(&residual, qscale, &DEFAULT_NON_INTRA_WEIGHT)
+        } else {
+            InterBlock::uncoded()
+        };
+        coded_flags[i] = block.is_coded();
         blocks.push(block);
     }
-    (blocks, cbp)
+    (blocks, coded_flags)
 }
 
 /// Encode one **P field picture** with per-macroblock Table 6-18 mode
@@ -1615,7 +1550,7 @@ pub fn encode_field_p_picture_adaptive(
             };
 
             // ---- Residual quantisation ----
-            let (blocks, cbp) = quantise_field_mb(
+            let (blocks, coded_flags) = quantise_field_mb(
                 current,
                 &luma_pred,
                 &cb_pred,
@@ -1625,10 +1560,11 @@ pub fn encode_field_p_picture_adaptive(
                 qscale,
                 params.chroma_format,
             );
+            let coded = any_coded(&coded_flags);
 
             // ---- Macroblock layer ----
             bw.write_bit(true); // macroblock_address_increment = 1
-            if cbp != 0 {
+            if coded {
                 bw.write_bit(true); // Table B-3 "MC, Coded"
             } else {
                 bw.write_u32(0b001, 3); // "MC, Not Coded"
@@ -1691,8 +1627,8 @@ pub fn encode_field_p_picture_adaptive(
                     stats.dual_prime += 1;
                 }
             }
-            if cbp != 0 {
-                encode_cbp420(bw, cbp);
+            if coded {
+                encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
                         write_inter_block_coeffs(bw, qf, params.alternate_scan);
@@ -1803,6 +1739,7 @@ pub fn encode_field_b_picture_adaptive(
     let mut stats = FieldModeStats::default();
     let mb_width = params.mb_width();
     let mb_height = params.mb_height();
+    let nblocks = block_count(params.chroma_format);
 
     for mb_row in 0..mb_height {
         write_slice_header(bw, mb_row as u32, quantiser_scale_code);
@@ -1895,7 +1832,7 @@ pub fn encode_field_b_picture_adaptive(
                 best.expect("six candidates were scored");
 
             // ---- Residual quantisation ----
-            let (blocks, cbp) = quantise_field_mb(
+            let (blocks, coded_flags) = quantise_field_mb(
                 current,
                 &luma_pred,
                 &cb_pred,
@@ -1908,7 +1845,8 @@ pub fn encode_field_b_picture_adaptive(
 
             // ---- Macroblock layer ----
             bw.write_bit(true); // macroblock_address_increment = 1
-            write_b_macroblock_type(bw, dir, cbp != 0);
+            let coded = any_coded(&coded_flags);
+            write_b_macroblock_type(bw, dir, coded);
             bw.write_u32(if is_16x8 { 0b10 } else { 0b01 }, 2);
             // Forward motion_vectors(0) precede backward (§6.2.5.2).
             if matches!(dir, BDirection::Forward | BDirection::Interpolated) {
@@ -1977,8 +1915,8 @@ pub fn encode_field_b_picture_adaptive(
                     pmv.copy_r0_to_r1(1); // Table 7-11 Field-based row
                 }
             }
-            if cbp != 0 {
-                encode_cbp420(bw, cbp);
+            if coded {
+                encode_coded_block_pattern(bw, &coded_flags[..nblocks], params.chroma_format)?;
                 for b in &blocks {
                     if let Some(qf) = b.qf_ref() {
                         write_inter_block_coeffs(bw, qf, params.alternate_scan);

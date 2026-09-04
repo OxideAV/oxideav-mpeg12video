@@ -6,6 +6,10 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- 4:2:2 / 4:4:4 on the field-picture encode paths — plain and adaptive I/P/B field encoders, the field display-order assembler and the Annex C field CBR controller are chroma-format generic (Figures 6-11 / 6-12 macroblocks, §6.2.5.3 `coded_block_pattern_1` / `_2`)
+
 ## [0.0.13](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.12...v0.0.13) - 2026-08-30
 
 ### Added
