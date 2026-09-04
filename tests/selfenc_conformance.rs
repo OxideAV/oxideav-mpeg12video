@@ -1417,3 +1417,83 @@ fn selfenc_spatial_pair_is_pinned_base_reference_conformant_and_loop_exact() {
         assert!((total as f64 / (64.0 * 48.0)) < 5.0);
     }
 }
+
+#[test]
+fn selfenc_mpeg2_multi_slice_rows_are_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-slices3-64x48.m2v");
+    let input = frame_at(64, 48, 0, 0, false);
+    let regenerated = oxideav_mpeg12video::encode_intra_picture_with_slice_length(
+        &input,
+        params(64, 48),
+        0,
+        6,
+        3,
+    )
+    .expect("slice-length re-encode");
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    // Two slices per row: 3 rows × 2.
+    let slices = stream
+        .windows(4)
+        .filter(|w| w[0] == 0 && w[1] == 0 && w[2] == 1 && (0x01..=0xAF).contains(&w[3]))
+        .count();
+    assert_eq!(slices, 6);
+    assert_reference_conformant("selfenc-slices3-64x48", &stream, &reference, &[&input]);
+    // Same reconstruction as the one-slice-per-row encode.
+    let rows = decode_video_sequence(&encode_intra_picture(&input, params(64, 48), 0, 6).unwrap())
+        .unwrap();
+    let ours = decode_video_sequence(&stream).unwrap();
+    assert_eq!(ours[0].frame.y.samples(), rows[0].frame.y.samples());
+}
+
+#[test]
+fn selfenc_mpeg1_row_spanning_slices_are_pinned_and_reference_conformant() {
+    let (stream, reference) = fixture("selfenc-mpeg1-slices5-64x48.m1v");
+    let input = frame_at(64, 48, 0, 0, false);
+    let p = oxideav_mpeg12video::Mpeg1PictureParams {
+        width: 64,
+        height: 48,
+        intra_quant: oxideav_mpeg12video::DEFAULT_INTRA_QUANT,
+        non_intra_quant: [[16u8; 8]; 8],
+    };
+    let seq = mpeg1_seq(64, 48);
+    let mut bw = oxideav_core::bits::BitWriter::new();
+    oxideav_mpeg12video::write_mpeg1_sequence_header(&mut bw, &seq).unwrap();
+    oxideav_mpeg12video::write_gop_header(
+        &mut bw,
+        &oxideav_mpeg12video::Mpeg2Gop {
+            time_code: oxideav_mpeg12video::TimeCode::from_display_index(0, seq.picture_rate_code)
+                .unwrap(),
+            closed_gop: true,
+            broken_link: false,
+        },
+    );
+    let recon = oxideav_mpeg12video::encode_mpeg1_intra_picture_with_slice_length(
+        &mut bw, &input, &p, 0, 6, 5,
+    )
+    .expect("slice-length re-encode");
+    let mut regenerated = bw.finish();
+    regenerated.extend_from_slice(&0x0000_01B7u32.to_be_bytes());
+    assert_eq!(
+        regenerated, stream,
+        "encoder output moved — refresh the fixture and re-run the black-box validation"
+    );
+    // Slices of 5 / 5 / 2 macroblocks: three slices, the second and
+    // third starting mid-row and the first two spanning rows.
+    let positions: Vec<u8> = stream
+        .windows(4)
+        .filter(|w| w[0] == 0 && w[1] == 0 && w[2] == 1 && (0x01..=0xAF).contains(&w[3]))
+        .map(|w| w[3])
+        .collect();
+    assert_eq!(positions, vec![1, 2, 3]);
+    assert_reference_conformant(
+        "selfenc-mpeg1-slices5-64x48",
+        &stream,
+        &reference,
+        &[&input],
+    );
+    let ours = decode_video_sequence(&stream).unwrap();
+    assert_eq!(ours[0].frame.y.samples(), recon.y.samples());
+}

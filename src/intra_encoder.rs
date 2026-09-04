@@ -473,6 +473,123 @@ pub fn encode_intra_picture_with_options(
     Ok(stream)
 }
 
+/// [`encode_intra_picture`] with an arbitrary **slice structure**: every
+/// slice holds `macroblocks_per_slice` consecutive macroblocks, cut at
+/// row ends (§6.1.2: the first and last macroblock of a slice lie in
+/// one row; slices may start anywhere in a row). A slice that starts
+/// mid-row codes its first `macroblock_address_increment` as the
+/// column plus one against the §6.3.17.1 reset
+/// `previous_macroblock_address = mb_row * mb_width - 1`; the §7.2.1
+/// DC predictors reset at every slice start. `macroblocks_per_slice =
+/// mb_width` (or more) reproduces the one-slice-per-row layout.
+///
+/// # Errors
+/// As [`encode_intra_picture`]; `macroblocks_per_slice = 0` is
+/// rejected.
+pub fn encode_intra_picture_with_slice_length(
+    frame: &FrameBuffer,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    quantiser_scale_code: u8,
+    macroblocks_per_slice: usize,
+) -> Result<Vec<u8>> {
+    if macroblocks_per_slice == 0 {
+        return Err(Error::InvalidBitstream(
+            "encode_intra_picture_with_slice_length: macroblocks_per_slice must be >= 1",
+        ));
+    }
+    if frame.width != params.width || frame.height != params.height {
+        return Err(Error::InvalidBitstream(
+            "encode_intra_picture: frame dimensions do not match params",
+        ));
+    }
+    let q_value = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
+    let dc_mult = intra_dc_mult(params.intra_dc_precision)?;
+    let matrix_state = QuantMatrixExtension::default().resolved_state(params.chroma_format);
+
+    let mut bw = BitWriter::new();
+    write_sequence_header(
+        &mut bw,
+        &SequenceHeaderParams {
+            horizontal_size: params.width as u16,
+            vertical_size: params.height as u16,
+            ..Default::default()
+        },
+    );
+    write_sequence_extension(&mut bw, params.chroma_format, params.progressive_sequence);
+    write_picture_header(
+        &mut bw,
+        temporal_reference,
+        PictureCodingType::Intra,
+        15,
+        15,
+    );
+    let pce = FrameEncodeOptions::default().picture_coding_extension(&params, 15, 15)?;
+    write_picture_coding_extension(&mut bw, &pce);
+
+    let mb_width = params.mb_width();
+    let mb_height = params.mb_height();
+    let nblocks = block_count(params.chroma_format);
+    for mb_row in 0..mb_height {
+        let mut mb_col = 0usize;
+        while mb_col < mb_width {
+            let slice_len = macroblocks_per_slice.min(mb_width - mb_col);
+            write_slice_header_in(
+                &mut bw,
+                mb_row as u32,
+                quantiser_scale_code,
+                params.height as u32,
+            );
+            let mut pred = DcPredictorState::reset(params.intra_dc_precision);
+            for k in 0..slice_len {
+                let col = mb_col + k;
+                if k == 0 {
+                    // First macroblock: increment = column + 1.
+                    crate::mb_address_increment::encode_mb_address_increment(
+                        &mut bw,
+                        col as u32 + 1,
+                    );
+                } else {
+                    bw.write_bit(true);
+                }
+                bw.write_bit(true); // Table B-2 Intra
+                for i in 0..nblocks {
+                    let placement = block_placement(i, params.chroma_format, col, mb_row, false)
+                        .ok_or(Error::InvalidBitstream(
+                            "encode_intra_picture: invalid block index",
+                        ))?;
+                    let component = block_component(i, params.chroma_format).ok_or(
+                        Error::InvalidBitstream("encode_intra_picture: invalid block component"),
+                    )?;
+                    let weight = match component {
+                        ColourComponent::Y => &matrix_state.intra_luma,
+                        ColourComponent::Cb | ColourComponent::Cr => &matrix_state.intra_chroma,
+                    };
+                    encode_intra_block(
+                        &mut bw,
+                        frame,
+                        component,
+                        placement.base_x,
+                        placement.base_y,
+                        q_value,
+                        dc_mult,
+                        &mut pred,
+                        TableSelection::from_context(params.intra_vlc_format, true),
+                        params.alternate_scan,
+                        weight,
+                    );
+                }
+            }
+            bw.align_to_byte_zero();
+            mb_col += slice_len;
+        }
+    }
+
+    let mut stream = bw.finish();
+    stream.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
+    Ok(stream)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

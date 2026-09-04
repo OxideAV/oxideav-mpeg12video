@@ -572,6 +572,85 @@ pub fn encode_mpeg1_intra_picture(
     Ok(recon)
 }
 
+/// [`encode_mpeg1_intra_picture`] with an arbitrary **slice structure**:
+/// every slice holds `macroblocks_per_slice` consecutive macroblocks in
+/// raster order, **spanning macroblock rows** where ISO/IEC 11172-2
+/// §2.4.1 allows it ("slices may start and finish anywhere"; the first
+/// slice starts at the first macroblock, the last ends at the last,
+/// no gaps). A slice's `slice_vertical_position` is the row of its
+/// first macroblock and that macroblock's `macroblock_address_increment`
+/// is its column plus one (§2.4.3.6 reset); the §2.4.4.1 DC predictors
+/// reset at every slice start.
+///
+/// # Errors
+/// As [`encode_mpeg1_intra_picture`]; `macroblocks_per_slice = 0` is
+/// rejected.
+pub fn encode_mpeg1_intra_picture_with_slice_length(
+    bw: &mut BitWriter,
+    frame: &FrameBuffer,
+    params: &Mpeg1PictureParams,
+    temporal_reference: u16,
+    quantizer_scale_code: u8,
+    macroblocks_per_slice: usize,
+) -> Result<FrameBuffer> {
+    if macroblocks_per_slice == 0 {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_intra_picture_with_slice_length: macroblocks_per_slice must be >= 1",
+        ));
+    }
+    if frame.width != params.width || frame.height != params.height {
+        return Err(Error::InvalidBitstream(
+            "encode_mpeg1_intra_picture: frame dimensions do not match params",
+        ));
+    }
+    check_quantizer_scale(quantizer_scale_code)?;
+
+    write_mpeg1_picture_header(
+        bw,
+        temporal_reference,
+        PictureCodingType::Intra,
+        false,
+        7,
+        false,
+        7,
+    )?;
+
+    let mut recon = FrameBuffer::new(params.width, params.height, ChromaFormat::Yuv420);
+    let mb_w = params.mb_width();
+    let total = mb_w * mb_height(params);
+    let mut predictors = IntraDcPredictors::at_slice_start();
+    for address in 0..total {
+        let mb_row = address / mb_w;
+        let mb_col = address % mb_w;
+        if address % macroblocks_per_slice == 0 {
+            if address > 0 {
+                bw.align_to_byte_zero();
+            }
+            write_slice_header(bw, mb_row as u32, quantizer_scale_code);
+            predictors = IntraDcPredictors::at_slice_start();
+            // First macroblock of the slice: increment = column + 1
+            // against previous_macroblock_address = mb_row * mb_w - 1.
+            crate::mb_address_increment::encode_mb_address_increment(bw, mb_col as u32 + 1);
+        } else {
+            bw.write_bit(true); // macroblock_address_increment = 1
+        }
+        bw.write_bit(true); // Table B.2a intra
+        encode_intra_macroblock(
+            bw,
+            frame,
+            &mut recon,
+            mb_col,
+            mb_row,
+            quantizer_scale_code,
+            params,
+            &mut predictors,
+            address as i32,
+        )?;
+    }
+    bw.align_to_byte_zero();
+    Ok(recon)
+}
+
 /// Encode one MPEG-1 **P** picture from `current`, predicting from
 /// the reconstructed `reference`, appending the picture layer to
 /// `bw`. Per macroblock: a full-search + half-pel motion estimate,

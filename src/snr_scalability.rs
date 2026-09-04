@@ -962,11 +962,9 @@ impl<'e> DecodingLayer<'e> {
                 }
                 let increment =
                     MbAddressIncrement::parse(&mut br, MbAddressIncrementContext::mpeg2())?;
-                if first && increment.value != 1 {
-                    return Err(Error::InvalidBitstream(
-                        "macroblock_address_increment: first macroblock of slice must be 1 (§6.3.17.1)",
-                    ));
-                }
+                // §6.3.17.1: a slice's first increment positions the
+                // macroblock within the row (no skips implied).
+                let _ = first;
                 first = false;
                 let address = previous_address + i64::from(increment.value);
                 if address < 0 || address as usize >= mb_width * mb_height {

@@ -1063,14 +1063,13 @@ pub fn walk_slice_at(
         // macroblock_escape / macroblock_stuffing chains).
         let increment = MbAddressIncrement::parse(&mut br, increment_ctx)?;
 
-        // §6.3.17.1: the first macroblock of every slice shall have
-        // macroblock_address_increment == 1.
+        // §6.3.17.1 / ISO/IEC 11172-2 §2.4.3.6: at the start of a slice
+        // previous_macroblock_address is reset to mb_row * mb_width - 1,
+        // so the first macroblock's increment positions it within the
+        // row (a slice may start anywhere — §6.1.2, §2.4.1) and counts
+        // no skipped macroblocks; from the second macroblock on an
+        // increment above 1 counts §7.6.6 skipped macroblocks.
         let is_first = records.is_empty();
-        if is_first && increment.value != 1 {
-            return Err(Error::InvalidBitstream(
-                "macroblock_address_increment: first macroblock of slice must be 1 (§6.3.17.1)",
-            ));
-        }
 
         let macroblock_address = previous_macroblock_address
             .checked_add(i64::from(increment.value))
@@ -1103,7 +1102,11 @@ pub fn walk_slice_at(
         // previous_macroblock_address + 1 .. macroblock_address - 1
         // are skipped. Count is `increment - 1` modulo the first-MB
         // rule above (which has increment == 1, so 0 skipped).
-        let skipped_macroblock_count = u32::from(increment.value) - 1;
+        let skipped_macroblock_count = if is_first {
+            0
+        } else {
+            u32::from(increment.value) - 1
+        };
 
         // §7.2.1 (page 71): the per-component DC predictors are reset
         // "whenever a macroblock is skipped", in addition to the
@@ -2101,19 +2104,25 @@ mod tests {
     }
 
     #[test]
-    fn first_macroblock_rejects_increment_above_one() {
-        // increment == 2 on the first MB is a §6.3.17.1 violation.
+    fn first_macroblock_increment_positions_the_slice_within_the_row() {
+        // §6.3.17.1: at the start of a slice previous_macroblock_address
+        // is mb_row * mb_width - 1, so an increment of 2 on the first
+        // macroblock places it at column 1 (a slice may start anywhere
+        // in the row, §6.1.2) and counts no skipped macroblocks.
         let mut bw = BitWriter::new();
         write_address_increment(&mut bw, 2);
         write_mb_type_i_intra(&mut bw);
         let buf = end_with_stop(bw);
 
-        let err = walk_slice(
+        let walk = walk_slice(
             &buf,
-            SliceWalkContext::first_slice(22, 0, PictureCodingType::Intra, 1),
+            SliceWalkContext::first_slice(22, 3, PictureCodingType::Intra, 1),
         )
-        .unwrap_err();
-        assert!(matches!(err, Error::InvalidBitstream(_)));
+        .expect("mid-row slice start");
+        assert_eq!(walk.macroblocks.len(), 1);
+        assert_eq!(walk.macroblocks[0].address_increment, 2);
+        assert_eq!(walk.macroblocks[0].macroblock_address, 3 * 22 + 1);
+        assert_eq!(walk.macroblocks[0].skipped_macroblock_count, 0);
     }
 
     #[test]

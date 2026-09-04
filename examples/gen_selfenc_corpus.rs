@@ -19,9 +19,10 @@ use oxideav_mpeg12video::{
     encode_cbr_gop_sequence, encode_display_order_gop_sequence,
     encode_display_order_gop_sequence_with_matrices, encode_display_order_sequence,
     encode_ff_display_order_gop_sequence, encode_field_display_order_gop_sequence, encode_i_p_b,
-    encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence, encode_mpeg1_d_sequence,
-    encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream, CbrConfig, FrameBuffer,
-    IntraPictureParams, Mpeg1SequenceParams,
+    encode_i_p_chain, encode_intra_picture, encode_intra_picture_with_slice_length,
+    encode_mpeg1_cbr_sequence, encode_mpeg1_d_sequence, encode_mpeg1_display_order_sequence,
+    encode_mpeg1_intra_picture_with_slice_length, encode_mpeg1_intra_stream, CbrConfig,
+    FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
 };
 
 /// Deterministic busy frame: diagonal luma gradient + 4×4 checker,
@@ -819,6 +820,52 @@ fn main() {
     eprintln!("spatial enhancement stats: {:?}", sp_enh.stats);
     write("selfenc-spatial-base-32x24.m2v", &sp_base);
     write("selfenc-spatial-enh-64x48.m2v", &sp_enh.stream);
+
+    // ---- round 456: arbitrary slice structures ----------------------
+
+    // 30. MPEG-2 all-intra 64x48 with three macroblocks per slice: two
+    //     slices per row (3 + 1), the second starting mid-row — its
+    //     first macroblock_address_increment is 4 against the §6.3.17.1
+    //     reset (§6.1.2: slices may start anywhere within a row).
+    let sl_frame = frame_at(64, 48, 0, 0, false);
+    let sl2 = encode_intra_picture_with_slice_length(&sl_frame, params(64, 48), 0, 6, 3)
+        .expect("MPEG-2 slice-length encode");
+    write("selfenc-slices3-64x48.m2v", &sl2);
+
+    // 31. MPEG-1 all-intra 64x48 with five macroblocks per slice: slices
+    //     of 5 / 5 / 2 macroblocks spanning macroblock rows and starting
+    //     mid-row (ISO/IEC 11172-2 §2.4.1 "slices may start and finish
+    //     anywhere").
+    let m1p = oxideav_mpeg12video::Mpeg1PictureParams {
+        width: 64,
+        height: 48,
+        intra_quant: oxideav_mpeg12video::DEFAULT_INTRA_QUANT,
+        non_intra_quant: [[16u8; 8]; 8],
+    };
+    let m1seq = Mpeg1SequenceParams {
+        horizontal_size: 64,
+        vertical_size: 48,
+        ..Default::default()
+    };
+    let mut bw = oxideav_core::bits::BitWriter::new();
+    oxideav_mpeg12video::write_mpeg1_sequence_header(&mut bw, &m1seq).expect("mpeg1 header");
+    oxideav_mpeg12video::write_gop_header(
+        &mut bw,
+        &oxideav_mpeg12video::Mpeg2Gop {
+            time_code: oxideav_mpeg12video::TimeCode::from_display_index(
+                0,
+                m1seq.picture_rate_code,
+            )
+            .expect("time code"),
+            closed_gop: true,
+            broken_link: false,
+        },
+    );
+    encode_mpeg1_intra_picture_with_slice_length(&mut bw, &sl_frame, &m1p, 0, 6, 5)
+        .expect("MPEG-1 slice-length encode");
+    let mut sl1 = bw.finish();
+    sl1.extend_from_slice(&0x0000_01B7u32.to_be_bytes());
+    write("selfenc-mpeg1-slices5-64x48.m1v", &sl1);
 }
 
 /// Full-resolution spatial-scalability source (lock-step with
