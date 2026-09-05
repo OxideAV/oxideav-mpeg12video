@@ -200,20 +200,59 @@ fn walk_handles_empty_slice_body() {
 }
 
 #[test]
-fn walk_rejects_first_mb_increment_above_one() {
+fn walk_first_mb_increment_above_one_starts_the_slice_mid_row() {
+    // §6.3.17.1 / ISO/IEC 11172-2 §2.4.3.6: at the start of a slice
+    // previous_macroblock_address = mb_row * mb_width - 1, so a first
+    // increment of 2 places the macroblock at column 1 — a slice may
+    // start anywhere in the row (§6.1.2, §2.4.1). It is a position,
+    // not a run of skipped macroblocks.
     let mut bw = BitWriter::new();
     // Table B-1 increment 2 = `011`.
     bw.write_u32(0b011, 3);
     write_i_intra(&mut bw);
     let buf = append_stop(bw);
 
+    let walk = walk_slice(
+        &buf,
+        SliceWalkContext::first_slice(22, 2, PictureCodingType::Intra, 1),
+    )
+    .expect("mid-row slice start is legal");
+    assert_eq!(walk.macroblocks.len(), 1);
+    assert_eq!(walk.macroblocks[0].address_increment, 2);
+    assert_eq!(walk.macroblocks[0].macroblock_address, 2 * 22 + 1);
+    assert_eq!(walk.macroblocks[0].skipped_macroblock_count, 0);
+    assert_eq!(walk.previous_macroblock_address, 2 * 22 + 1);
+}
+
+#[test]
+fn walk_rejects_first_mb_increment_beyond_the_declared_row() {
+    // §6.3.16 / §2.4.3.5: slice_vertical_position is the row of the
+    // slice's first macroblock, so a first increment larger than
+    // mb_width (here 5 on a 4-wide picture: Table B-1 `0001 0`) would
+    // put that macroblock in the next row — illegal.
+    let mut bw = BitWriter::new();
+    bw.write_u32(0b00010, 5);
+    write_i_intra(&mut bw);
+    let buf = append_stop(bw);
+
     let err = walk_slice(
         &buf,
-        SliceWalkContext::first_slice(22, 0, PictureCodingType::Intra, 1),
+        SliceWalkContext::first_slice(4, 0, PictureCodingType::Intra, 1),
     )
     .unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("first macroblock"));
+    assert!(msg.contains("first macroblock"), "{msg}");
+    // Increment 4 (`0011`) on the same row is the last column: legal.
+    let mut bw = BitWriter::new();
+    bw.write_u32(0b0011, 4);
+    write_i_intra(&mut bw);
+    let buf = append_stop(bw);
+    let walk = walk_slice(
+        &buf,
+        SliceWalkContext::first_slice(4, 0, PictureCodingType::Intra, 1),
+    )
+    .expect("last column start is legal");
+    assert_eq!(walk.macroblocks[0].macroblock_address, 3);
 }
 
 #[test]

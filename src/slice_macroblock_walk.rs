@@ -1070,6 +1070,14 @@ pub fn walk_slice_at(
         // no skipped macroblocks; from the second macroblock on an
         // increment above 1 counts §7.6.6 skipped macroblocks.
         let is_first = records.is_empty();
+        // §6.3.16 / ISO/IEC 11172-2 §2.4.3.5: slice_vertical_position is
+        // the row of the slice's *first* macroblock, so its increment
+        // cannot carry it past the end of that row.
+        if is_first && u32::from(increment.value) > ctx.mb_width {
+            return Err(Error::InvalidBitstream(
+                "macroblock_address_increment: a slice's first macroblock lies beyond the row its slice_vertical_position declares (§6.3.16 / §2.4.3.5)",
+            ));
+        }
 
         let macroblock_address = previous_macroblock_address
             .checked_add(i64::from(increment.value))
