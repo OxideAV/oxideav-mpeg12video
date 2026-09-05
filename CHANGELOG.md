@@ -6,6 +6,29 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.14](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.13...v0.0.14) - 2026-09-05
+
+### Added
+
+- arbitrary slice structures — a slice's first macroblock_address_increment positions it within the row (§6.3.17.1 / 11172-2 §2.4.3.6 reset) instead of being rejected, so several slices per row (13818-2 §6.1.2) and row-spanning, mid-row-starting slices (11172-2 §2.4.1) decode; slice-length intra encoders for both syntaxes; two black-box-validated slice-structure corpus streams
+- §7.7 spatial scalability (progressive layers, weight table 00) — two-layer decode loop over the §7.7.3 resampled lower frame (Tables B-5 / B-6 / B-7 via the walker's new scalable-table plumbing, §7.7.4 class 0 / 1 / 4 prediction, §7.7.6 skips, §7.7.5.1 resets, Table 7-18 chroma upgrades, §6.3.7 non-scalable pictures) + the self-made enhancement-layer encoder (mirrored GOP, intra / temporal / spatial-only / half-weight decision); picture_spatial_scalable_extension() writer; pinned spatial corpus pair (base black-box validated); spatial_decode fuzz target
+- §7.9 temporal scalability — two-layer decode loop (Table 7-28 / 7-29 reference selection resolved by multiplex position with the §6.3.13 temporal-reference cross-check, no enhancement reorder) + §6.3.7 remultiplex + the self-made enhancement-layer encoder (leading P from the next lower frame, B from surrounding lower frames or the most recent enhancement picture); picture_temporal_scalable_extension() writer; pinned temporal corpus pair (base black-box validated); temporal_decode fuzz target
+- §7.8 SNR scalability — two-layer decode loop (Table B-8 enhancement macroblocks, non-intra refinement blocks, §7.8.3.4 coefficient addition before saturation, one combined frame store, dct_type coincidence, F''lower = 0 for lower-layer skips) + the self-made enhancement-layer encoder that is its oracle; sequence_scalable_extension() writer; pinned SNR corpus pair (base black-box validated); snr_decode fuzz target
+- typed registry encoder options — Mpeg12EncoderOptions (CodecOptionsStruct schema) drives every assembler behind oxideav_core::make_encoder: picture_structure frame / field / frame_field / field_adaptive, interlace + entropy flags, FrameEncodeOptions (skips, concealment vectors, cadence, 3:2 pulldown), dual-prime, Annex C CBR, §7.10 data partitioning, MPEG-1 D-pictures, 4:2:2 / 4:4:4 pixel formats
+- vertical_size > 2800 — §6.2.4 / §6.3.16 slice_vertical_position_extension emitted by every MPEG-2 encoder (write_slice_header_in), honoured by the frame / field decode drivers, carried through the §7.10 data-partitioning split / merge; fuzz: round-trip target covers field / frame-field / all-chroma / tall pictures
+- 4:2:2 / 4:4:4 on the frame-picture field-based encode path — §6.1.3 field-DCT chroma organisation, all-block dct_type costing, chroma-generic coded_block_pattern() in the frame-field I/P/B encoders
+- 4:2:2 / 4:4:4 on the field-picture encode paths — chroma-generic residual gathering + coded_block_pattern() emission in the plain and adaptive field encoders, field assembler and field CBR
+
+### Fixed
+
+- clippy 1.97 findings in the spatial scalability module (type_complexity, identity_op) and its test (unused closure binding)
+
+### Other
+
+- slice walker — a first macroblock_address_increment above one starts the slice mid-row (§6.3.17.1 / §2.4.3.6), replacing the stale rejection premise; reject a first increment beyond the declared row (§6.3.16 / §2.4.3.5)
+- README + CHANGELOG — round 456: interlaced 4:2:2 / 4:4:4, vertical_size > 2800, typed runtime encoder options, SNR / temporal / spatial two-layer loops + enhancement encoders, arbitrary slice structures; Not-yet-supported rewritten
+- four black-box-validated interlaced 4:2:2 / 4:4:4 streams join the pinned self-encoded corpus (twenty-six) — 4:2:2 field pairs, 4:2:2 frame-field, 4:2:2 adaptive field modes, 4:4:4 frame-field
+
 ### Other
 
 - README + CHANGELOG — round 456: interlaced 4:2:2 / 4:4:4, vertical_size > 2800, typed runtime options, the three scalable loops + encoders, arbitrary slice structures; Not-yet-supported rewritten to the remaining scalable corners
