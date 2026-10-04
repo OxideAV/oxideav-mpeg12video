@@ -1,6 +1,6 @@
 //! The typed option schema of the runtime [`oxideav_core::Encoder`]
 //! adapter (`Mpeg12EncoderOptions`): every documented option name
-//! round-trips through `oxideav_core::make_encoder` / the registry
+//! round-trips through the direct `make_encoder` factory / the registry
 //! into the assembler it names — picture structure (field pairs,
 //! frame-field, adaptive field modes), chroma format from the pixel
 //! format, the entropy flags, `FrameEncodeOptions` (skips,

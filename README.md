@@ -18,8 +18,10 @@ reconstructed frames in §6.1.1.11 display order (frame pictures and
 field-picture pairs alike). It is now **wired into the runtime codec
 registry**: `register` installs `oxideav_core::Decoder` factories under
 both the `mpeg1video` and `mpeg2video` codec ids, so the codec is
-consumed through `oxideav_core::make_decoder` (a `RuntimeContext` /
-`register_all` lookup) as well as through the direct
+consumed through the registry (`ctx.codecs.first_decoder` on a
+`RuntimeContext` filled by `register` / `oxideav_meta::register_all`, or
+`oxideav_pipeline::make_decoder` for preference-aware selection) as well
+as through the direct
 `decoder::make_decoder` factory and the per-stage module APIs. The
 driver enforces the §6.1.2.2 restricted slice structure (every
 macroblock enclosed in a slice, Table 8-5) — a picture with missing
@@ -747,8 +749,8 @@ Table 6-4 `frame_rate` taken from `CodecParameters`), §7.10
 plus the GOP knobs `quantiser_scale_code` / `b_between` /
 `anchors_per_gop` / `f_code` / `backward_f_code`. The pixel format
 selects 4:2:0 / 4:2:2 / 4:4:4. `tests/runtime_encoder_options.rs`
-round-trips every option through `oxideav_core::make_encoder` and the
-registry.
+round-trips every option through the direct `encoder::make_encoder`
+factory and the registry.
 
 ## Not yet supported
 
