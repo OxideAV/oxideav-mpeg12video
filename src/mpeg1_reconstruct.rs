@@ -59,12 +59,11 @@
 //!   policy is the caller's responsibility (it depends on
 //!   macroblock-type bits this module deliberately stays clear of).
 //!
-//! The spec's two non-conformance guards are also enforced:
-//!
-//! * `right_little != ±forward_f * 16` (the wrap arithmetic would
-//!   land exactly on the wrap seam and the spec rules this
-//!   ambiguous — flagged as [`Error::InvalidBitstream`]).
-//! * `down_little != ±forward_f * 16`, ditto.
+//! The spec also requires encoders to keep `right_little` and
+//! `down_little` off `+forward_f * 16`. Real encoders do not always
+//! comply, and the decode stays unambiguous (exactly one of
+//! `prev ± 16f` lies in the vector range), so such vectors decode with
+//! the ordinary modulo-32f wrap, as deployed decoders do.
 //!
 //! Spec citations refer to ISO/IEC 11172-2:1993 (MPEG-1 Video) §2.4.3.4,
 //! §2.4.3.6, §2.4.4.2, §2.4.4.3.
@@ -339,20 +338,10 @@ fn reconstruct_component(
         little + (32 * f)
     };
 
-    // §2.4.4.2 conformance guard: *"Values of forward_f,
-    // motion_horizontal_forward_code and if present
-    // motion_horizontal_forward_r shall be such that right_little is
-    // not equal to forward_f * 16"* (and likewise vertically). Only
-    // the **positive** seam is forbidden — the representable vector
-    // range is the asymmetric `[-16f, 16f - 1]`, so `little == -16f`
-    // is a legal value real encoders emit (motion_code -16 with a
-    // zero complement).
-    if little == f * 16 {
-        return Err(Error::InvalidBitstream(
-            "mpeg1_reconstruct: little hits the +f*16 wrap seam (§2.4.4.2 conformance guard)",
-        ));
-    }
-
+    // §2.4.4.2 forbids encoders `little == +f * 16` ("right_little is
+    // not equal to forward_f * 16"), but streams in the wild carry it.
+    // The selection below still yields the unique in-range vector, the
+    // modulo-32f wrap, so it is decoded rather than rejected.
     let max = 16 * f - 1;
     let min = -16 * f;
     let candidate = prev + little;
@@ -611,20 +600,25 @@ mod tests {
     }
 
     #[test]
-    fn wrap_seam_conformance_guard_positive() {
-        // §2.4.4.2: "right_little shall not equal forward_f * 16."
-        // To land exactly on the seam at f_code = 2 (f = 2,
-        // seam = +32) we need `little = code * f - complement = 32`
-        // with code > 0. Pick code = +16, r = 1 → complement = 0,
-        // little = 16 * 2 - 0 = 32 — exact seam. Should reject.
-        let mut pred = Mpeg1Predictor::new();
+    fn positive_seam_decodes_with_the_ordinary_wrap() {
+        // §2.4.4.2: "right_little shall not equal forward_f * 16" is a
+        // constraint on encoders, and real ones violate it. The decode
+        // stays unambiguous: for a predictor in [-16f, 16f - 1] exactly
+        // one of `prev + 16f` and `prev - 16f` is in range, the modulo
+        // 32f wrap deployed decoders apply. code = +16, r = 1, f = 2,
+        // complement = 0 → little = 32 = +16f.
         let ctx = Mpeg1FrameMvContext {
             f_code: 2,
             full_pel: false,
         };
         let element = mv(Mpeg1MotionDirection::Forward, 16, Some(1), 0, None);
-        let err = reconstruct(&element, ctx, &mut pred, Mpeg1MotionDirection::Forward).unwrap_err();
-        assert!(matches!(err, Error::InvalidBitstream(_)));
+        for (prev, want) in [(0, -32), (31, -1), (-1, 31), (-32, 0)] {
+            let mut pred = Mpeg1Predictor::new();
+            pred.recon_right_prev = prev;
+            let rc = reconstruct(&element, ctx, &mut pred, Mpeg1MotionDirection::Forward).unwrap();
+            assert_eq!(rc.recon_right, want, "prev {prev}");
+            assert_eq!(pred.recon_right_prev, want, "prev {prev}");
+        }
     }
 
     #[test]
