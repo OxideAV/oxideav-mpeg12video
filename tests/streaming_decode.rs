@@ -113,3 +113,26 @@ fn finishing_without_a_sequence_header_is_an_error() {
     decoder.finish();
     assert!(decoder.next_frame().is_err());
 }
+
+/// Every frame reports the stream offset of its picture start code (the first field's for a
+/// field pair), so a caller can attach the presentation time of the packet that carried it;
+/// offsets are the same however the stream was split.
+#[test]
+fn frames_report_their_picture_start_code_offset() {
+    for (name, stream) in corpus() {
+        let whole = decode_video_sequence(&stream).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for frame in &whole {
+            let at = frame.stream_offset.expect("offset") as usize;
+            assert_eq!(
+                stream.get(at..at + 4),
+                Some(&[0, 0, 1, 0][..]),
+                "{name}: offset {at}"
+            );
+            assert!(seen.insert(at), "{name}: offset {at} reported twice");
+        }
+        let (pieces, _) = decode_in_pieces(&stream, 188);
+        let offsets = |f: &[DecodedFrame]| f.iter().map(|f| f.stream_offset).collect::<Vec<_>>();
+        assert_eq!(offsets(&pieces), offsets(&whole), "{name}");
+    }
+}

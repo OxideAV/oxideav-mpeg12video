@@ -493,6 +493,7 @@ pub fn decode_spatial_scalable_sequence(
             top_field_first: ext.top_field_first,
             repeat_first_field: ext.repeat_first_field,
             progressive_frame: ext.progressive_frame,
+            stream_offset: None,
         };
         match header.picture_coding_type {
             PictureCodingType::Bidirectional => output.push(decoded),
@@ -1561,6 +1562,7 @@ pub fn encode_spatial_enhancement_layer(
             top_field_first: false,
             repeat_first_field: false,
             progressive_frame: true,
+            stream_offset: None,
         });
     }
 

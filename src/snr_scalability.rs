@@ -507,6 +507,7 @@ fn run_combined_loop(base: &[u8], layer: &mut dyn SnrLayer) -> Result<Vec<Decode
             top_field_first: ext.top_field_first,
             repeat_first_field: ext.repeat_first_field,
             progressive_frame: ext.progressive_frame,
+            stream_offset: None,
         };
         match header.picture_coding_type {
             PictureCodingType::Bidirectional => output.push(decoded),

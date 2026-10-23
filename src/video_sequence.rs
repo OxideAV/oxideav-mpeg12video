@@ -137,6 +137,11 @@ pub struct DecodedFrame {
     /// instant. `false` for field-picture pairs; `true` for MPEG-1
     /// frames (11172-2 has no interlace).
     pub progressive_frame: bool,
+    /// Byte offset, from the start of the stream, of the picture start code that
+    /// began this frame (the first field's, for a field pair), so a caller can attach
+    /// the presentation time of the packet that carried it (ISO/IEC 13818-1 2.4.3.7).
+    /// Set by [`SequenceDecoder`]; `None` from the scalable-layer decoders.
+    pub stream_offset: Option<u64>,
 }
 
 impl DecodedFrame {
@@ -231,6 +236,9 @@ pub struct SequenceDecoder {
     /// The second field of a pair whose first field was concealed or
     /// skipped is consumed without decoding, keeping pairs aligned.
     skip_next_field: bool,
+    /// Bytes dropped from the front of `buf`, so `consumed + index` is a
+    /// stream offset.
+    consumed: u64,
     concealed: usize,
     skipped: usize,
 }
@@ -258,6 +266,8 @@ struct SequenceState {
     /// when the two are interleaved into one reconstructed frame
     /// ([`assemble_frame_from_fields`]).
     pending_field: Option<PendingField>,
+    /// Stream offset of the held first field's picture start code.
+    first_field_offset: Option<u64>,
 }
 
 impl SequenceDecoder {
@@ -358,6 +368,7 @@ impl SequenceDecoder {
             forward_anchor: None,
             backward_anchor: None,
             pending_field: None,
+            first_field_offset: None,
         });
         Ok(true)
     }
@@ -453,10 +464,20 @@ impl SequenceDecoder {
             }
         }
         let first_field = field && state.pending_field.is_none();
-        let coded = match decode_picture(state, picture_region) {
+        let offset = self.consumed + pic_start as u64;
+        // A field pair's frame is located by its first field's picture start code.
+        let frame_offset = if field && !first_field {
+            state.first_field_offset.take().unwrap_or(offset)
+        } else {
+            offset
+        };
+        let mut coded = match decode_picture(state, picture_region) {
             Ok(Some(coded)) => coded,
             // First field of a pair: held back, no frame yet.
-            Ok(None) => return Ok(true),
+            Ok(None) => {
+                state.first_field_offset = Some(offset);
+                return Ok(true);
+            }
             Err(e) if !self.conceal => return Err(e),
             Err(_) => {
                 self.skip_next_field = first_field;
@@ -470,6 +491,7 @@ impl SequenceDecoder {
                 coded
             }
         };
+        coded.stream_offset = Some(frame_offset);
         let mut output = Vec::new();
         route(state, coded, &mut output);
         self.ready.extend(output);
@@ -502,6 +524,7 @@ impl SequenceDecoder {
         }
         let gone = self.offset;
         self.buf.drain(..gone);
+        self.consumed += gone as u64;
         self.offset = 0;
         self.searched = self
             .searched
@@ -565,6 +588,7 @@ fn concealment_copy(state: &SequenceState, kind: PictureKind) -> Option<DecodedF
         top_field_first: kind.top_field_first,
         repeat_first_field: kind.repeat_first_field,
         progressive_frame: kind.progressive_frame,
+        stream_offset: None,
     })
 }
 
@@ -1190,6 +1214,7 @@ fn reconstruct_picture(
         top_field_first: ext.top_field_first,
         repeat_first_field: ext.repeat_first_field,
         progressive_frame: ext.progressive_frame,
+        stream_offset: None,
     })
 }
 
@@ -1272,6 +1297,7 @@ fn reconstruct_mpeg1_picture(
         top_field_first: false,
         repeat_first_field: false,
         progressive_frame: true,
+        stream_offset: None,
     })
 }
 
@@ -1512,6 +1538,7 @@ fn reconstruct_field_pair(
                 top_field_first: first.structure == PictureStructure::TopField,
                 repeat_first_field: false,
                 progressive_frame: false,
+                stream_offset: None,
             }))
         }
     }
@@ -1771,6 +1798,7 @@ mod tests {
             top_field_first: false,
             repeat_first_field: false,
             progressive_frame: true,
+            stream_offset: None,
             frame: FrameBuffer::new(16, 16, crate::sequence_extension::ChromaFormat::Yuv420),
             temporal_reference: tref,
             picture_coding_type: kind,

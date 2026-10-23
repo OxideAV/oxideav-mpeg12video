@@ -417,6 +417,7 @@ pub fn decode_temporal_scalable_sequence(
             top_field_first: ext.top_field_first,
             repeat_first_field: ext.repeat_first_field,
             progressive_frame: ext.progressive_frame,
+            stream_offset: None,
         });
     }
 
@@ -779,6 +780,7 @@ pub fn encode_temporal_enhancement_layer(
             top_field_first: false,
             repeat_first_field: false,
             progressive_frame: geometry.progressive_sequence,
+            stream_offset: None,
         });
     }
 
