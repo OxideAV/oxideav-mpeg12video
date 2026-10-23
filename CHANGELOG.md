@@ -9,6 +9,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - edition 2024, MSRV 1.95
+- the runtime `Decoder` adapter streams: each frame is returned as soon as the §6.1.1.11 reorder commits it instead of after `flush`, and memory stays bounded by one coded picture plus the reference anchors rather than the whole elementary stream and every decoded frame
 
 ### Other
 
@@ -16,6 +17,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SequenceDecoder`: incremental `video_sequence()` decode — `push` elementary-stream bytes in pieces of any size, `next_frame` returns display-order frames as each picture's terminating start code arrives, `finish` releases the last picture and held anchor; `decode_video_sequence` is now a push-everything wrapper over it, and a corpus-wide test holds piecewise decode (1, 3, 188, 2048 bytes and whole) frame-identical to it
 - arbitrary slice structures decode: a slice's first `macroblock_address_increment` positions it within the row against the §6.3.17.1 / ISO/IEC 11172-2 §2.4.3.6 reset instead of being rejected — several slices per row (13818-2 §6.1.2) and row-spanning, mid-row-starting slices (11172-2 §2.4.1) now decode; `encode_intra_picture_with_slice_length` / `encode_mpeg1_intra_picture_with_slice_length` emit both shapes; two black-box-validated slice-structure streams join the corpus
 - §7.7 spatial scalability (progressive layers, weight table 00) — the two-layer decode loop (`decode_spatial_scalable_sequence`: §7.7.3 resampled `spat_pred_pic` per picture, Tables B-5 / B-6 / B-7 through the walker's new scalable-table plumbing, §7.7.4 class 0 / 1 / 4 prediction, §7.7.6 skips, §7.7.5.1 resets, Table 7-18 chroma upgrades, §6.3.7 non-scalable pictures) and the self-made enhancement-layer encoder (`encode_spatial_enhancement_layer`: mirrored GOP structure, per-macroblock intra / temporal / spatial-only / half-weight decision); `picture_spatial_scalable_extension()` writer; `SliceWalkContext::with_scalable_tables` + `MacroblockRecord::spatial_temporal_weight`; pinned spatial pair in the corpus (lower layer black-box validated) and a `spatial_decode` fuzz target
 - §7.9 temporal scalability — the two-layer decode loop (`decode_temporal_scalable_sequence`: Table 7-28 / 7-29 reference selection from the most recent enhancement picture / most recent / next lower-layer frame resolved by multiplex position, §6.3.13 temporal-reference cross-check, no enhancement reorder) with the §6.3.7 `remultiplex`, and the self-made enhancement-layer encoder (`encode_temporal_enhancement_layer`: leading P pictures from the next lower frame, B pictures from the surrounding lower frames or the most recent enhancement picture); `picture_temporal_scalable_extension()` writer; pinned temporal pair in the corpus (lower layer black-box validated) and a `temporal_decode` fuzz target

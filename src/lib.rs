@@ -553,7 +553,7 @@ pub use temporal_scalability::{
     decode_temporal_scalable_sequence, encode_temporal_enhancement_layer, remultiplex,
 };
 pub use video_sequence::{
-    DecodedFrame, decode_video_sequence, display_indices_from_coded_pictures,
+    DecodedFrame, SequenceDecoder, decode_video_sequence, display_indices_from_coded_pictures,
     display_indices_from_temporal_references, verify_display_order,
     verify_display_order_with_types,
 };

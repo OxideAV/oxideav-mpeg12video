@@ -152,3 +152,47 @@ fn reset_clears_accumulated_state() {
     assert_frame_matches(&frame, &reference[0].frame);
     assert!(matches!(dec.receive_frame(), Err(Error::Eof)));
 }
+
+/// A multi-picture I B B P stream (black-box encoded, see
+/// `fixtures/conformance/README.md`).
+const IBBP: &[u8] = include_bytes!("fixtures/conformance/mpeg2-ibbp-96x64.m2v");
+
+#[test]
+fn decoder_releases_frames_while_packets_arrive() {
+    // A long stream must not be held whole: once a picture's end has
+    // arrived and the reorder can commit it, it is available before
+    // flush, sample-exact with the whole-stream driver.
+    let reference = decode_video_sequence(IBBP).expect("reference decode");
+    let params = CodecParameters::video(CodecId::new(MPEG2_CODEC_ID_STR));
+    let mut dec = make_decoder(&params).expect("make_decoder");
+    let mut frames = Vec::new();
+    for piece in IBBP.chunks(2048) {
+        dec.send_packet(&Packet::new(0, tb(), piece.to_vec()))
+            .expect("send_packet");
+        while let Ok(frame) = dec.receive_frame() {
+            frames.push(frame);
+        }
+    }
+    let before_flush = frames.len();
+    dec.flush().expect("flush");
+    loop {
+        match dec.receive_frame() {
+            Ok(frame) => frames.push(frame),
+            Err(Error::Eof) => break,
+            Err(e) => panic!("receive_frame: {e:?}"),
+        }
+    }
+    assert!(
+        before_flush + 2 >= reference.len(),
+        "{before_flush} of {} before flush",
+        reference.len()
+    );
+    assert_eq!(frames.len(), reference.len());
+    for (n, (frame, want)) in frames.iter().zip(&reference).enumerate() {
+        assert_frame_matches(frame, &want.frame);
+        let Frame::Video(vf) = frame else {
+            unreachable!()
+        };
+        assert_eq!(vf.pts, Some(n as i64), "display index stamp");
+    }
+}

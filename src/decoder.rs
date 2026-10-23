@@ -2,11 +2,11 @@
 //! (ISO/IEC 11172-2) and MPEG-2 Video (ITU-T H.262 / ISO/IEC 13818-2).
 //!
 //! The pixel-reconstruction pipeline is driven, at the elementary-stream
-//! level, by [`crate::video_sequence::decode_video_sequence`]: it parses
-//! the sequence layer for geometry, walks every `picture_start_code`,
+//! level, by [`crate::video_sequence::SequenceDecoder`]: it parses the
+//! sequence layer for geometry, walks every `picture_start_code`,
 //! reconstructs each picture with the matching per-picture driver, and
 //! reorders the results into §6.1.1.11 display order. This module adapts
-//! that whole-stream driver to the packet-oriented
+//! that incremental driver to the packet-oriented
 //! [`oxideav_core::Decoder`] contract.
 //!
 //! # Framing model
@@ -19,19 +19,20 @@
 //! inherits. There is no self-delimiting per-frame unit at the codec
 //! layer — the container above is responsible for any packetisation.
 //!
-//! This decoder therefore concatenates the payload of every
-//! [`Packet`] it is fed into one contiguous elementary-stream buffer and
-//! runs [`decode_video_sequence`] once the stream is complete
-//! ([`Decoder::flush`]). Before the flush, [`Decoder::receive_frame`]
-//! returns [`Error::NeedMore`] — the reorder cannot commit any frame
-//! while the trailing anchors are still unknown. After the flush, the
-//! reconstructed frames drain in display order and the decoder finally
-//! returns [`Error::Eof`].
+//! This decoder therefore feeds the payload of every [`Packet`] into one
+//! [`SequenceDecoder`], which treats the packets as one contiguous
+//! elementary stream. A picture is reconstructed once the start code that
+//! ends it has arrived, and [`Decoder::receive_frame`] returns each frame
+//! as soon as the reorder commits it; until then it returns
+//! [`Error::NeedMore`]. Memory stays bounded by one coded picture plus the
+//! reference anchors, however long the stream. [`Decoder::flush`] marks
+//! the end of the stream, releasing the last picture and the held-back
+//! anchor; once those drain the decoder returns [`Error::Eof`].
 //!
 //! # Codec-id coverage
 //!
 //! Both `"mpeg1video"` and `"mpeg2video"` are registered and route
-//! through the same [`decode_video_sequence`] driver. That driver
+//! through the same [`SequenceDecoder`] driver. That driver
 //! resolves the picture geometry and `f_code`s from the MPEG-2 extension
 //! family (`sequence_extension()` / `picture_coding_extension()`), so it
 //! decodes the MPEG-2 bitstream (and the MPEG-1-compatible subset a
@@ -60,7 +61,7 @@ use oxideav_core::{
 
 use crate::Error as Mpeg12Error;
 use crate::frame_assembly::FrameBuffer;
-use crate::video_sequence::decode_video_sequence;
+use crate::video_sequence::SequenceDecoder;
 
 /// Fold a crate-local [`Mpeg12Error`] into the framework
 /// [`oxideav_core::Error`] the [`Decoder`] contract speaks. A bitstream
@@ -106,17 +107,19 @@ pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
 
 /// A packet-to-frame MPEG-1 / MPEG-2 video decoder.
 ///
-/// See the [module docs](self) for the whole-stream framing model.
+/// See the [module docs](self) for the streaming framing model.
 #[derive(Debug)]
 pub struct Mpeg12Decoder {
     codec_id: CodecId,
-    /// Concatenated elementary-stream bytes accumulated across packets.
-    stream: Vec<u8>,
+    /// The incremental `video_sequence()` driver fed by every packet.
+    sequence: SequenceDecoder,
+    /// Whether any elementary-stream bytes have arrived; an empty stream
+    /// flushes to [`Error::Eof`] rather than a missing-header error.
+    received: bool,
     /// Reconstructed frames in §6.1.1.11 display order, ready to drain.
     ready: VecDeque<VideoFrame>,
-    /// Set once [`decode_video_sequence`] has run over `stream`. Guards
-    /// against re-decoding and marks the transition to the drain phase.
-    decoded: bool,
+    /// Set by [`Decoder::flush`]: no more input will arrive.
+    flushed: bool,
     /// Monotonic display-order presentation index stamped onto frames.
     next_pts: i64,
 }
@@ -126,26 +129,21 @@ impl Mpeg12Decoder {
     pub fn new(codec_id: CodecId) -> Self {
         Self {
             codec_id,
-            stream: Vec::new(),
+            sequence: SequenceDecoder::new(),
+            received: false,
             ready: VecDeque::new(),
-            decoded: false,
+            flushed: false,
             next_pts: 0,
         }
     }
 
-    /// Run the whole-stream driver over the accumulated bytes and queue
-    /// every reconstructed frame in display order. Idempotent: a second
-    /// call after the first is a no-op.
-    fn decode_accumulated(&mut self) -> Result<()> {
-        if self.decoded {
+    /// Move every frame the driver can commit so far into `ready`,
+    /// stamping display-order presentation indices.
+    fn drain_sequence(&mut self) -> Result<()> {
+        if !self.received {
             return Ok(());
         }
-        self.decoded = true;
-        if self.stream.is_empty() {
-            return Ok(());
-        }
-        let frames = decode_video_sequence(&self.stream).map_err(map_err)?;
-        for decoded in frames {
+        while let Some(decoded) = self.sequence.next_frame().map_err(map_err)? {
             let mut vf = frame_buffer_to_video_frame(&decoded.frame);
             vf.pts = Some(self.next_pts);
             self.next_pts += 1;
@@ -161,35 +159,30 @@ impl Decoder for Mpeg12Decoder {
     }
 
     fn send_packet(&mut self, packet: &Packet) -> Result<()> {
-        // Concatenate the elementary-stream payload. The §6.1.1.11
-        // reorder spans the whole sequence, so we cannot commit any
-        // frame until the stream ends (flush) — see the module docs.
-        self.stream.extend_from_slice(&packet.data);
-        Ok(())
+        self.received |= !packet.data.is_empty();
+        self.sequence.push(&packet.data);
+        self.drain_sequence()
     }
 
     fn receive_frame(&mut self) -> Result<Frame> {
-        if let Some(vf) = self.ready.pop_front() {
-            return Ok(Frame::Video(vf));
+        match self.ready.pop_front() {
+            Some(vf) => Ok(Frame::Video(vf)),
+            None if self.flushed => Err(Error::Eof),
+            None => Err(Error::NeedMore),
         }
-        if self.decoded {
-            // Drained everything the flush produced.
-            return Err(Error::Eof);
-        }
-        // Still accumulating — the trailing anchors the reorder needs
-        // have not arrived. Ask for more input (or a flush).
-        Err(Error::NeedMore)
     }
 
     fn flush(&mut self) -> Result<()> {
-        self.decode_accumulated()
+        if self.flushed {
+            return Ok(());
+        }
+        self.flushed = true;
+        self.sequence.finish();
+        self.drain_sequence()
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.stream.clear();
-        self.ready.clear();
-        self.decoded = false;
-        self.next_pts = 0;
+        *self = Self::new(self.codec_id.clone());
         Ok(())
     }
 }
