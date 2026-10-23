@@ -8,6 +8,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- MPEG-1 motion vectors with `little == +f * 16` decode with the ordinary modulo-32f wrap instead of failing the picture: §2.4.4.2 states that limit as an encoder constraint, deployed encoders violate it, and the reconstruction stays unambiguous
 - edition 2024, MSRV 1.95
 - the runtime `Decoder` adapter streams: each frame is returned as soon as the §6.1.1.11 reorder commits it instead of after `flush`, and memory stays bounded by one coded picture plus the reference anchors rather than the whole elementary stream and every decoded frame
 
@@ -17,6 +18,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SequenceDecoder::with_concealment`: a picture that fails to decode is replaced by a copy of its nearest reference, keeping its frame slot and the reference rotation so the chain recovers at the next intra picture; B-pictures without a forward reference (an open GOP's leading pictures when decoding starts mid-stream) are dropped; `concealed()` / `skipped()` count both. The strict default is unchanged
 - `SequenceDecoder`: incremental `video_sequence()` decode — `push` elementary-stream bytes in pieces of any size, `next_frame` returns display-order frames as each picture's terminating start code arrives, `finish` releases the last picture and held anchor; `decode_video_sequence` is now a push-everything wrapper over it, and a corpus-wide test holds piecewise decode (1, 3, 188, 2048 bytes and whole) frame-identical to it
 - arbitrary slice structures decode: a slice's first `macroblock_address_increment` positions it within the row against the §6.3.17.1 / ISO/IEC 11172-2 §2.4.3.6 reset instead of being rejected — several slices per row (13818-2 §6.1.2) and row-spanning, mid-row-starting slices (11172-2 §2.4.1) now decode; `encode_intra_picture_with_slice_length` / `encode_mpeg1_intra_picture_with_slice_length` emit both shapes; two black-box-validated slice-structure streams join the corpus
 - §7.7 spatial scalability (progressive layers, weight table 00) — the two-layer decode loop (`decode_spatial_scalable_sequence`: §7.7.3 resampled `spat_pred_pic` per picture, Tables B-5 / B-6 / B-7 through the walker's new scalable-table plumbing, §7.7.4 class 0 / 1 / 4 prediction, §7.7.6 skips, §7.7.5.1 resets, Table 7-18 chroma upgrades, §6.3.7 non-scalable pictures) and the self-made enhancement-layer encoder (`encode_spatial_enhancement_layer`: mirrored GOP structure, per-macroblock intra / temporal / spatial-only / half-weight decision); `picture_spatial_scalable_extension()` writer; `SliceWalkContext::with_scalable_tables` + `MacroblockRecord::spatial_temporal_weight`; pinned spatial pair in the corpus (lower layer black-box validated) and a `spatial_decode` fuzz target
