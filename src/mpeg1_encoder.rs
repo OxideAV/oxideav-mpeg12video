@@ -50,33 +50,33 @@
 
 use oxideav_core::bits::BitWriter;
 
-use crate::block_dc::{encode_dc_coefficient, DcComponent};
+use crate::block_dc::{DcComponent, encode_dc_coefficient};
 use crate::coded_block_pattern::encode_cbp420;
-use crate::dct_coeff::{encode_dct_coeff, encode_end_of_block, CoefficientPosition};
+use crate::dct_coeff::{CoefficientPosition, encode_dct_coeff, encode_end_of_block};
 use crate::dequantize::{
-    dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock, IntraBlockKind,
-    IntraDcPredictors, DC_PREDICTOR_RESET,
+    DC_PREDICTOR_RESET, IntraBlockKind, IntraDcPredictors, dequantize_intra_block,
+    dequantize_non_intra_block, finalise_intra_macroblock,
 };
 use crate::forward_dct::fdct_8x8;
 use crate::forward_quant::{mpeg1_forward_quantise_intra_ac, mpeg1_forward_quantise_non_intra};
-use crate::frame_assembly::{block_placement, place_intra_block, FrameBuffer};
-use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
+use crate::frame_assembly::{FrameBuffer, block_placement, place_intra_block};
+use crate::gop_header::{Mpeg2Gop, TimeCode, write_gop_header};
 use crate::idct::idct_8x8_from_i32;
-use crate::inter_reconstruction::{predict_frame_macroblock_planes, FrameMotion, ReferenceFrames};
+use crate::inter_reconstruction::{FrameMotion, ReferenceFrames, predict_frame_macroblock_planes};
 use crate::motion_estimation::{estimate_forward_mv, max_search_range};
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg1_block_decoder::intra_block_kind;
 use crate::mpeg1_picture::Mpeg1PictureParams;
 use crate::mpeg1_stream_writer::{
-    constrained_parameters_admissible, write_mpeg1_picture_header, write_mpeg1_sequence_header,
-    Mpeg1SequenceParams,
+    Mpeg1SequenceParams, constrained_parameters_admissible, write_mpeg1_picture_header,
+    write_mpeg1_sequence_header,
 };
 use crate::mpeg2_block_dc::ColourComponent;
 use crate::mpeg2_macroblock_blocks::block_component;
 use crate::p_picture_encoder::wrap_delta;
 use crate::picture_header::PictureCodingType;
 use crate::sequence_extension::ChromaFormat;
-use crate::stream_writer::{write_slice_header, SEQUENCE_END_CODE};
+use crate::stream_writer::{SEQUENCE_END_CODE, write_slice_header};
 use crate::{Error, Result};
 
 /// A macroblock's chroma extent in samples for the 4:2:0 layout MPEG-1

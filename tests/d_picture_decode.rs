@@ -13,9 +13,9 @@
 //! D-pictures), B.5a / B.5b (dct_dc_size).
 
 use oxideav_core::bits::BitWriter;
-use oxideav_mpeg12video::mpeg1_picture::{decode_mpeg1_d_picture, Mpeg1PictureParams};
+use oxideav_mpeg12video::mpeg1_picture::{Mpeg1PictureParams, decode_mpeg1_d_picture};
 use oxideav_mpeg12video::picture_header::PictureCodingType;
-use oxideav_mpeg12video::{decode_video_sequence, DEFAULT_INTRA_QUANT};
+use oxideav_mpeg12video::{DEFAULT_INTRA_QUANT, decode_video_sequence};
 
 /// Write an ISO/IEC 11172-2 §2.4.2.3 sequence header (no extension
 /// follows — that absence is what classifies the stream as MPEG-1).
@@ -64,8 +64,8 @@ fn write_luma_dc(bw: &mut BitWriter, differential: i32) {
         }
         -7 => {
             bw.write_u32(0b101, 3); // size 3
-                                    // §2.4.3.7 negative rule: dct_zz[0] = ((-1) << size) |
-                                    // (differential + 1) → bits '000' decode to -7.
+            // §2.4.3.7 negative rule: dct_zz[0] = ((-1) << size) |
+            // (differential + 1) → bits '000' decode to -7.
             bw.write_u32(0b000, 3);
         }
         other => panic!("unsupported test differential {other}"),

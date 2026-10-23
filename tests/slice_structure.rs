@@ -13,9 +13,9 @@ use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::slice_header::{SliceContext, SliceHeader};
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_intra_picture, encode_intra_picture_with_slice_length,
-    encode_mpeg1_intra_picture, encode_mpeg1_intra_picture_with_slice_length, FrameBuffer,
-    IntraPictureParams, Mpeg1PictureParams, SliceWalkContext,
+    FrameBuffer, IntraPictureParams, Mpeg1PictureParams, SliceWalkContext, decode_video_sequence,
+    encode_intra_picture, encode_intra_picture_with_slice_length, encode_mpeg1_intra_picture,
+    encode_mpeg1_intra_picture_with_slice_length,
 };
 
 fn frame_at(width: usize, height: usize) -> FrameBuffer {

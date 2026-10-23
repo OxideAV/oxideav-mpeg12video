@@ -61,7 +61,7 @@ use crate::macroblock_modes::{
 use crate::macroblock_type::MacroblockType;
 use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 use crate::motion_vector::{MotionVectors, MotionVectorsContext, MotionVectorsKind};
-use crate::mpeg2_block_dc::{decode_dc_block, DcPredictors};
+use crate::mpeg2_block_dc::{DcPredictors, decode_dc_block};
 use crate::mpeg2_dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep, TableSelection};
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::picture_header::{
@@ -70,7 +70,7 @@ use crate::picture_header::{
 use crate::quantizer_scale::QuantizerScale;
 use crate::sequence_extension::ChromaFormat;
 use crate::sequence_scalable_extension::{
-    ScalableMode, SequenceScalableExtension, SEQUENCE_SCALABLE_EXTENSION_ID,
+    SEQUENCE_SCALABLE_EXTENSION_ID, ScalableMode, SequenceScalableExtension,
 };
 use crate::slice_header::{SliceContext, SliceHeader};
 use crate::{Error, Result};
@@ -470,7 +470,7 @@ fn parse_sequence_extension_fields(block: &[u8]) -> Result<(ChromaFormat, u32)> 
         _ => {
             return Err(Error::InvalidBitstream(
                 "sequence_extension: chroma_format 00 is reserved (§6.3.5)",
-            ))
+            ));
         }
     };
     let _horizontal_size_extension = br.read_u32(2).map_err(|_| Error::ShortHeader)?;

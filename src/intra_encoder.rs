@@ -46,21 +46,21 @@ use oxideav_core::bits::BitWriter;
 use crate::encode_options::FrameEncodeOptions;
 use crate::forward_dct::fdct_8x8;
 use crate::forward_quant::forward_quantise_block;
-use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
-use crate::mpeg2_block_dc::{encode_intra_dc, ColourComponent, DcComponent};
+use crate::frame_assembly::{FrameBuffer, IntraPictureParams, block_placement};
+use crate::mpeg2_block_dc::{ColourComponent, DcComponent, encode_intra_dc};
 use crate::mpeg2_dct_coeff::{
-    encode_dct_coeff, encode_end_of_block, CoefficientPosition, TableSelection,
+    CoefficientPosition, TableSelection, encode_dct_coeff, encode_end_of_block,
 };
 use crate::mpeg2_dequantize::{
-    intra_dc_mult, quantiser_scale, select_weighting_matrix_index, BlockCoding, Component,
+    BlockCoding, Component, intra_dc_mult, quantiser_scale, select_weighting_matrix_index,
 };
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::picture_header::PictureCodingType;
-use crate::quant_matrix_extension::{write_quant_matrix_extension, QuantMatrixExtension};
+use crate::quant_matrix_extension::{QuantMatrixExtension, write_quant_matrix_extension};
 use crate::stream_writer::{
-    write_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header_in, SequenceHeaderParams, SEQUENCE_END_CODE,
+    SEQUENCE_END_CODE, SequenceHeaderParams, write_picture_coding_extension, write_picture_header,
+    write_sequence_extension, write_sequence_header, write_slice_header_in,
 };
 use crate::{Error, Result};
 
@@ -304,12 +304,12 @@ pub fn encode_intra_picture_with_options(
             "encode_intra_picture: concealment motion vectors need f_code[0][*] in 1..=9",
         ));
     }
-    if let Some(reference) = concealment_reference {
-        if reference.width != params.width || reference.height != params.height {
-            return Err(Error::InvalidBitstream(
-                "encode_intra_picture: concealment reference dimensions do not match params",
-            ));
-        }
+    if let Some(reference) = concealment_reference
+        && (reference.width != params.width || reference.height != params.height)
+    {
+        return Err(Error::InvalidBitstream(
+            "encode_intra_picture: concealment reference dimensions do not match params",
+        ));
     }
     if frame.width != params.width || frame.height != params.height {
         return Err(Error::InvalidBitstream(

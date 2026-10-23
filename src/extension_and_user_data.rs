@@ -82,17 +82,17 @@
 
 use oxideav_core::bits::BitReader;
 
-use crate::copyright_extension::{CopyrightExtension, COPYRIGHT_EXTENSION_ID};
+use crate::copyright_extension::{COPYRIGHT_EXTENSION_ID, CopyrightExtension};
 use crate::picture_display_extension::{
-    PictureDisplayContext, PictureDisplayExtension, PICTURE_DISPLAY_EXTENSION_ID,
+    PICTURE_DISPLAY_EXTENSION_ID, PictureDisplayContext, PictureDisplayExtension,
 };
 use crate::picture_spatial_scalable_extension::PictureSpatialScalableExtension;
 use crate::picture_temporal_scalable_extension::PictureTemporalScalableExtension;
-use crate::quant_matrix_extension::{QuantMatrixExtension, QUANT_MATRIX_EXTENSION_ID};
-use crate::sequence_display_extension::{SequenceDisplayExtension, SEQUENCE_DISPLAY_EXTENSION_ID};
+use crate::quant_matrix_extension::{QUANT_MATRIX_EXTENSION_ID, QuantMatrixExtension};
+use crate::sequence_display_extension::{SEQUENCE_DISPLAY_EXTENSION_ID, SequenceDisplayExtension};
 use crate::sequence_extension::{ChromaFormat, EXTENSION_START_CODE};
 use crate::sequence_scalable_extension::{
-    SequenceScalableExtension, SEQUENCE_SCALABLE_EXTENSION_ID,
+    SEQUENCE_SCALABLE_EXTENSION_ID, SequenceScalableExtension,
 };
 use crate::{Error, Result};
 
@@ -1069,8 +1069,10 @@ mod tests {
         let out2 = ExtensionAndUserData::parse(&buf2, ExtensionLocation::AfterSequenceExtension)
             .expect("absent window");
         assert!(out2.sequence_display_extension.is_none());
-        assert!(driver
-            .on_sequence_header_window(out2.sequence_display_extension)
-            .is_err());
+        assert!(
+            driver
+                .on_sequence_header_window(out2.sequence_display_extension)
+                .is_err()
+        );
     }
 }

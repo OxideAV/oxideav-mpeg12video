@@ -176,12 +176,12 @@ pub fn write_mpeg1_sequence_header(bw: &mut BitWriter, p: &Mpeg1SequenceParams) 
             ));
         }
     }
-    if let Some(m) = &p.non_intra_quant_matrix {
-        if m.contains(&0) {
-            return Err(Error::InvalidBitstream(
-                "non_intra_quantizer_matrix: the value zero is forbidden (§2.4.3.2)",
-            ));
-        }
+    if let Some(m) = &p.non_intra_quant_matrix
+        && m.contains(&0)
+    {
+        return Err(Error::InvalidBitstream(
+            "non_intra_quantizer_matrix: the value zero is forbidden (§2.4.3.2)",
+        ));
     }
 
     bw.write_u32(SEQUENCE_HEADER_CODE, 32);
@@ -240,7 +240,7 @@ pub fn write_mpeg1_picture_header(
     full_pel_backward: bool,
     backward_f_code: u8,
 ) -> Result<()> {
-    use crate::picture_header::{PictureCodingType, PICTURE_START_CODE};
+    use crate::picture_header::{PICTURE_START_CODE, PictureCodingType};
 
     let has_forward = matches!(
         coding_type,

@@ -15,10 +15,10 @@ use oxideav_core::{
 };
 use oxideav_mpeg12video::picture_header::{Mpeg2PictureHeader, PictureStructure};
 use oxideav_mpeg12video::sequence_extension::{ChromaFormat, Mpeg2Sequence};
-use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
+use oxideav_mpeg12video::vbv::{VbvStandard, verify_cbr_stream};
 use oxideav_mpeg12video::{
-    decode_video_sequence, make_decoder, make_encoder, merge_data_partitions, Mpeg12EncoderOptions,
-    PictureCodingType, MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR,
+    MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR, Mpeg12EncoderOptions, PictureCodingType,
+    decode_video_sequence, make_decoder, make_encoder, merge_data_partitions,
 };
 
 /// A deterministic interlaced-looking planar frame in `format`.
@@ -356,9 +356,11 @@ fn frame_encode_options_skips_concealment_and_cadence() {
         2,
     );
     let decoded = decode_video_sequence(&stream).unwrap();
-    assert!(decoded
-        .iter()
-        .all(|d| d.top_field_first && d.repeat_first_field));
+    assert!(
+        decoded
+            .iter()
+            .all(|d| d.top_field_first && d.repeat_first_field)
+    );
     assert!(make_encoder(&with(&base, &[("top_field_first", "true")])).is_ok());
     let mut enc = make_encoder(&with(&base, &[("top_field_first", "true")])).unwrap();
     enc.send_frame(&Frame::Video(video_frame(64, 48, 0, PixelFormat::Yuv420P)))
@@ -387,14 +389,16 @@ fn frame_encode_options_skips_concealment_and_cadence() {
     // Pulldown needs an interlaced sequence.
     assert!(make_encoder(&with(&base, &[("pulldown", "3:2")])).is_err());
     // FrameEncodeOptions belong to frame pictures.
-    assert!(make_encoder(&with(
-        &base,
-        &[
-            ("picture_structure", "field"),
-            ("skipped_macroblocks", "true")
-        ]
-    ))
-    .is_err());
+    assert!(
+        make_encoder(&with(
+            &base,
+            &[
+                ("picture_structure", "field"),
+                ("skipped_macroblocks", "true")
+            ]
+        ))
+        .is_err()
+    );
 }
 
 #[test]
@@ -451,14 +455,16 @@ fn cbr_rate_control_holds_the_vbv_on_frame_field_and_mpeg1() {
     assert_eq!(decode_video_sequence(&stream).unwrap().len(), 6);
 
     // No CBR controller for the frame-field / adaptive assemblers.
-    assert!(make_encoder(&with(
-        &params(MPEG2_CODEC_ID_STR, 64, 64, PixelFormat::Yuv420P),
-        &[
-            ("rate_control", "cbr"),
-            ("picture_structure", "frame_field")
-        ]
-    ))
-    .is_err());
+    assert!(
+        make_encoder(&with(
+            &params(MPEG2_CODEC_ID_STR, 64, 64, PixelFormat::Yuv420P),
+            &[
+                ("rate_control", "cbr"),
+                ("picture_structure", "frame_field")
+            ]
+        ))
+        .is_err()
+    );
     // Unknown frame rate.
     let mut p = params(MPEG2_CODEC_ID_STR, 64, 48, PixelFormat::Yuv420P);
     p.frame_rate = Some(Rational::new(7, 1));
@@ -473,9 +479,11 @@ fn data_partitioning_emits_two_partition_packets() {
     let mut enc = make_encoder(&p).expect("make_encoder");
     let packets = encode_packets(enc.as_mut(), 64, 48, 4, PixelFormat::Yuv420P);
     assert_eq!(packets.len(), 2, "partition 0 then partition 1");
-    assert!(packets
-        .iter()
-        .all(|p| p.pts == Some(0) && p.duration == Some(4)));
+    assert!(
+        packets
+            .iter()
+            .all(|p| p.pts == Some(0) && p.duration == Some(4))
+    );
     let merged = merge_data_partitions(&packets[0].data, &packets[1].data).expect("merge");
     assert_eq!(
         merged, plain,
@@ -487,11 +495,13 @@ fn data_partitioning_emits_two_partition_packets() {
             "{bad}"
         );
     }
-    assert!(make_encoder(&with(
-        &params(MPEG1_CODEC_ID_STR, 64, 48, PixelFormat::Yuv420P),
-        &[("data_partitioning", "1")]
-    ))
-    .is_err());
+    assert!(
+        make_encoder(&with(
+            &params(MPEG1_CODEC_ID_STR, 64, 48, PixelFormat::Yuv420P),
+            &[("data_partitioning", "1")]
+        ))
+        .is_err()
+    );
 }
 
 #[test]
@@ -506,9 +516,11 @@ fn mpeg1_options_d_pictures_and_rejections() {
     );
     let decoded = decode_video_sequence(&stream).unwrap();
     assert_eq!(decoded.len(), 4);
-    assert!(decoded
-        .iter()
-        .all(|d| d.picture_coding_type == PictureCodingType::DcIntra));
+    assert!(
+        decoded
+            .iter()
+            .all(|d| d.picture_coding_type == PictureCodingType::DcIntra)
+    );
     assert!(
         !stream.windows(4).any(|w| w == [0, 0, 1, 0xB5]),
         "11172-2: no extension"
@@ -527,11 +539,13 @@ fn mpeg1_options_d_pictures_and_rejections() {
             "mpeg1video {k}={v}"
         );
     }
-    assert!(make_encoder(&with(
-        &params(MPEG2_CODEC_ID_STR, 48, 32, PixelFormat::Yuv420P),
-        &[("mpeg1_d_pictures", "true")]
-    ))
-    .is_err());
+    assert!(
+        make_encoder(&with(
+            &params(MPEG2_CODEC_ID_STR, 48, 32, PixelFormat::Yuv420P),
+            &[("mpeg1_d_pictures", "true")]
+        ))
+        .is_err()
+    );
 }
 
 #[test]

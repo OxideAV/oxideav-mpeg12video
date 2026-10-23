@@ -32,7 +32,7 @@
 //! diamond / hexagon fast-search can replace the inner loop later
 //! without changing the public contract.
 
-use crate::forming_predictions::{predict_block, BlockSize, ReferencePlane};
+use crate::forming_predictions::{BlockSize, ReferencePlane, predict_block};
 use crate::frame_assembly::FrameBuffer;
 use crate::inter_reconstruction::MotionVectorPel;
 

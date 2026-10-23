@@ -34,20 +34,20 @@
 //! [`crate::inter_reconstruction::FrameMotion::from_mpeg1`] into the
 //! same motion-compensation pipeline the MPEG-2 frame-based path uses.
 
-use crate::frame_assembly::{place_intra_macroblock, FrameBuffer};
+use crate::frame_assembly::{FrameBuffer, place_intra_macroblock};
 use crate::inter_reconstruction::{
-    reconstruct_inter_macroblock, FrameMotion, ReferenceFrames, ResidualBlock,
+    FrameMotion, ReferenceFrames, ResidualBlock, reconstruct_inter_macroblock,
 };
 use crate::mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
 use crate::mpeg1_reconstruct::{
-    reconstruct, reconstruct_absent, reconstruct_zero, Mpeg1FrameMvContext, Mpeg1Predictor,
-    Mpeg1ReconstructedMv,
+    Mpeg1FrameMvContext, Mpeg1Predictor, Mpeg1ReconstructedMv, reconstruct, reconstruct_absent,
+    reconstruct_zero,
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::sequence_extension::ChromaFormat;
 use crate::slice_header::{SliceContext, SliceHeader};
-use crate::slice_macroblock_walk::{walk_slice_at, MacroblockRecord, SliceWalkContext};
+use crate::slice_macroblock_walk::{MacroblockRecord, SliceWalkContext, walk_slice_at};
 use crate::{Error, Result};
 
 /// The per-picture parameters shared by every MPEG-1 picture type:
@@ -452,7 +452,7 @@ pub fn decode_mpeg1_d_picture(
     picture: &[u8],
     params: &Mpeg1PictureParams,
 ) -> Result<(FrameBuffer, usize)> {
-    use crate::dequantize::{finalise_intra_macroblock, IntraDcPredictors};
+    use crate::dequantize::{IntraDcPredictors, finalise_intra_macroblock};
     use crate::frame_assembly::{block_placement, place_intra_block};
     use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
     use oxideav_core::bits::BitReader;

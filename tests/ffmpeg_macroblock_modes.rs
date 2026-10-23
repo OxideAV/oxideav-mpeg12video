@@ -31,7 +31,7 @@ use oxideav_mpeg12video::picture_header::{
 use oxideav_mpeg12video::slice_header::{SLICE_VERTICAL_POSITION_MAX, SLICE_VERTICAL_POSITION_MIN};
 use oxideav_mpeg12video::{
     MacroblockModesContext, MacroblockType, MbAddressIncrement, MbAddressIncrementContext,
-    QuantizerScale, SliceContext, SliceHeader, PICTURE_START_CODE,
+    PICTURE_START_CODE, QuantizerScale, SliceContext, SliceHeader,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");

@@ -37,12 +37,13 @@
 
 use oxideav_core::bits::BitWriter;
 
+use crate::Result;
 use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::encode_options::{FrameEncodeOptions, FrameEncodeStats};
-use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
+use crate::frame_assembly::{FrameBuffer, IntraPictureParams, block_placement};
 use crate::inter_reconstruction::{
-    chroma_mb_extent, predict_frame_macroblock_planes, FrameMotion, MotionVectorPel,
-    ReferenceFrames,
+    FrameMotion, MotionVectorPel, ReferenceFrames, chroma_mb_extent,
+    predict_frame_macroblock_planes,
 };
 use crate::mb_address_increment::encode_mb_address_increment;
 use crate::motion_estimation::{estimate_forward_mv, frame_vector_legal, max_search_range};
@@ -51,14 +52,13 @@ use crate::mpeg2_block_dc::ColourComponent;
 use crate::mpeg2_dequantize::quantiser_scale;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::p_picture_encoder::{
-    nonintra_block_has_cbp_slot, quantise_inter_block, wrap_delta, write_inter_block_coeffs,
-    InterBlock,
+    InterBlock, nonintra_block_has_cbp_slot, quantise_inter_block, wrap_delta,
+    write_inter_block_coeffs,
 };
 use crate::picture_header::PictureCodingType;
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_slice_header_in,
 };
-use crate::Result;
 
 /// The chosen prediction direction for one B macroblock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,42 +356,44 @@ pub fn encode_b_picture_with_stats(
             // 0. Skip test (§7.6.6.4): the previous direction with the
             // PMV vectors, taken when the residual quantises to zero.
             // §6.3.17: never the first / last macroblock of a slice.
-            if options.skipped_macroblocks && mb_col != 0 && mb_col + 1 != mb_width {
-                if let Some(dir) = prev_dir {
-                    let fwd = MotionVectorPel::new(pmv_fwd.0, pmv_fwd.1);
-                    let bwd = MotionVectorPel::new(pmv_bwd.0, pmv_bwd.1);
-                    // §7.6.3.8: the inherited vectors must read inside
-                    // the reference; a predictor from a neighbour can
-                    // overhang at the picture edge.
-                    let uses_fwd = matches!(dir, BDirection::Forward | BDirection::Interpolated);
-                    let uses_bwd = matches!(dir, BDirection::Backward | BDirection::Interpolated);
-                    let legal = (!uses_fwd
+            if options.skipped_macroblocks
+                && mb_col != 0
+                && mb_col + 1 != mb_width
+                && let Some(dir) = prev_dir
+            {
+                let fwd = MotionVectorPel::new(pmv_fwd.0, pmv_fwd.1);
+                let bwd = MotionVectorPel::new(pmv_bwd.0, pmv_bwd.1);
+                // §7.6.3.8: the inherited vectors must read inside
+                // the reference; a predictor from a neighbour can
+                // overhang at the picture edge.
+                let uses_fwd = matches!(dir, BDirection::Forward | BDirection::Interpolated);
+                let uses_bwd = matches!(dir, BDirection::Backward | BDirection::Interpolated);
+                let legal = (!uses_fwd
+                    || frame_vector_legal(
+                        forward.y.width(),
+                        forward.y.height(),
+                        mb_col,
+                        mb_row,
+                        fwd.horizontal,
+                        fwd.vertical,
+                    ))
+                    && (!uses_bwd
                         || frame_vector_legal(
-                            forward.y.width(),
-                            forward.y.height(),
+                            backward.y.width(),
+                            backward.y.height(),
                             mb_col,
                             mb_row,
-                            fwd.horizontal,
-                            fwd.vertical,
-                        ))
-                        && (!uses_bwd
-                            || frame_vector_legal(
-                                backward.y.width(),
-                                backward.y.height(),
-                                mb_col,
-                                mb_row,
-                                bwd.horizontal,
-                                bwd.vertical,
-                            ));
-                    if legal {
-                        let pred = predict(mb_col, mb_row, dir, fwd, bwd);
-                        let (_blocks, coded_flags) = quantise_mb(mb_col, mb_row, &pred);
-                        if !coded_flags[..nblocks].iter().any(|&b| b) {
-                            pending_skips += 1;
-                            stats.skipped += 1;
-                            // Predictors and direction are unaffected.
-                            continue;
-                        }
+                            bwd.horizontal,
+                            bwd.vertical,
+                        ));
+                if legal {
+                    let pred = predict(mb_col, mb_row, dir, fwd, bwd);
+                    let (_blocks, coded_flags) = quantise_mb(mb_col, mb_row, &pred);
+                    if !coded_flags[..nblocks].iter().any(|&b| b) {
+                        pending_skips += 1;
+                        stats.skipped += 1;
+                        // Predictors and direction are unaffected.
+                        continue;
                     }
                 }
             }

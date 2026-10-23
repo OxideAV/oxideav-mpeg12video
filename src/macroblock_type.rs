@@ -655,7 +655,7 @@ fn table_for(
             PictureCodingType::DcIntra => {
                 return Err(Error::InvalidBitstream(
                     "macroblock_type: D-pictures do not occur in scalable ISO/IEC 13818-2 streams (Table 6-12)",
-                ))
+                ));
             }
         },
         // Table B-8 is picture-type-independent.

@@ -23,7 +23,7 @@
 
 use oxideav_core::bits::BitWriter;
 
-use crate::picture_header::{PictureCodingType, PICTURE_START_CODE};
+use crate::picture_header::{PICTURE_START_CODE, PictureCodingType};
 use crate::sequence_extension::{ChromaFormat, EXTENSION_START_CODE};
 use crate::sequence_header::SEQUENCE_HEADER_CODE;
 

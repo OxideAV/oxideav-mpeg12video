@@ -50,23 +50,23 @@
 use oxideav_core::bits::BitWriter;
 
 use crate::frame_assembly::{
-    decode_intra_picture_with_context, FrameBuffer, IntraDecodeContext, IntraPictureParams,
+    FrameBuffer, IntraDecodeContext, IntraPictureParams, decode_intra_picture_with_context,
 };
 use crate::inter_reconstruction::ReferenceFrames;
 use crate::picture_header::{Mpeg2PictureHeader, PictureCodingType, PictureStructure};
-use crate::picture_reconstruction::{decode_inter_picture_with_matrices, PicturePredictionParams};
+use crate::picture_reconstruction::{PicturePredictionParams, decode_inter_picture_with_matrices};
 use crate::picture_temporal_scalable_extension::{
-    write_picture_temporal_scalable_extension, PictureReferences, PictureTemporalScalableExtension,
-    ReferenceSource, PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID,
+    PICTURE_TEMPORAL_SCALABLE_EXTENSION_ID, PictureReferences, PictureTemporalScalableExtension,
+    ReferenceSource, write_picture_temporal_scalable_extension,
 };
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::sequence_extension::{ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension};
 use crate::sequence_scalable_extension::{
-    write_sequence_scalable_extension, ScalableMode, SequenceScalableExtension,
-    TemporalScalabilityParams, SEQUENCE_SCALABLE_EXTENSION_ID,
+    SEQUENCE_SCALABLE_EXTENSION_ID, ScalableMode, SequenceScalableExtension,
+    TemporalScalabilityParams, write_sequence_scalable_extension,
 };
-use crate::stream_writer::{write_sequence_header, SequenceHeaderParams, SEQUENCE_END_CODE};
-use crate::video_sequence::{apply_quant_matrix_extensions, decode_video_sequence, DecodedFrame};
+use crate::stream_writer::{SEQUENCE_END_CODE, SequenceHeaderParams, write_sequence_header};
+use crate::video_sequence::{DecodedFrame, apply_quant_matrix_extensions, decode_video_sequence};
 use crate::{Error, Result};
 
 // -------------------------------------------------------------------
@@ -300,11 +300,14 @@ pub fn decode_temporal_scalable_sequence(
             "picture_mux_factor: '000' is reserved (§6.3.7)",
         ));
     }
-    match (seq.extension.progressive_sequence, mux.mux_to_progressive_sequence) {
+    match (
+        seq.extension.progressive_sequence,
+        mux.mux_to_progressive_sequence,
+    ) {
         (true, Some(false)) | (true, None) => {
             return Err(Error::InvalidBitstream(
                 "temporal scalability: progressive_sequence = 1 with mux_to_progressive_sequence = 0 shall not occur (§7.9.1)",
-            ))
+            ));
         }
         _ => {}
     }

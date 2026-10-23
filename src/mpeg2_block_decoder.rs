@@ -82,11 +82,11 @@
 use oxideav_core::bits::BitReader;
 
 use crate::idct::idct_8x8_from_i32;
-use crate::mpeg2_block_dc::{decode_dc_block, ColourComponent, DcPredictors};
+use crate::mpeg2_block_dc::{ColourComponent, DcPredictors, decode_dc_block};
 use crate::mpeg2_dct_coeff::{
-    CoefficientPosition, DctCoeff, DctCoeffStep, TableSelection, MAX_RUN,
+    CoefficientPosition, DctCoeff, DctCoeffStep, MAX_RUN, TableSelection,
 };
-use crate::mpeg2_dequantize::{inverse_quantise_block, BlockCoding, Component as DequantComponent};
+use crate::mpeg2_dequantize::{BlockCoding, Component as DequantComponent, inverse_quantise_block};
 use crate::mpeg2_inverse_scan::apply_inverse_scan;
 use crate::{Error, Result};
 
@@ -385,8 +385,8 @@ mod tests {
 
     use crate::mpeg2_block_dc::ColourComponent;
     use crate::mpeg2_dequantize::{
-        select_weighting_matrix_index, BlockCoding as DequantBlockCoding, Component,
-        DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT,
+        BlockCoding as DequantBlockCoding, Component, DEFAULT_INTRA_WEIGHT,
+        DEFAULT_NON_INTRA_WEIGHT, select_weighting_matrix_index,
     };
     use crate::sequence_extension::ChromaFormat;
     use oxideav_core::bits::BitWriter;
@@ -550,7 +550,7 @@ mod tests {
         // First coefficient: `1s` = `10` (level +1, run = 0).
         bw.write_bit(true); // codeword `1`
         bw.write_bit(false); // sign = positive
-                             // EOB.
+        // EOB.
         bw.write_u32(EOB_B14_CODE, EOB_B14_BITS);
         let buf = pad(bw);
         let mut br = BitReader::new(&buf);
@@ -700,10 +700,10 @@ mod tests {
         // codeword is `11s` (2 bits + sign).
         let mut bw = BitWriter::new();
         write_b12_size(&mut bw, 0); // intra DC: size = 0
-                                    // First residual: NEXT (0, +1) = `11` + sign `0`.
+        // First residual: NEXT (0, +1) = `11` + sign `0`.
         bw.write_u32(0b11, 2);
         bw.write_bit(false); // positive
-                             // EOB.
+        // EOB.
         bw.write_u32(EOB_B14_CODE, EOB_B14_BITS);
         let buf = pad(bw);
         let mut br = BitReader::new(&buf);
@@ -812,7 +812,7 @@ mod tests {
         // return.
         let mut bw = BitWriter::new();
         write_b12_size(&mut bw, 0); // 3 bits
-                                    // EOB.
+        // EOB.
         bw.write_u32(EOB_B14_CODE, EOB_B14_BITS); // 2 bits
         let buf = pad(bw);
         let mut br = BitReader::new(&buf);
@@ -902,7 +902,7 @@ mod tests {
         let mut bw = BitWriter::new();
         bw.write_bit(true); // first FIRST codeword: `1` + sign
         bw.write_bit(false); // positive
-                             // escape prefix
+        // escape prefix
         bw.write_u32(0b000001, 6);
         bw.write_u32(63, 6); // run
         bw.write_u32(0b0000_0000_0001, 12); // signed_level = +1

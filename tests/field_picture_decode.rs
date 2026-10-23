@@ -19,7 +19,7 @@ use oxideav_mpeg12video::frame_assembly::{FrameBuffer, IntraPictureParams};
 use oxideav_mpeg12video::inter_reconstruction::ReferenceFrames;
 use oxideav_mpeg12video::picture_header::PictureStructure;
 use oxideav_mpeg12video::{
-    decode_field_picture, ChromaFormat, PictureCodingType, PicturePredictionParams,
+    ChromaFormat, PictureCodingType, PicturePredictionParams, decode_field_picture,
 };
 
 /// Field geometry for a 16×16-luma **field** (the field of a 16×32
@@ -231,7 +231,7 @@ fn field_picture_two_macroblocks_with_skip() {
     bw.write_u32(0b0, 1); // field-select = top
     bw.write_u32(0b1, 1); // horiz = 0
     bw.write_u32(0b1, 1); // vert = 0
-                          // Next coded MB at address 2: increment = 2 (Table B-1 `011`).
+    // Next coded MB at address 2: increment = 2 (Table B-1 `011`).
     bw.write_u32(0b011, 3); // increment = 2 → skip address 1
     bw.write_u32(0b001, 3); // "MC, Not Coded"
     bw.write_u32(0b01, 2); // field_motion_type = Field-based
@@ -283,7 +283,7 @@ fn field_picture_16x8_regions_select_independent_fields_end_to_end() {
     bw.write_u32(0b1, 1); // macroblock_address_increment = 1
     bw.write_u32(0b001, 3); // macroblock_type "MC, Not Coded"
     bw.write_u32(0b10, 2); // field_motion_type = 16x8 MC (2 vectors)
-                           // motion_vectors(0): upper region (vfs, h, v) then lower (vfs, h, v).
+    // motion_vectors(0): upper region (vfs, h, v) then lower (vfs, h, v).
     bw.write_u32(0b0, 1); // upper field-select = 0 (top)
     bw.write_u32(0b1, 1); // upper horiz motion_code = 0
     bw.write_u32(0b1, 1); // upper vert  motion_code = 0
@@ -386,7 +386,7 @@ fn p_field_picture_dual_prime_averages_same_and_opposite_fields() {
     bw.write_u32(0b1, 1); // macroblock_address_increment = 1
     bw.write_u32(0b001, 3); // macroblock_type "MC, Not Coded" (fwd)
     bw.write_u32(0b11, 2); // field_motion_type = Dual prime
-                           // motion_vector(0,0): dmv == 1, no field-select bit.
+    // motion_vector(0,0): dmv == 1, no field-select bit.
     bw.write_u32(0b1, 1); // motion_code horiz = 0
     bw.write_u32(0b0, 1); // dmvector[0] = 0 (Table B-11 `0`)
     bw.write_u32(0b1, 1); // motion_code vert = 0
@@ -427,7 +427,7 @@ fn b_field_picture_skip_inherits_previous_direction_same_parity() {
     bw.write_u32(0b0, 1); // motion_vertical_field_select = 0 (top)
     bw.write_u32(0b1, 1); // fwd motion_code horiz = 0
     bw.write_u32(0b1, 1); // fwd motion_code vert = 0
-                          // MB2 (address 2): address_increment = 2 skips address 1.
+    // MB2 (address 2): address_increment = 2 skips address 1.
     bw.write_u32(0b011, 3); // address_increment = 2 (Table B-1 `011`)
     bw.write_u32(0b010, 3); // forward-only B macroblock
     bw.write_u32(0b01, 2); // Field-based

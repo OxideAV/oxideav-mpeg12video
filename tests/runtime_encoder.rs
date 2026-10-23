@@ -10,7 +10,7 @@ use oxideav_core::{
     VideoPlane,
 };
 use oxideav_mpeg12video::{
-    decode_video_sequence, make_decoder, make_encoder, MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR,
+    MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR, decode_video_sequence, make_decoder, make_encoder,
 };
 
 /// A deterministic panning 4:2:0 planar [`VideoFrame`].
@@ -222,7 +222,8 @@ fn encoder_rejects_bad_geometry_and_formats() {
     // send_frame after flush is rejected.
     let mut enc = make_encoder(&params).expect("make_encoder");
     enc.flush().expect("flush");
-    assert!(enc
-        .send_frame(&Frame::Video(video_frame(64, 48, 0)))
-        .is_err());
+    assert!(
+        enc.send_frame(&Frame::Video(video_frame(64, 48, 0)))
+            .is_err()
+    );
 }

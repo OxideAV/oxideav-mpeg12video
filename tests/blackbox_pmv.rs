@@ -36,8 +36,8 @@ use oxideav_mpeg12video::picture_header::{
     Mpeg2PictureHeader, PictureCodingType, PictureStructure,
 };
 use oxideav_mpeg12video::{
-    reconstruct_motion_vector, scale_chroma, ChromaFormat, Component, Direction, MacroblockType,
-    Pmv, VectorIndex, PICTURE_START_CODE,
+    ChromaFormat, Component, Direction, MacroblockType, PICTURE_START_CODE, Pmv, VectorIndex,
+    reconstruct_motion_vector, scale_chroma,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");

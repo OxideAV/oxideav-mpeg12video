@@ -223,7 +223,7 @@ impl MotionType {
             0b00 => {
                 return Err(Error::InvalidBitstream(
                     "frame_motion_type: reserved code 00 (Table 6-17)",
-                ))
+                ));
             }
             0b01 => {
                 // Field-based: 2 vectors for class 0/1, 1 vector for 2/3.
@@ -253,7 +253,7 @@ impl MotionType {
             0b00 => {
                 return Err(Error::InvalidBitstream(
                     "field_motion_type: reserved code 00 (Table 6-18)",
-                ))
+                ));
             }
             0b01 => (PredictionType::FieldBased, 1, MvFormat::Field, false),
             0b10 => (PredictionType::SixteenByEight, 2, MvFormat::Field, false),

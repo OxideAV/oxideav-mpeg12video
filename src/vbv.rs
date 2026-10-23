@@ -272,11 +272,7 @@ impl VbvCbrModel {
     /// the picture's data must have arrived by `t(n)` (C.6 / C.1.4).
     pub fn max_end_bits(&self) -> u64 {
         let bits = self.rt_scaled / self.u_per_s;
-        if bits < 0 {
-            0
-        } else {
-            bits as u64
-        }
+        if bits < 0 { 0 } else { bits as u64 }
     }
 
     /// The smallest legal `end(n)` that avoids overflow immediately

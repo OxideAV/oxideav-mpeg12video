@@ -58,54 +58,55 @@ use oxideav_core::bits::BitWriter;
 
 use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::frame_assembly::{
-    block_placement, place_intra_macroblock, FrameBuffer, IntraPictureParams,
+    FrameBuffer, IntraPictureParams, block_placement, place_intra_macroblock,
 };
 use crate::inter_reconstruction::{
-    chroma_mb_extent, predict_frame_macroblock_planes, FrameMotion, MotionVectorPel,
-    ReferenceFrames,
+    FrameMotion, MotionVectorPel, ReferenceFrames, chroma_mb_extent,
+    predict_frame_macroblock_planes,
 };
 use crate::macroblock_modes::PredictionType;
 use crate::macroblock_type::MacroblockTypeTable;
 use crate::motion_estimation::{estimate_forward_mv, max_search_range};
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::ColourComponent;
-use crate::mpeg2_dequantize::{intra_dc_mult, quantiser_scale, DEFAULT_NON_INTRA_WEIGHT};
+use crate::mpeg2_dequantize::{DEFAULT_NON_INTRA_WEIGHT, intra_dc_mult, quantiser_scale};
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::p_picture_encoder::{
-    encode_intra_mb, gather_residual, intra_activity, nonintra_block_has_cbp_slot,
-    quantise_inter_block, reconstruct_inter_mb, wrap_delta, write_inter_block_coeffs, InterBlock,
-    IntraDcPred,
+    InterBlock, IntraDcPred, encode_intra_mb, gather_residual, intra_activity,
+    nonintra_block_has_cbp_slot, quantise_inter_block, reconstruct_inter_mb, wrap_delta,
+    write_inter_block_coeffs,
 };
 use crate::picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
 };
 use crate::picture_reconstruction::{
-    frame_motion_from_reconstructed, reconstruct_one_macroblock, reconstruct_skipped_macroblock,
-    InterDirection, PicturePredictionParams,
+    InterDirection, PicturePredictionParams, frame_motion_from_reconstructed,
+    reconstruct_one_macroblock, reconstruct_skipped_macroblock,
 };
 use crate::picture_spatial_scalable_extension::{
-    write_picture_spatial_scalable_extension, PictureSpatialScalableExtension,
-    PICTURE_SPATIAL_SCALABLE_EXTENSION_ID,
+    PICTURE_SPATIAL_SCALABLE_EXTENSION_ID, PictureSpatialScalableExtension,
+    write_picture_spatial_scalable_extension,
 };
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::sequence_extension::{ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension};
 use crate::sequence_scalable_extension::{
-    write_sequence_scalable_extension, ScalableMode, SequenceScalableExtension,
-    SpatialScalabilityParams, SEQUENCE_SCALABLE_EXTENSION_ID,
+    SEQUENCE_SCALABLE_EXTENSION_ID, ScalableMode, SequenceScalableExtension,
+    SpatialScalabilityParams, write_sequence_scalable_extension,
 };
 use crate::slice_header::{SliceContext, SliceHeader};
 use crate::slice_macroblock_walk::{
-    reconstruct_slice_motion_vectors, walk_slice_at, MacroblockRecord, SliceWalkContext,
+    MacroblockRecord, SliceWalkContext, reconstruct_slice_motion_vectors, walk_slice_at,
 };
-use crate::spatial_prediction_picture::{spatial_prediction_picture, SpatialPredictionPicture};
-use crate::spatial_temporal_combine::{extract_colocated_spatial, SpatialWeight};
+use crate::spatial_prediction_picture::{SpatialPredictionPicture, spatial_prediction_picture};
+use crate::spatial_temporal_combine::{SpatialWeight, extract_colocated_spatial};
 use crate::stream_writer::{
+    PictureCodingExtensionParams, SEQUENCE_END_CODE, SequenceHeaderParams,
     write_picture_coding_extension, write_picture_header, write_sequence_header,
-    write_slice_header_in, PictureCodingExtensionParams, SequenceHeaderParams, SEQUENCE_END_CODE,
+    write_slice_header_in,
 };
 use crate::video_sequence::{
-    apply_quant_matrix_extensions, decode_video_sequence, display_indices_from_coded_pictures,
-    DecodedFrame,
+    DecodedFrame, apply_quant_matrix_extensions, decode_video_sequence,
+    display_indices_from_coded_pictures,
 };
 use crate::{Error, Result};
 
@@ -414,29 +415,30 @@ pub fn decode_spatial_scalable_sequence(
             q_scale_type: ext.q_scale_type,
             ..base_geometry
         };
-        let references =
-            match header.picture_coding_type {
-                PictureCodingType::Intra => ReferenceFrames {
-                    forward: None,
-                    backward: None,
-                },
-                PictureCodingType::Predictive => ReferenceFrames::forward_only(
-                    backward_anchor.as_ref().ok_or(Error::InvalidBitstream(
-                        "§6.1.1.11: P-picture before any I/P anchor exists",
-                    ))?,
-                ),
-                PictureCodingType::Bidirectional => ReferenceFrames::bidirectional(
-                    forward_anchor.as_ref().ok_or(Error::InvalidBitstream(
-                        "§6.1.1.11: B-picture before two I/P anchors exist",
-                    ))?,
-                    backward_anchor.as_ref().ok_or(Error::InvalidBitstream(
-                        "§6.1.1.11: B-picture before two I/P anchors exist",
-                    ))?,
-                ),
-                PictureCodingType::DcIntra => return Err(Error::InvalidBitstream(
+        let references = match header.picture_coding_type {
+            PictureCodingType::Intra => ReferenceFrames {
+                forward: None,
+                backward: None,
+            },
+            PictureCodingType::Predictive => {
+                ReferenceFrames::forward_only(backward_anchor.as_ref().ok_or(
+                    Error::InvalidBitstream("§6.1.1.11: P-picture before any I/P anchor exists"),
+                )?)
+            }
+            PictureCodingType::Bidirectional => ReferenceFrames::bidirectional(
+                forward_anchor.as_ref().ok_or(Error::InvalidBitstream(
+                    "§6.1.1.11: B-picture before two I/P anchors exist",
+                ))?,
+                backward_anchor.as_ref().ok_or(Error::InvalidBitstream(
+                    "§6.1.1.11: B-picture before two I/P anchors exist",
+                ))?,
+            ),
+            PictureCodingType::DcIntra => {
+                return Err(Error::InvalidBitstream(
                     "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
-                )),
-            };
+                ));
+            }
+        };
 
         // §6.3.7: a picture without picture_spatial_scalable_extension()
         // is decoded non-scalably.
@@ -725,7 +727,7 @@ fn reconstruct_spatial_picture(
                         "spatial scalability: spatial_temporal_weight_class 2 / 3 (interlaced weight tables) is not composed"
                     } else {
                         "spatial scalability: unknown spatial_temporal_weight_class"
-                    }))
+                    }));
                 }
             }
         }
@@ -824,11 +826,7 @@ fn aspect_ratio_code(a: crate::sequence_header::AspectRatio) -> u8 {
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
-    }
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 /// The macroblock kinds the encoder emits (a subset of the Table B-5 /
@@ -958,7 +956,7 @@ fn write_macroblock_type(
         _ => {
             return Err(Error::InvalidBitstream(
                 "spatial encoder: macroblock kind has no Table B-5 / B-6 / B-7 row",
-            ))
+            ));
         }
     };
     bw.write_u32(code, bits);
@@ -1546,7 +1544,7 @@ pub fn encode_spatial_enhancement_layer(
             PictureCodingType::DcIntra => {
                 return Err(Error::InvalidBitstream(
                     "spatial encoder: D-pictures do not occur in ISO/IEC 13818-2",
-                ))
+                ));
             }
         };
         let recon = encode_spatial_picture(

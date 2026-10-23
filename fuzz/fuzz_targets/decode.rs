@@ -20,8 +20,8 @@
 use libfuzzer_sys::fuzz_target;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_intra_picture, encode_mpeg1_intra_stream, FrameBuffer,
-    IntraPictureParams, Mpeg1SequenceParams,
+    FrameBuffer, IntraPictureParams, Mpeg1SequenceParams, decode_video_sequence,
+    encode_intra_picture, encode_mpeg1_intra_stream,
 };
 use std::sync::OnceLock;
 

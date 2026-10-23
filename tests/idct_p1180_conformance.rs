@@ -48,8 +48,8 @@
 #![allow(clippy::needless_range_loop)]
 
 use oxideav_mpeg12video::idct::{
-    idct_8x8, idct_candidate_f64, idct_reference_f64, F_INPUT_MAX, F_INPUT_MIN, F_OUTPUT_MAX,
-    F_OUTPUT_MIN,
+    F_INPUT_MAX, F_INPUT_MIN, F_OUTPUT_MAX, F_OUTPUT_MIN, idct_8x8, idct_candidate_f64,
+    idct_reference_f64,
 };
 
 /// Number of pseudo-random 8×8 blocks per `(L, sign)` parameter set.

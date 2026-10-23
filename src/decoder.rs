@@ -58,9 +58,9 @@ use oxideav_core::{
     CodecId, CodecParameters, Decoder, Error, Frame, Packet, Result, VideoFrame, VideoPlane,
 };
 
+use crate::Error as Mpeg12Error;
 use crate::frame_assembly::FrameBuffer;
 use crate::video_sequence::decode_video_sequence;
-use crate::Error as Mpeg12Error;
 
 /// Fold a crate-local [`Mpeg12Error`] into the framework
 /// [`oxideav_core::Error`] the [`Decoder`] contract speaks. A bitstream

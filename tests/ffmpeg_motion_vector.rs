@@ -26,6 +26,8 @@
 //! confirms the decoded structure matches the bits we put in.
 
 use oxideav_core::bits::{BitReader, BitWriter};
+use oxideav_mpeg12video::MacroblockType;
+use oxideav_mpeg12video::PICTURE_START_CODE;
 use oxideav_mpeg12video::macroblock_modes::{
     MacroblockModesContext, MacroblockModesTail, MvFormat, PredictionType,
 };
@@ -33,8 +35,6 @@ use oxideav_mpeg12video::motion_vector::{MotionVectors, MotionVectorsContext, Mo
 use oxideav_mpeg12video::picture_header::{
     Mpeg2PictureHeader, PictureCodingType, PictureStructure,
 };
-use oxideav_mpeg12video::MacroblockType;
-use oxideav_mpeg12video::PICTURE_START_CODE;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");
 

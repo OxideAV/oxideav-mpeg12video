@@ -11,9 +11,9 @@ use oxideav_mpeg12video::picture_spatial_scalable_extension::PictureSpatialScala
 use oxideav_mpeg12video::sequence_extension::{ChromaFormat, Mpeg2Sequence};
 use oxideav_mpeg12video::sequence_scalable_extension::{ScalableMode, SequenceScalableExtension};
 use oxideav_mpeg12video::{
+    DecodedFrame, FrameBuffer, IntraPictureParams, SpatialLayerConfig,
     decode_spatial_scalable_sequence, decode_video_sequence, encode_display_order_gop_sequence,
-    encode_spatial_enhancement_layer, DecodedFrame, FrameBuffer, IntraPictureParams,
-    SpatialLayerConfig,
+    encode_spatial_enhancement_layer,
 };
 
 fn params(width: usize, height: usize, chroma: ChromaFormat) -> IntraPictureParams {
@@ -226,11 +226,12 @@ fn two_to_one_upsampled_ibp_roundtrips_exactly_and_uses_every_class() {
         .map(|(i, _)| PictureSpatialScalableExtension::parse(&enc.stream[i..]).unwrap())
         .collect();
     assert_eq!(pss.len(), 5);
-    assert!(pss
-        .iter()
-        .all(|p| p.spatial_temporal_weight_code_table_index == 0
-            && p.lower_layer_progressive_frame
-            && p.lower_layer_horizontal_offset == 0));
+    assert!(
+        pss.iter()
+            .all(|p| p.spatial_temporal_weight_code_table_index == 0
+                && p.lower_layer_progressive_frame
+                && p.lower_layer_horizontal_offset == 0)
+    );
     // Coded order I P B P B → lower_layer_temporal_reference 0 2 1 4 3.
     let trefs: Vec<u16> = pss
         .iter()

@@ -31,15 +31,15 @@ use crate::forward_quant::forward_quantise_block;
 use crate::frame_assembly::IntraPictureParams;
 use crate::motion_vector::encode_motion_vector;
 use crate::mpeg2_dct_coeff::{
-    encode_dct_coeff, encode_end_of_block, CoefficientPosition, TableSelection,
+    CoefficientPosition, TableSelection, encode_dct_coeff, encode_end_of_block,
 };
-use crate::mpeg2_dequantize::{quantiser_scale, BlockCoding, DEFAULT_NON_INTRA_WEIGHT};
+use crate::mpeg2_dequantize::{BlockCoding, DEFAULT_NON_INTRA_WEIGHT, quantiser_scale};
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::picture_header::PictureCodingType;
 use crate::stream_writer::{
+    PictureCodingExtensionParams, SEQUENCE_END_CODE, SequenceHeaderParams,
     write_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header_in, PictureCodingExtensionParams,
-    SequenceHeaderParams, SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header_in,
 };
 use crate::{Error, Result};
 
@@ -662,7 +662,7 @@ pub fn encode_display_order_gop_sequence_with_options(
     options: &dyn Fn(usize) -> crate::encode_options::FrameEncodeOptions,
 ) -> Result<(Vec<u8>, crate::encode_options::FrameEncodeStats)> {
     use crate::encode_options::FrameEncodeStats;
-    use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
+    use crate::gop_header::{Mpeg2Gop, TimeCode, write_gop_header};
     let mut stats = FrameEncodeStats::default();
     let mut previous_anchor: Option<crate::frame_assembly::FrameBuffer> = None;
 
@@ -801,7 +801,7 @@ mod tests {
     use super::*;
     use crate::frame_assembly::FrameBuffer;
     use crate::mpeg2_block_dc::{ColourComponent, DcPredictors};
-    use crate::mpeg2_block_decoder::{decode_block, BlockContext};
+    use crate::mpeg2_block_decoder::{BlockContext, decode_block};
     use crate::sequence_extension::ChromaFormat;
     use oxideav_core::bits::BitReader;
 

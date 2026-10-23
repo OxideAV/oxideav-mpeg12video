@@ -10,7 +10,7 @@
 //! mutation of it or a deterministic pseudo-random byte stream.
 
 use oxideav_core::{CodecId, CodecParameters, Packet, TimeBase};
-use oxideav_mpeg12video::{make_decoder, MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR};
+use oxideav_mpeg12video::{MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR, make_decoder};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");
 

@@ -162,18 +162,18 @@ use crate::motion_vector::{MotionVectors, MotionVectorsContext, MotionVectorsKin
 use crate::mpeg2_block_dc::DcPredictors;
 use crate::mpeg2_dequantize::quantiser_scale;
 use crate::mpeg2_macroblock_blocks::{
-    decode_macroblock_blocks, DecodedBlock, MacroblockBlockContext,
+    DecodedBlock, MacroblockBlockContext, decode_macroblock_blocks,
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::pmv::{
-    reconstruct_motion_vector, update_predictors, Direction, Pmv, PmvUpdateContext,
-    PmvUpdateOutcome, ReconstructedComponent, VectorIndex,
+    Direction, Pmv, PmvUpdateContext, PmvUpdateOutcome, ReconstructedComponent, VectorIndex,
+    reconstruct_motion_vector, update_predictors,
 };
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::quantizer_scale::{QUANTIZER_SCALE_MAX, QUANTIZER_SCALE_MIN};
 use crate::sequence_extension::ChromaFormat;
 use crate::skipped_macroblock::{
-    apply_to_pmv as skipped_apply_to_pmv, describe_skipped_macroblock, SkippedMacroblockContext,
+    SkippedMacroblockContext, apply_to_pmv as skipped_apply_to_pmv, describe_skipped_macroblock,
 };
 use crate::{Error, Result};
 
@@ -1124,10 +1124,10 @@ pub fn walk_slice_at(
         // that follows a skip run codes its `dct_dc_differential`
         // against the Table 7-2 reset value, not against the previous
         // intra macroblock's final predictor.
-        if skipped_macroblock_count > 0 {
-            if let Some(ref mut predictors) = dc_predictors {
-                predictors.reset();
-            }
+        if skipped_macroblock_count > 0
+            && let Some(ref mut predictors) = dc_predictors
+        {
+            predictors.reset();
         }
 
         // §6.2.5.1: macroblock_modes() opens with macroblock_type
@@ -3224,9 +3224,9 @@ mod tests {
         write_address_increment(&mut bw, 1);
         write_mb_type_p_mc_not_coded(&mut bw);
         bw.write_u32(0b10, 2); // frame_motion_type = Frame-based
-                               // motion_code = -3 → Table B-10 row `0001 1` (5 bits, value
-                               // 0x03). Spelt as a plain integer to dodge the 4-bit clippy
-                               // byte-grouping lint without an allow blanket.
+        // motion_code = -3 → Table B-10 row `0001 1` (5 bits, value
+        // 0x03). Spelt as a plain integer to dodge the 4-bit clippy
+        // byte-grouping lint without an allow blanket.
         bw.write_u32(0x03, 5);
         bw.write_u32(0b1, 1); // motion_code vert = 0
         let buf = end_with_stop(bw);

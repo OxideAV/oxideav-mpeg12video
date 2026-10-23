@@ -167,7 +167,7 @@ pub fn combine_field_interleaved(
             "spatial/temporal prediction blocks differ in length (§7.7.4)",
         ));
     }
-    if temporal.len() % width != 0 {
+    if !temporal.len().is_multiple_of(width) {
         return Err(Error::InvalidBitstream(
             "spatial/temporal combine: block length not a multiple of width (§7.7.4)",
         ));
@@ -605,7 +605,7 @@ mod tests {
     fn macroblock_combine_single_spatial_uses_colocated_block_directly() {
         let pic = rplane(4, 4, &(0..16).collect::<Vec<i32>>());
         let w = single(16); // weight 1 — spatial-only
-                            // Extract the 2×2 region at (2, 2): rows {10,11},{14,15}.
+        // Extract the 2×2 region at (2, 2): rows {10,11},{14,15}.
         let temporal = vec![0u8; 4];
         let out = combine_macroblock_spatial_temporal(&w, &pic, 2, 2, 2, 2, &temporal).unwrap();
         assert_eq!(out, vec![10, 11, 14, 15]);

@@ -7,8 +7,8 @@
 
 use oxideav_core::bits::{BitReader, BitWriter};
 use oxideav_mpeg12video::{
-    mpeg2_decode_block, ChromaFormat, Mpeg2BlockCoding, Mpeg2BlockContext, Mpeg2ColourComponent,
-    Mpeg2Component, Mpeg2DcPredictors, DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT,
+    ChromaFormat, DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT, Mpeg2BlockCoding,
+    Mpeg2BlockContext, Mpeg2ColourComponent, Mpeg2Component, Mpeg2DcPredictors, mpeg2_decode_block,
 };
 
 /// Table B-14 EOB code (`10`, 2 bits) — spec constant; matches the

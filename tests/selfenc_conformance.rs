@@ -19,14 +19,14 @@
 //!    into "conformant garbage".
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
-use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
+use oxideav_mpeg12video::vbv::{VbvStandard, verify_cbr_stream};
 use oxideav_mpeg12video::{
+    CbrConfig, DecodedFrame, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
     decode_video_sequence, encode_cbr_gop_sequence, encode_display_order_gop_sequence,
     encode_display_order_sequence, encode_ff_display_order_gop_sequence,
     encode_field_adaptive_display_order_gop_sequence, encode_field_display_order_gop_sequence,
     encode_i_p_b, encode_i_p_chain, encode_intra_picture, encode_mpeg1_cbr_sequence,
     encode_mpeg1_d_sequence, encode_mpeg1_display_order_sequence, encode_mpeg1_intra_stream,
-    CbrConfig, DecodedFrame, FrameBuffer, IntraPictureParams, Mpeg1SequenceParams,
 };
 
 const MAX_ABS_DELTA: i32 = 3;
@@ -42,7 +42,11 @@ fn frame_at(width: usize, height: usize, dx: usize, dy: usize, stamp: bool) -> F
             let sx = x + dx;
             let sy = y + dy;
             let g = 24 + ((sx * 3 + sy * 5) % 192);
-            let c = if (sx / 4 + sy / 4) % 2 == 0 { 16 } else { 0 };
+            let c = if (sx / 4 + sy / 4).is_multiple_of(2) {
+                16
+            } else {
+                0
+            };
             f.y.put_sample(x, y, (g + c).min(235) as u8);
         }
     }
@@ -508,11 +512,7 @@ fn fieldmodes_frame_at(t: usize) -> FrameBuffer {
     for y in 0..h {
         for x in 0..w {
             let dx: i32 = if t == 2 {
-                if (y / 16) % 2 == 0 {
-                    4
-                } else {
-                    -4
-                }
+                if (y / 16) % 2 == 0 { 4 } else { -4 }
             } else {
                 0
             };
@@ -684,7 +684,11 @@ fn frame_422_at(width: usize, height: usize, dx: usize, stamp: bool) -> FrameBuf
         for x in 0..width {
             let sx = x + dx;
             let g = 24 + ((sx * 3 + y * 5) % 192);
-            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            let c = if (sx / 4 + y / 4).is_multiple_of(2) {
+                16
+            } else {
+                0
+            };
             f.y.put_sample(x, y, (g + c).min(235) as u8);
         }
     }
@@ -785,7 +789,11 @@ fn frame_444_at(width: usize, height: usize, dx: usize) -> FrameBuffer {
         for x in 0..width {
             let sx = x + dx;
             let g = 24 + ((sx * 3 + y * 5) % 192);
-            let c = if (sx / 4 + y / 4) % 2 == 0 { 12 } else { 0 };
+            let c = if (sx / 4 + y / 4).is_multiple_of(2) {
+                12
+            } else {
+                0
+            };
             f.y.put_sample(x, y, (g + c).min(235) as u8);
             f.cb.put_sample(x, y, (64 + (sx * 2 + y * 7) % 128) as u8);
             f.cr.put_sample(x, y, (192u8).saturating_sub(((sx * 3 + y * 5) % 128) as u8));
@@ -1027,11 +1035,7 @@ fn fieldmodes_422_frame_at(t: usize) -> FrameBuffer {
     for y in 0..h {
         for x in 0..w {
             let dx: i32 = if t == 2 {
-                if (y / 16) % 2 == 0 {
-                    4
-                } else {
-                    -4
-                }
+                if (y / 16) % 2 == 0 { 4 } else { -4 }
             } else {
                 0
             };
@@ -1168,7 +1172,11 @@ fn snr_frame_at(width: usize, height: usize, t: usize) -> FrameBuffer {
         for x in 0..width {
             let sx = x + 2 * t;
             let g = 24 + ((sx * 3 + y * 5) % 192);
-            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            let c = if (sx / 4 + y / 4).is_multiple_of(2) {
+                16
+            } else {
+                0
+            };
             let n = (sx * 7 + y * 13) % 9;
             f.y.put_sample(x, y, (g + c + n).min(235) as u8);
         }

@@ -20,7 +20,7 @@ use oxideav_mpeg12video::picture_header::{
 };
 use oxideav_mpeg12video::sequence_extension::Mpeg2Sequence;
 use oxideav_mpeg12video::{
-    decode_intra_picture, ChromaFormat, IntraPictureParams, PICTURE_START_CODE,
+    ChromaFormat, IntraPictureParams, PICTURE_START_CODE, decode_intra_picture,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");

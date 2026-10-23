@@ -67,12 +67,12 @@
 //! and **ISO/IEC 11172-2** §2.4.4.2–§2.4.4.3 (MPEG-1 reconstruction).
 
 use crate::add_coefficients::saturate;
-use crate::combine_predictions::{average_predictions, PredictionDirection};
+use crate::combine_predictions::{PredictionDirection, average_predictions};
 use crate::dual_prime::FieldParity;
 use crate::forming_predictions::{
-    predict_block, predict_field_block, BlockSize, FieldReference, ReferencePlane,
+    BlockSize, FieldReference, ReferencePlane, predict_block, predict_field_block,
 };
-use crate::frame_assembly::{block_placement, FrameBuffer};
+use crate::frame_assembly::{FrameBuffer, block_placement};
 use crate::mpeg2_block_dc::ColourComponent;
 use crate::pmv::scale_chroma;
 use crate::sequence_extension::ChromaFormat;
@@ -2524,7 +2524,7 @@ mod tests {
     #[test]
     fn mpeg1_zero_mv_reconstructs_macroblock_against_reference() {
         use crate::mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
-        use crate::mpeg1_reconstruct::{reconstruct, Mpeg1FrameMvContext, Mpeg1Predictor};
+        use crate::mpeg1_reconstruct::{Mpeg1FrameMvContext, Mpeg1Predictor, reconstruct};
 
         // A zero forward MV (code 0, no residual): the §2.4.4.2
         // reconstruction yields recon = (0, 0), so the P macroblock is a
@@ -2561,7 +2561,7 @@ mod tests {
     #[test]
     fn mpeg1_integer_mv_shifts_reference() {
         use crate::mpeg1_motion_vector::{Mpeg1MotionDirection, Mpeg1MotionVector};
-        use crate::mpeg1_reconstruct::{reconstruct, Mpeg1FrameMvContext, Mpeg1Predictor};
+        use crate::mpeg1_reconstruct::{Mpeg1FrameMvContext, Mpeg1Predictor, reconstruct};
 
         // Forward MV code +1 with f_code 1, full_pel: recon = +2 (one
         // full sample) horizontal. The §2.4.4.2 luma split makes
@@ -2750,7 +2750,7 @@ mod tests {
         let written =
             reconstruct_field_picture_macroblock(&mut dest, refs, 0, 0, motion, &blocks).unwrap();
         assert_eq!(written, 6); // 4 luma + 2 chroma blocks (4:2:0)
-                                // Field line k → frame row 2k value, plus the +5 residual.
+        // Field line k → frame row 2k value, plus the +5 residual.
         for k in 0..16usize {
             let expected = ((2 * k * 4) as i32 + 5).clamp(0, 255) as u8;
             assert_eq!(dest.y.get(0, k), Some(expected), "field line {k}");
@@ -2868,7 +2868,7 @@ mod tests {
         let (_, cb, _) =
             predict_field_picture_16x8_macroblock_planes(&dest, refs, 0, 0, motion).unwrap();
         assert_eq!(cb.len(), 64); // 8×8
-                                  // Upper four chroma lines: top field ramp = line*2.
+        // Upper four chroma lines: top field ramp = line*2.
         for k in 0..4usize {
             assert_eq!(cb[k * 8], (k * 2) as u8, "upper chroma line {k}");
         }

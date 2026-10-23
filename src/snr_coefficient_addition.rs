@@ -128,7 +128,7 @@ pub fn simulcast_dc_predictor_block(
         // base 4:2:0 / upper 4:2:2 — blocks 4 5 6 7 → 4 5 4 5.
         (Yuv420, Yuv422) => {
             // Cb blocks {4, 6} → 4; Cr blocks {5, 7} → 5.
-            if enhance_block_index % 2 == 0 {
+            if enhance_block_index.is_multiple_of(2) {
                 4
             } else {
                 5
@@ -136,7 +136,7 @@ pub fn simulcast_dc_predictor_block(
         }
         // base 4:2:0 / upper 4:4:4 — blocks 4..11 → 4 5 4 5 4 5 4 5.
         (Yuv420, Yuv444) => {
-            if enhance_block_index % 2 == 0 {
+            if enhance_block_index.is_multiple_of(2) {
                 4
             } else {
                 5
@@ -149,7 +149,7 @@ pub fn simulcast_dc_predictor_block(
         _ => {
             return Err(Error::InvalidBitstream(
                 "snr simulcast: (base, upper) chroma_format pair not in Table 7-27",
-            ))
+            ));
         }
     })
 }

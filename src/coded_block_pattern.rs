@@ -1006,12 +1006,10 @@ mod tests {
         );
         let mut only_chroma420_empty = [false; 6];
         only_chroma420_empty[0] = true;
-        assert!(super::encode_coded_block_pattern(
-            &mut bw,
-            &only_chroma420_empty,
-            ChromaFormat::Yuv420
-        )
-        .is_ok());
+        assert!(
+            super::encode_coded_block_pattern(&mut bw, &only_chroma420_empty, ChromaFormat::Yuv420)
+                .is_ok()
+        );
         let mut block6 = [false; 12];
         block6[6] = true;
         block6[0] = true;

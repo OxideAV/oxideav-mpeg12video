@@ -17,8 +17,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_display_order_gop_sequence, encode_i_p_b, encode_i_then_p,
-    encode_intra_picture, encode_p_picture, FrameBuffer, IntraPictureParams,
+    FrameBuffer, IntraPictureParams, decode_video_sequence, encode_display_order_gop_sequence,
+    encode_i_p_b, encode_i_then_p, encode_intra_picture, encode_p_picture,
 };
 
 fn params_422(width: usize, height: usize) -> IntraPictureParams {
@@ -44,7 +44,11 @@ fn frame_422(width: usize, height: usize, shift: usize) -> FrameBuffer {
         for x in 0..width {
             let sx = x + shift;
             let g = 24 + ((sx * 3 + y * 5) % 192);
-            let c = if (sx / 4 + y / 4) % 2 == 0 { 12 } else { 0 };
+            let c = if (sx / 4 + y / 4).is_multiple_of(2) {
+                12
+            } else {
+                0
+            };
             f.y.put_sample(x, y, (g + c).min(235) as u8);
         }
     }
@@ -474,8 +478,8 @@ fn cbr_422_gop_sequence_is_vbv_conformant_and_decodes() {
     // encoders at 4:2:2: the emitted stream must satisfy its declared
     // bit_rate / vbv_buffer_size under the whole-stream verifier and
     // decode faithfully.
-    use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
     use oxideav_mpeg12video::CbrConfig;
+    use oxideav_mpeg12video::vbv::{VbvStandard, verify_cbr_stream};
 
     let frames_in: Vec<FrameBuffer> = (0..5).map(|k| frame_422(64, 48, 2 * k)).collect();
     let cbr = CbrConfig {

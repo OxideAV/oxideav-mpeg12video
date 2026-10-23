@@ -6,6 +6,10 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- edition 2024, MSRV 1.95
+
 ### Other
 
 - README + CHANGELOG — round 456: interlaced 4:2:2 / 4:4:4, vertical_size > 2800, typed runtime options, the three scalable loops + encoders, arbitrary slice structures; Not-yet-supported rewritten to the remaining scalable corners

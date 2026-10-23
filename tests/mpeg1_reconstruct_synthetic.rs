@@ -15,8 +15,8 @@
 
 use oxideav_core::bits::{BitReader, BitWriter};
 use oxideav_mpeg12video::{
-    mpeg1_reconstruct, Mpeg1FrameMvContext, Mpeg1MotionDirection, Mpeg1MotionVector,
-    Mpeg1Predictor, Mpeg1ReconstructedMv,
+    Mpeg1FrameMvContext, Mpeg1MotionDirection, Mpeg1MotionVector, Mpeg1Predictor,
+    Mpeg1ReconstructedMv, mpeg1_reconstruct,
 };
 
 /// Helper: build a bitstream containing two `motion_vector(s)`

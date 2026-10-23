@@ -20,8 +20,8 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_i_p_b, encode_i_p_chain, encode_i_then_p, encode_intra_picture,
-    FrameBuffer, IntraPictureParams,
+    FrameBuffer, IntraPictureParams, decode_video_sequence, encode_i_p_b, encode_i_p_chain,
+    encode_i_then_p, encode_intra_picture,
 };
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
@@ -172,13 +172,7 @@ fn i_p_p_p_chain_tracks_a_moving_feature() {
     let w = 64;
     let h = 32;
     let bar = |pos: usize| {
-        move |x: usize, _y: usize| -> u8 {
-            if x.abs_diff(pos) < 5 {
-                210
-            } else {
-                30
-            }
-        }
+        move |x: usize, _y: usize| -> u8 { if x.abs_diff(pos) < 5 { 210 } else { 30 } }
     };
     let anchor = frame_from(w, h, bar(8));
     let targets = [
@@ -221,13 +215,7 @@ fn i_p_b_stream_decodes_three_frames_in_display_order() {
     let h = 32;
     // A vertical bar that slides right over the three display frames.
     let bar = |pos: usize| {
-        move |x: usize, _y: usize| -> u8 {
-            if x.abs_diff(pos) < 4 {
-                220
-            } else {
-                40
-            }
-        }
+        move |x: usize, _y: usize| -> u8 { if x.abs_diff(pos) < 4 { 220 } else { 40 } }
     };
     let i_frame = frame_from(w, h, bar(8));
     let b_frame = frame_from(w, h, bar(16));
@@ -322,9 +310,9 @@ fn non_multiple_of_16_dimensions_inter_roundtrip() {
 
 #[test]
 fn gop_sequence_emits_headers_and_resets_temporal_reference() {
+    use oxideav_mpeg12video::PictureCodingType;
     use oxideav_mpeg12video::encode_display_order_gop_sequence;
     use oxideav_mpeg12video::gop_header::{Mpeg2Gop, TimeCode};
-    use oxideav_mpeg12video::PictureCodingType;
 
     // 8 display frames, 1 B between anchors, 2 anchor periods per GOP
     // → wait: 2 periods of (1+1) frames cover [0..=4] then [5..=7]

@@ -9,10 +9,10 @@
 
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::{
-    walk_slice, ChromaFormat, MotionVectorsKind, Mpeg2ColourComponent, PictureCodingType,
-    PictureStructure, QuantMatrixDriver, QuantMatrixExtension, QuantiserMatrixState, SliceContext,
-    SliceHeader, SliceWalkContext, DEFAULT_INTRA_WEIGHT, EXTENSION_START_CODE,
-    PAST_INTRA_ADDRESS_RESET, QUANT_MATRIX_EXTENSION_ID,
+    ChromaFormat, DEFAULT_INTRA_WEIGHT, EXTENSION_START_CODE, MotionVectorsKind,
+    Mpeg2ColourComponent, PAST_INTRA_ADDRESS_RESET, PictureCodingType, PictureStructure,
+    QUANT_MATRIX_EXTENSION_ID, QuantMatrixDriver, QuantMatrixExtension, QuantiserMatrixState,
+    SliceContext, SliceHeader, SliceWalkContext, walk_slice,
 };
 
 /// Slice-header builder for a non-scalable 352×240 picture

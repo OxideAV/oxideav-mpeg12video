@@ -24,9 +24,9 @@
 
 use oxideav_core::bits::{BitReader, BitWriter};
 use oxideav_mpeg12video::{
-    dequantize_intra_block, dequantize_non_intra_block, finalise_intra_macroblock,
-    CoefficientPosition, DctCoeff, DctCoeffStep, IntraBlockKind, IntraDcPredictors,
-    DEFAULT_INTRA_QUANT, DEFAULT_NON_INTRA_QUANT, INVERSE_SCAN,
+    CoefficientPosition, DEFAULT_INTRA_QUANT, DEFAULT_NON_INTRA_QUANT, DctCoeff, DctCoeffStep,
+    INVERSE_SCAN, IntraBlockKind, IntraDcPredictors, dequantize_intra_block,
+    dequantize_non_intra_block, finalise_intra_macroblock,
 };
 
 /// Walk the bitstream as a non-intra block per §2.4.3.7 and fill

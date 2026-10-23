@@ -11,8 +11,8 @@
 
 use oxideav_core::bits::{BitReader, BitWriter};
 use oxideav_mpeg12video::{
-    mpeg2_decode_macroblock_blocks, ChromaFormat, CodedBlockPattern, MacroblockType,
-    Mpeg2ColourComponent, Mpeg2DcPredictors, Mpeg2MacroblockBlockContext,
+    ChromaFormat, CodedBlockPattern, MacroblockType, Mpeg2ColourComponent, Mpeg2DcPredictors,
+    Mpeg2MacroblockBlockContext, mpeg2_decode_macroblock_blocks,
 };
 
 /// Table B-14 EOB = `10` (2 bits).

@@ -84,17 +84,17 @@
 use std::collections::VecDeque;
 
 use oxideav_core::{
-    parse_options, CodecId, CodecOptionsStruct, CodecParameters, Encoder, Error, Frame,
-    OptionField, OptionKind, OptionValue, Packet, PixelFormat, Result, TimeBase, VideoFrame,
+    CodecId, CodecOptionsStruct, CodecParameters, Encoder, Error, Frame, OptionField, OptionKind,
+    OptionValue, Packet, PixelFormat, Result, TimeBase, VideoFrame, parse_options,
 };
 
+use crate::Error as Mpeg12Error;
 use crate::encode_options::FrameEncodeOptions;
 use crate::frame_assembly::{FrameBuffer, IntraPictureParams};
 use crate::mpeg1_stream_writer::Mpeg1SequenceParams;
 use crate::quant_matrix_extension::QuantMatrixExtension;
 use crate::rate_control::CbrConfig;
 use crate::sequence_extension::ChromaFormat;
-use crate::Error as Mpeg12Error;
 
 /// Fold a crate-local [`Mpeg12Error`] into the framework
 /// [`oxideav_core::Error`] the [`Encoder`] contract speaks (same
@@ -384,7 +384,7 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
                     other => {
                         return Err(Error::invalid(format!(
                             "mpeg12video encoder: picture_structure '{other}'"
-                        )))
+                        )));
                     }
                 }
             }
@@ -404,7 +404,7 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
                     other => {
                         return Err(Error::invalid(format!(
                             "mpeg12video encoder: pulldown '{other}'"
-                        )))
+                        )));
                     }
                 }
             }
@@ -416,7 +416,7 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
                     other => {
                         return Err(Error::invalid(format!(
                             "mpeg12video encoder: rate_control '{other}'"
-                        )))
+                        )));
                     }
                 }
             }
@@ -427,7 +427,7 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
             other => {
                 return Err(Error::invalid(format!(
                     "mpeg12video encoder: unknown option '{other}'"
-                )))
+                )));
             }
         }
         Ok(())
@@ -521,7 +521,7 @@ impl EncoderConfig {
             Some(other) => {
                 return Err(invalid(format!(
                     "unsupported pixel format {other:?} (planar 4:2:0 / 4:2:2 / 4:4:4)"
-                )))
+                )));
             }
         };
 

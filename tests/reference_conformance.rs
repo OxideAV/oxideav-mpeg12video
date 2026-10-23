@@ -38,7 +38,7 @@ struct Fixture {
 }
 
 macro_rules! fixture {
-    ($name:literal, $w:expr, $h:expr, chroma420, $frames:expr) => {
+    ($name:literal, $w:expr_2021, $h:expr_2021, chroma420, $frames:expr_2021) => {
         Fixture {
             name: $name,
             stream: include_bytes!(concat!("fixtures/conformance/", $name)),
@@ -49,7 +49,7 @@ macro_rules! fixture {
             frames: $frames,
         }
     };
-    ($name:literal, $w:expr, $h:expr, chroma422, $frames:expr) => {
+    ($name:literal, $w:expr_2021, $h:expr_2021, chroma422, $frames:expr_2021) => {
         Fixture {
             name: $name,
             stream: include_bytes!(concat!("fixtures/conformance/", $name)),
@@ -211,7 +211,7 @@ fn display_order_matches_temporal_references() {
     // corpora (one per standard). The GOPs here open on an I-frame
     // with temporal_reference > 0 (leading B-frames), so the
     // anchor-pattern (types-aware) verifier is required.
-    use oxideav_mpeg12video::{verify_display_order_with_types, PictureCodingType};
+    use oxideav_mpeg12video::{PictureCodingType, verify_display_order_with_types};
     for (name, stream) in [
         (
             "mpeg1-ibbp",

@@ -40,12 +40,12 @@
 //! (the caller is expected to resolve any negative-offset cropping before
 //! calling — a documented limitation, not a §7.7.3 deviation).
 
-use crate::frame_assembly::{chroma_shift, FrameBuffer};
+use crate::frame_assembly::{FrameBuffer, chroma_shift};
 use crate::picture_spatial_scalable_extension::PictureSpatialScalableExtension;
 use crate::sequence_extension::ChromaFormat;
 use crate::sequence_scalable_extension::SpatialScalabilityParams;
 use crate::spatial_resampling::{
-    upsample_spatial_prediction, Plane as ResamplePlane, ResampleParams, UpsampleCase,
+    Plane as ResamplePlane, ResampleParams, UpsampleCase, upsample_spatial_prediction,
 };
 use crate::{Error, Result};
 

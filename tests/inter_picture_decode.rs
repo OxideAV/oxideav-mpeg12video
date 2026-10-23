@@ -17,7 +17,7 @@ use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::frame_assembly::{FrameBuffer, IntraPictureParams};
 use oxideav_mpeg12video::inter_reconstruction::ReferenceFrames;
 use oxideav_mpeg12video::{
-    decode_inter_picture, ChromaFormat, PictureCodingType, PicturePredictionParams,
+    ChromaFormat, PictureCodingType, PicturePredictionParams, decode_inter_picture,
 };
 
 /// Build a single-macroblock-wide (`mb_width = 1`) P/B picture geometry
@@ -93,8 +93,8 @@ fn p_picture_zero_mv_no_residual_copies_reference() {
     write_slice_header(&mut bw, 8);
     bw.write_u32(0b1, 1); // macroblock_address_increment = 1
     bw.write_u32(0b001, 3); // macroblock_type "MC, Not Coded"
-                            // frame_pred_frame_dct == true → no motion-type tail.
-                            // motion_vectors(0): Frame-based default (1 MV, f_code 1).
+    // frame_pred_frame_dct == true → no motion-type tail.
+    // motion_vectors(0): Frame-based default (1 MV, f_code 1).
     bw.write_u32(0b1, 1); // motion_code horiz = 0 (Table B-10 `1`)
     bw.write_u32(0b1, 1); // motion_code vert = 0
     let picture = append_stop(bw);
@@ -176,10 +176,10 @@ fn b_picture_bidirectional_averages_two_references() {
     write_slice_header(&mut bw, 8);
     bw.write_u32(0b1, 1); // increment = 1
     bw.write_u32(0b10, 2); // macroblock_type "Interp, Not Coded"
-                           // motion_vectors(0) forward: zero MV.
+    // motion_vectors(0) forward: zero MV.
     bw.write_u32(0b1, 1); // fwd motion_code horiz = 0
     bw.write_u32(0b1, 1); // fwd motion_code vert = 0
-                          // motion_vectors(1) backward: zero MV.
+    // motion_vectors(1) backward: zero MV.
     bw.write_u32(0b1, 1); // bwd motion_code horiz = 0
     bw.write_u32(0b1, 1); // bwd motion_code vert = 0
     let picture = append_stop(bw);
@@ -234,11 +234,11 @@ fn p_picture_field_based_zero_mv_copies_reference() {
     bw.write_u32(0b1, 1); // macroblock_address_increment = 1
     bw.write_u32(0b001, 3); // "MC, Not Coded"
     bw.write_u32(0b01, 2); // frame_motion_type = Field-based (2 vectors)
-                           // Vector 0 (top field): vfs=0 + horiz=0 (`1`) + vert=0 (`1`).
+    // Vector 0 (top field): vfs=0 + horiz=0 (`1`) + vert=0 (`1`).
     bw.write_u32(0b0, 1); // motion_vertical_field_select[0] = 0 (top)
     bw.write_u32(0b1, 1); // motion_code horiz = 0
     bw.write_u32(0b1, 1); // motion_code vert = 0
-                          // Vector 1 (bottom field): vfs=1 + horiz=0 + vert=0.
+    // Vector 1 (bottom field): vfs=1 + horiz=0 + vert=0.
     bw.write_u32(0b1, 1); // motion_vertical_field_select[1] = 1 (bottom)
     bw.write_u32(0b1, 1); // motion_code horiz = 0
     bw.write_u32(0b1, 1); // motion_code vert = 0
@@ -299,11 +299,11 @@ fn p_picture_field_based_top_field_vector_shifts_only_even_lines() {
     bw.write_u32(0b1, 1); // increment = 1
     bw.write_u32(0b001, 3); // "MC, Not Coded"
     bw.write_u32(0b01, 2); // frame_motion_type = Field-based
-                           // Vector 0 (top field): vfs=0, horiz=0 (`1`), vert=+1 (`010`).
+    // Vector 0 (top field): vfs=0, horiz=0 (`1`), vert=+1 (`010`).
     bw.write_u32(0b0, 1); // vfs[0] = top
     bw.write_u32(0b1, 1); // horiz motion_code = 0
     bw.write_u32(0b010, 3); // vert motion_code = +1
-                            // Vector 1 (bottom field): vfs=1, horiz=0, vert=0.
+    // Vector 1 (bottom field): vfs=1, horiz=0, vert=0.
     bw.write_u32(0b1, 1); // vfs[1] = bottom
     bw.write_u32(0b1, 1); // horiz = 0
     bw.write_u32(0b1, 1); // vert = 0
@@ -381,7 +381,7 @@ fn p_picture_skipped_macroblock_copies_reference() {
     bw.write_u32(0b001, 3); // "MC, Not Coded"
     bw.write_u32(0b1, 1); // motion_code horiz = 0
     bw.write_u32(0b1, 1); // motion_code vert = 0
-                          // Next coded MB: increment = 2 (Table B-1 `011`) → skip address 1.
+    // Next coded MB: increment = 2 (Table B-1 `011`) → skip address 1.
     bw.write_u32(0b011, 3); // increment = 2
     bw.write_u32(0b001, 3); // "MC, Not Coded"
     bw.write_u32(0b1, 1); // motion_code horiz = 0

@@ -58,22 +58,22 @@
 //! Spec citations refer to **ISO/IEC 13818-2 (H.262)** §6.2.4 / §7.6
 //! and **ISO/IEC 11172-2** §2.4.
 
-use crate::dual_prime::{derive_all, DualPrimePicture, FieldParity};
-use crate::frame_assembly::{place_intra_macroblock, FrameBuffer, IntraPictureParams};
+use crate::Result;
+use crate::dual_prime::{DualPrimePicture, FieldParity, derive_all};
+use crate::frame_assembly::{FrameBuffer, IntraPictureParams, place_intra_macroblock};
 use crate::inter_reconstruction::{
-    reconstruct_field_based_macroblock, reconstruct_field_picture_16x8_macroblock,
+    FieldBasedMotion, FieldPicture16x8Motion, FieldPictureDualPrimeMotion, FieldPictureMotion,
+    FieldVector, FrameDualPrimeMotion, FrameMotion, InterError, MotionVectorPel, ReferenceFrames,
+    ResidualBlock, reconstruct_field_based_macroblock, reconstruct_field_picture_16x8_macroblock,
     reconstruct_field_picture_dual_prime_macroblock, reconstruct_field_picture_macroblock,
-    reconstruct_frame_dual_prime_macroblock, reconstruct_inter_macroblock, FieldBasedMotion,
-    FieldPicture16x8Motion, FieldPictureDualPrimeMotion, FieldPictureMotion, FieldVector,
-    FrameDualPrimeMotion, FrameMotion, InterError, MotionVectorPel, ReferenceFrames, ResidualBlock,
+    reconstruct_frame_dual_prime_macroblock, reconstruct_inter_macroblock,
 };
 use crate::macroblock_modes::PredictionType;
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::slice_macroblock_walk::{
-    reconstruct_slice_motion_vectors, walk_slice_at, MacroblockRecord, ReconstructedMotionVectors,
-    SliceWalkContext,
+    MacroblockRecord, ReconstructedMotionVectors, SliceWalkContext,
+    reconstruct_slice_motion_vectors, walk_slice_at,
 };
-use crate::Result;
 
 /// The per-picture parameters the P/B reconstruction driver needs: the
 /// geometry + per-block DCT context (shared with the intra driver via

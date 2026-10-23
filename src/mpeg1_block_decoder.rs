@@ -31,7 +31,7 @@
 use crate::block_dc::{DcCoefficient, DcComponent, SCAN};
 use crate::dct_coeff::{CoefficientPosition, DctCoeff, DctCoeffStep};
 use crate::dequantize::{
-    dequantize_intra_block, dequantize_non_intra_block, IntraBlockKind, IntraDcPredictors,
+    IntraBlockKind, IntraDcPredictors, dequantize_intra_block, dequantize_non_intra_block,
 };
 use crate::idct::idct_8x8_from_i32;
 use crate::mpeg2_block_decoder::DecodedBlock;
@@ -51,7 +51,7 @@ pub fn intra_block_kind(block_index: u8) -> Result<IntraBlockKind> {
         _ => {
             return Err(Error::InvalidBitstream(
                 "mpeg1 intra block index out of the 4:2:0 range 0..=5 (§2.4.3.7)",
-            ))
+            ));
         }
     })
 }
@@ -215,7 +215,7 @@ pub fn decode_non_intra_block(
         DctCoeff::EndOfBlock => {
             return Err(Error::InvalidBitstream(
                 "dct_coeff_first cannot be end_of_block (§2.4.3.7)",
-            ))
+            ));
         }
         DctCoeff::RunLevel {
             run, signed_level, ..

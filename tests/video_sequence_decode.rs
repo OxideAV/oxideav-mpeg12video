@@ -19,7 +19,7 @@ use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::picture_header::PICTURE_START_CODE;
 use oxideav_mpeg12video::sequence_extension::EXTENSION_START_CODE;
 use oxideav_mpeg12video::sequence_header::SEQUENCE_HEADER_CODE;
-use oxideav_mpeg12video::{decode_video_sequence, PictureCodingType};
+use oxideav_mpeg12video::{PictureCodingType, decode_video_sequence};
 
 /// A real 352×240 4:2:0 MPEG-2 elementary stream from an opaque
 /// black-box encoder (its source is not read). Its single coded picture
@@ -58,9 +58,9 @@ fn write_sequence_extension_chroma(bw: &mut BitWriter, chroma_code: u32) {
     bw.write_u32(EXTENSION_START_CODE, 32);
     bw.write_u32(0b0001, 4); // Sequence Extension ID
     bw.write_u32(0x48, 8); // profile_and_level (Main@Main, any byte legal)
-                           // progressive_sequence = 1: these hand-built pictures code the
-                           // progressive Ceil(h/16) macroblock grid (§6.3.3) — an interlaced
-                           // declaration would make the coded frame grid 2*Ceil(h/32) rows.
+    // progressive_sequence = 1: these hand-built pictures code the
+    // progressive Ceil(h/16) macroblock grid (§6.3.3) — an interlaced
+    // declaration would make the coded frame grid 2*Ceil(h/32) rows.
     bw.write_bit(true); // progressive_sequence
     bw.write_u32(chroma_code, 2); // chroma_format
     bw.write_u32(0, 2); // horizontal_size_extension
@@ -91,7 +91,7 @@ fn write_picture_header(
     };
     bw.write_u32(ct_code, 3);
     bw.write_u32(0xFFFF, 16); // vbv_delay
-                              // full_pel_forward_vector + forward_f_code (P/B), backward (B).
+    // full_pel_forward_vector + forward_f_code (P/B), backward (B).
     if matches!(
         coding_type,
         PictureCodingType::Predictive | PictureCodingType::Bidirectional
@@ -147,7 +147,7 @@ fn write_slice_header(bw: &mut BitWriter, q_scale: u8) {
 fn write_intra_macroblock(bw: &mut BitWriter) {
     bw.write_bit(true); // macroblock_address_increment = 1
     bw.write_bit(true); // macroblock_type "Intra" (Table B-2 `1`)
-                        // 4 luma blocks: dct_dc_size_luminance = 0 → `100` (3 bits) + EOB.
+    // 4 luma blocks: dct_dc_size_luminance = 0 → `100` (3 bits) + EOB.
     for _ in 0..4 {
         bw.write_u32(0b100, 3);
         bw.write_u32(EOB, 2);

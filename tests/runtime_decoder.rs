@@ -14,8 +14,8 @@ use oxideav_core::{
     CodecId, CodecParameters, Decoder, Error, Frame, Packet, RuntimeContext, TimeBase,
 };
 use oxideav_mpeg12video::{
-    decode_video_sequence, make_decoder, FrameBuffer, Mpeg12Decoder, MPEG1_CODEC_ID_STR,
-    MPEG2_CODEC_ID_STR,
+    FrameBuffer, MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR, Mpeg12Decoder, decode_video_sequence,
+    make_decoder,
 };
 
 /// A real 352×240 4:2:0 MPEG-2 elementary stream from an opaque

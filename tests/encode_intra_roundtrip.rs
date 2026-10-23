@@ -21,7 +21,7 @@
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_intra_picture, FrameBuffer, IntraPictureParams,
+    FrameBuffer, IntraPictureParams, decode_video_sequence, encode_intra_picture,
 };
 
 fn params(width: usize, height: usize) -> IntraPictureParams {

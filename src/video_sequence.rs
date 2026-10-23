@@ -87,20 +87,20 @@
 //! requires the MPEG-2 extensions for the geometry and f_codes.
 
 use crate::frame_assembly::{
-    assemble_frame_from_fields, decode_intra_picture_with_context, FrameBuffer, IntraDecodeContext,
-    IntraPictureParams,
+    FrameBuffer, IntraDecodeContext, IntraPictureParams, assemble_frame_from_fields,
+    decode_intra_picture_with_context,
 };
 use crate::inter_reconstruction::ReferenceFrames;
 use crate::mpeg1_picture::{
-    decode_mpeg1_d_picture, decode_mpeg1_inter_picture, decode_mpeg1_intra_picture,
-    Mpeg1InterParams, Mpeg1PictureParams,
+    Mpeg1InterParams, Mpeg1PictureParams, decode_mpeg1_d_picture, decode_mpeg1_inter_picture,
+    decode_mpeg1_intra_picture,
 };
 use crate::picture_header::{
-    Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
-    PICTURE_START_CODE,
+    Mpeg2PictureHeader, PICTURE_START_CODE, PictureCodingExtension, PictureCodingType,
+    PictureStructure,
 };
 use crate::picture_reconstruction::{
-    decode_field_picture_with_matrices, decode_inter_picture_with_matrices, PicturePredictionParams,
+    PicturePredictionParams, decode_field_picture_with_matrices, decode_inter_picture_with_matrices,
 };
 use crate::quant_matrix_extension::{QuantMatrixExtension, QuantiserMatrixState};
 use crate::sequence_extension::Mpeg2Sequence;
@@ -142,11 +142,7 @@ impl DecodedFrame {
     /// frame in an interlaced sequence (§6.3.10): 3 when
     /// `repeat_first_field` is set, else 2.
     pub fn output_field_count(&self) -> u32 {
-        if self.repeat_first_field {
-            3
-        } else {
-            2
-        }
+        if self.repeat_first_field { 3 } else { 2 }
     }
 
     /// The number of **frames** the display process outputs for this
@@ -469,12 +465,12 @@ pub fn display_indices_from_coded_pictures(pictures: &[(u16, PictureCodingType)]
             PictureCodingType::Intra | PictureCodingType::Predictive
         );
         if is_anchor {
-            if let Some(prev) = prev_anchor_tr {
-                if tr <= prev {
-                    // §6.3.9 GOP reset: advance the base past the
-                    // previous GOP's highest display index.
-                    gop_base = gop_max.map_or(0, |m| m + 1);
-                }
+            if let Some(prev) = prev_anchor_tr
+                && tr <= prev
+            {
+                // §6.3.9 GOP reset: advance the base past the
+                // previous GOP's highest display index.
+                gop_base = gop_max.map_or(0, |m| m + 1);
             }
             prev_anchor_tr = Some(tr);
         }
@@ -580,12 +576,12 @@ fn verify_display_order_against_indices(
                 "verify_display_order: display frame has no matching coded frame (not a permutation)",
             ));
         };
-        if let Some(p) = prev {
-            if idx <= p {
-                return Err(Error::InvalidBitstream(
-                    "verify_display_order: display order not strictly increasing in display index (§6.1.1.11)",
-                ));
-            }
+        if let Some(p) = prev
+            && idx <= p
+        {
+            return Err(Error::InvalidBitstream(
+                "verify_display_order: display order not strictly increasing in display index (§6.1.1.11)",
+            ));
         }
         prev = Some(idx);
         available.swap_remove(pos);
@@ -854,7 +850,7 @@ fn reconstruct_picture(
         PictureCodingType::DcIntra => {
             return Err(Error::InvalidBitstream(
                 "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
-            ))
+            ));
         }
         PictureCodingType::Predictive => {
             // §7.6: a P-frame predicts from the latest decoded I/P anchor.
@@ -1110,7 +1106,7 @@ fn reconstruct_field_pair(
         PictureCodingType::DcIntra => {
             return Err(Error::InvalidBitstream(
                 "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
-            ))
+            ));
         }
         PictureCodingType::Intra => {
             // An I **field** picture must be walked with the field

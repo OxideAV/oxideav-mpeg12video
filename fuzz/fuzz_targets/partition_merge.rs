@@ -9,8 +9,8 @@
 use libfuzzer_sys::fuzz_target;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    encode_display_order_gop_sequence, merge_data_partitions, split_data_partitions, FrameBuffer,
-    IntraPictureParams,
+    FrameBuffer, IntraPictureParams, encode_display_order_gop_sequence, merge_data_partitions,
+    split_data_partitions,
 };
 use std::sync::OnceLock;
 
@@ -67,7 +67,11 @@ fuzz_target!(|data: &[u8]| {
     // 2. A valid pair with one partition corrupted by the attacker.
     let pairs = partitions();
     let (p0, p1) = &pairs[usize::from(data[0]) % pairs.len()];
-    let mut corrupt = if data[0] & 1 == 0 { p0.clone() } else { p1.clone() };
+    let mut corrupt = if data[0] & 1 == 0 {
+        p0.clone()
+    } else {
+        p1.clone()
+    };
     let len = corrupt.len();
     for (i, &b) in data.iter().enumerate().skip(1) {
         if let Some(slot) = corrupt.get_mut((i * 7 + usize::from(b)) % len) {

@@ -16,7 +16,7 @@
 //! (VBR sentinel), and a zero terminating `extra_bit_picture`.
 
 use oxideav_mpeg12video::{
-    Mpeg2PictureHeader, PictureCodingType, PictureStructure, PICTURE_START_CODE,
+    Mpeg2PictureHeader, PICTURE_START_CODE, PictureCodingType, PictureStructure,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");

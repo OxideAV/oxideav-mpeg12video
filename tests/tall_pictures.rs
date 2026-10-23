@@ -9,9 +9,9 @@
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::slice_header::{SliceContext, SliceHeader};
 use oxideav_mpeg12video::{
-    decode_data_partitioned, decode_video_sequence, encode_display_order_gop_sequence,
-    encode_field_display_order_gop_sequence, merge_data_partitions, split_data_partitions,
-    FrameBuffer, IntraPictureParams,
+    FrameBuffer, IntraPictureParams, decode_data_partitioned, decode_video_sequence,
+    encode_display_order_gop_sequence, encode_field_display_order_gop_sequence,
+    merge_data_partitions, split_data_partitions,
 };
 
 const W: usize = 16;

@@ -15,8 +15,8 @@
 use oxideav_core::bits::{BitReader, BitWriter};
 
 use oxideav_mpeg12video::{
-    mpeg2_dc_pred_reset_value, mpeg2_decode_dc_block, mpeg2_qfs_zero_max, Mpeg2ColourComponent,
-    Mpeg2DcPredictors, MPEG2_MAX_DC_SIZE,
+    MPEG2_MAX_DC_SIZE, Mpeg2ColourComponent, Mpeg2DcPredictors, mpeg2_dc_pred_reset_value,
+    mpeg2_decode_dc_block, mpeg2_qfs_zero_max,
 };
 
 /// Hand-table of (precision, reset, max). Pulled from Table 7-2 +

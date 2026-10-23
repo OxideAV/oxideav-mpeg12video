@@ -133,7 +133,7 @@ pub fn nominal_pictures_per_second(picture_rate_code: u8) -> Result<u8> {
         _ => {
             return Err(Error::InvalidBitstream(
                 "picture_rate: only codes 1..=8 are defined (Table 6-4 / §2.4.3.2)",
-            ))
+            ));
         }
     })
 }

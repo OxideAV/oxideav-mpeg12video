@@ -14,7 +14,7 @@
 //! on top of it.
 
 use oxideav_mpeg12video::{
-    ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension, EXTENSION_START_CODE, SEQUENCE_HEADER_CODE,
+    ChromaFormat, EXTENSION_START_CODE, Mpeg2Sequence, Mpeg2SequenceExtension, SEQUENCE_HEADER_CODE,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");

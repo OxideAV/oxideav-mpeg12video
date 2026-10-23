@@ -10,12 +10,12 @@ use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::picture_header::PictureStructure;
 use oxideav_mpeg12video::picture_reconstruction::PicturePredictionParams;
 use oxideav_mpeg12video::sequence_extension::{ChromaFormat, Mpeg2Sequence};
-use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
+use oxideav_mpeg12video::vbv::{VbvStandard, verify_cbr_stream};
 use oxideav_mpeg12video::{
-    decode_field_picture, decode_video_sequence, encode_field_adaptive_display_order_gop_sequence,
+    CbrConfig, FrameBuffer, IntraPictureParams, PictureCodingType, decode_field_picture,
+    decode_video_sequence, encode_field_adaptive_display_order_gop_sequence,
     encode_field_b_picture, encode_field_cbr_gop_sequence, encode_field_display_order_gop_sequence,
-    encode_field_intra_picture, encode_field_p_picture, CbrConfig, FrameBuffer, IntraPictureParams,
-    PictureCodingType,
+    encode_field_intra_picture, encode_field_p_picture,
 };
 
 use oxideav_mpeg12video::inter_reconstruction::ReferenceFrames;

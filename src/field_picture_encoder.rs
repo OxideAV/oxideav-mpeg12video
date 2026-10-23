@@ -64,34 +64,34 @@
 
 use oxideav_core::bits::BitWriter;
 
-use crate::b_picture_encoder::{write_b_macroblock_type, BDirection};
+use crate::b_picture_encoder::{BDirection, write_b_macroblock_type};
 use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::dual_prime::FieldParity;
-use crate::forming_predictions::{predict_field_block, BlockSize, FieldReference, ReferencePlane};
-use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
+use crate::forming_predictions::{BlockSize, FieldReference, ReferencePlane, predict_field_block};
+use crate::frame_assembly::{FrameBuffer, IntraPictureParams, block_placement};
 use crate::frame_field_encoder::PmvMirror;
-use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
+use crate::gop_header::{Mpeg2Gop, TimeCode, write_gop_header};
 use crate::inter_reconstruction::{
-    chroma_mb_extent, predict_field_picture_macroblock_planes, FieldPictureDualPrimeMotion,
-    FieldPictureMotion, MotionVectorPel, ReferenceFrames,
+    FieldPictureDualPrimeMotion, FieldPictureMotion, MotionVectorPel, ReferenceFrames,
+    chroma_mb_extent, predict_field_picture_macroblock_planes,
 };
 use crate::motion_estimation::max_search_range;
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::ColourComponent;
-use crate::mpeg2_dequantize::{intra_dc_mult, quantiser_scale, DEFAULT_NON_INTRA_WEIGHT};
+use crate::mpeg2_dequantize::{DEFAULT_NON_INTRA_WEIGHT, intra_dc_mult, quantiser_scale};
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::p_picture_encoder::{
-    encode_intra_mb, gather_residual, intra_activity, nonintra_block_has_cbp_slot,
-    quantise_inter_block, reconstruct_inter_mb, wrap_delta, write_inter_block_coeffs, InterBlock,
-    IntraDcPred,
+    InterBlock, IntraDcPred, encode_intra_mb, gather_residual, intra_activity,
+    nonintra_block_has_cbp_slot, quantise_inter_block, reconstruct_inter_mb, wrap_delta,
+    write_inter_block_coeffs,
 };
 use crate::picture_header::{PictureCodingType, PictureStructure};
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::sequence_extension::ChromaFormat;
 use crate::stream_writer::{
+    PictureCodingExtensionParams, SEQUENCE_END_CODE, SequenceHeaderParams,
     write_field_picture_coding_extension, write_picture_header, write_sequence_extension,
-    write_sequence_header, write_slice_header_in, PictureCodingExtensionParams,
-    SequenceHeaderParams, SEQUENCE_END_CODE,
+    write_sequence_header, write_slice_header_in,
 };
 use crate::video_sequence::{extract_field, reference_frame_for_second_p_field};
 use crate::{Error, Result};
@@ -860,7 +860,7 @@ pub fn encode_field_display_order_gop_sequence(
              progressive_sequence = 0 (§6.3.5)",
         ));
     }
-    if frame_params.height % 32 != 0 {
+    if !frame_params.height.is_multiple_of(32) {
         return Err(Error::InvalidBitstream(
             "encode_field_display_order_gop_sequence: frame height must be a multiple of 32 \
              (each field's §6.3.3 macroblock grid must be exact)",
@@ -985,7 +985,7 @@ pub fn encode_field_display_order_gop_sequence(
             PictureCodingType::DcIntra => {
                 return Err(Error::InvalidBitstream(
                     "D pictures do not exist in ISO/IEC 13818-2 (Table 6-12)",
-                ))
+                ));
             }
         };
         crate::frame_assembly::assemble_frame_from_fields(&top_recon, &bottom_recon)
@@ -1213,15 +1213,15 @@ pub fn estimate_field_region_mv(
                 consider(int_hx + ox, int_hy + oy, &mut p_best);
             }
         }
-        if let Some((hx, hy, sad, score)) = p_best {
-            if score < best_score {
-                best_score = score;
-                best = Some(FieldSearchResult {
-                    vector: MotionVectorPel::new(hx, hy),
-                    parity,
-                    sad,
-                });
-            }
+        if let Some((hx, hy, sad, score)) = p_best
+            && score < best_score
+        {
+            best_score = score;
+            best = Some(FieldSearchResult {
+                vector: MotionVectorPel::new(hx, hy),
+                parity,
+                sad,
+            });
         }
     }
     best.expect("the (0,0) same-parity candidate is always legal")
@@ -1361,7 +1361,7 @@ pub fn encode_field_p_picture_adaptive(
         PictureStructure::Frame => {
             return Err(Error::InvalidBitstream(
                 "encode_field_p_picture_adaptive: field structures only",
-            ))
+            ));
         }
     };
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
@@ -1505,11 +1505,11 @@ pub fn encode_field_p_picture_adaptive(
                             }
                         }
                     }
-                    if let Some((sad, dmv, motion)) = dp_best {
-                        if sad.saturating_add(DUAL_PRIME_BIAS) < best_score {
-                            best_sad = sad;
-                            best_mode = FieldPMode::DualPrime(base_mv, dmv, motion);
-                        }
+                    if let Some((sad, dmv, motion)) = dp_best
+                        && sad.saturating_add(DUAL_PRIME_BIAS) < best_score
+                    {
+                        best_sad = sad;
+                        best_mode = FieldPMode::DualPrime(base_mv, dmv, motion);
                     }
                 }
             }
@@ -2046,7 +2046,7 @@ pub fn encode_field_adaptive_display_order_gop_sequence(
              progressive_sequence = 0 (§6.3.5)",
         ));
     }
-    if frame_params.height % 32 != 0 {
+    if !frame_params.height.is_multiple_of(32) {
         return Err(Error::InvalidBitstream(
             "encode_field_adaptive_display_order_gop_sequence: frame height must be a \
              multiple of 32 (each field's §6.3.3 macroblock grid must be exact)",
@@ -2175,7 +2175,7 @@ pub fn encode_field_adaptive_display_order_gop_sequence(
             PictureCodingType::DcIntra => {
                 return Err(Error::InvalidBitstream(
                     "D pictures do not exist in ISO/IEC 13818-2 (Table 6-12)",
-                ))
+                ));
             }
         };
         crate::frame_assembly::assemble_frame_from_fields(&top_recon, &bottom_recon)

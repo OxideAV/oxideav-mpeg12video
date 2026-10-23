@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 use libfuzzer_sys::fuzz_target;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_temporal_scalable_sequence, encode_display_order_gop_sequence,
-    encode_temporal_enhancement_layer, FrameBuffer, IntraPictureParams, TemporalLayerConfig,
+    FrameBuffer, IntraPictureParams, TemporalLayerConfig, decode_temporal_scalable_sequence,
+    encode_display_order_gop_sequence, encode_temporal_enhancement_layer,
 };
 
 fn frame_at(t: usize) -> FrameBuffer {

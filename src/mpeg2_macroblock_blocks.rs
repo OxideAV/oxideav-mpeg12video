@@ -75,11 +75,11 @@ use crate::coded_block_pattern::CodedBlockPattern;
 use crate::macroblock_type::MacroblockType;
 use crate::mpeg2_block_dc::{ColourComponent, DcPredictors};
 use crate::mpeg2_block_decoder::{
-    decode_block as decode_block_inner, BlockContext, DecodedBlock as InnerDecodedBlock,
+    BlockContext, DecodedBlock as InnerDecodedBlock, decode_block as decode_block_inner,
 };
 use crate::mpeg2_dequantize::{
-    select_weighting_matrix_index, BlockCoding, Component as DequantComponent,
-    DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT,
+    BlockCoding, Component as DequantComponent, DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT,
+    select_weighting_matrix_index,
 };
 use crate::sequence_extension::ChromaFormat;
 use crate::{Error, Result};
@@ -128,7 +128,7 @@ pub fn block_component(i: usize, chroma: ChromaFormat) -> Option<ColourComponent
     // Figures 6-10 / 6-11 / 6-12: the chroma block numbering
     // alternates Cb (even index) / Cr (odd index) in every chroma
     // format.
-    if i % 2 == 0 {
+    if i.is_multiple_of(2) {
         Some(ColourComponent::Cb)
     } else {
         Some(ColourComponent::Cr)

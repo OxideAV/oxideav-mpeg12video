@@ -207,11 +207,7 @@ pub struct PictureDisplayContext {
 pub fn number_of_frame_centre_offsets(ctx: PictureDisplayContext) -> u8 {
     if ctx.progressive_sequence {
         if ctx.repeat_first_field {
-            if ctx.top_field_first {
-                3
-            } else {
-                2
-            }
+            if ctx.top_field_first { 3 } else { 2 }
         } else {
             1
         }

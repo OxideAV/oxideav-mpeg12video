@@ -10,9 +10,9 @@ use oxideav_mpeg12video::picture_temporal_scalable_extension::PictureTemporalSca
 use oxideav_mpeg12video::sequence_extension::{ChromaFormat, Mpeg2Sequence};
 use oxideav_mpeg12video::sequence_scalable_extension::{ScalableMode, SequenceScalableExtension};
 use oxideav_mpeg12video::{
+    DecodedFrame, FrameBuffer, IntraPictureParams, PictureCodingType, TemporalLayerConfig,
     decode_temporal_scalable_sequence, decode_video_sequence, encode_display_order_gop_sequence,
-    encode_temporal_enhancement_layer, DecodedFrame, FrameBuffer, IntraPictureParams,
-    PictureCodingType, TemporalLayerConfig,
+    encode_temporal_enhancement_layer,
 };
 
 fn params(width: usize, height: usize, progressive: bool) -> IntraPictureParams {
@@ -37,7 +37,11 @@ fn frame_at_half(width: usize, height: usize, t2: usize) -> FrameBuffer {
         for x in 0..width {
             let sx = x + t2;
             let g = 24 + ((sx * 3 + y * 5) % 192);
-            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            let c = if (sx / 4 + y / 4).is_multiple_of(2) {
+                16
+            } else {
+                0
+            };
             f.y.put_sample(x, y, (g + c).min(235) as u8);
         }
     }
@@ -150,10 +154,12 @@ fn doubling_the_frame_rate_roundtrips_exactly_and_remultiplexes() {
         &decoded.lower,
         &decode_video_sequence(&base).unwrap(),
     );
-    assert!(decoded
-        .enhancement
-        .iter()
-        .all(|d| d.picture_coding_type == PictureCodingType::Bidirectional));
+    assert!(
+        decoded
+            .enhancement
+            .iter()
+            .all(|d| d.picture_coding_type == PictureCodingType::Bidirectional)
+    );
 
     // The remultiplex interleaves L E L E L E L E L (identity, not
     // coding type: the lower layer is itself I B P B P).

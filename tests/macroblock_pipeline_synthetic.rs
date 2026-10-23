@@ -12,9 +12,9 @@
 //! §6.3.17.4 (`pattern_code[12]`).
 
 use oxideav_mpeg12video::{
-    blocks_per_macroblock, pipeline_decode_block, pipeline_decode_macroblock, predict_block,
     BlockInputs, BlockSize, BoundaryMode, ChromaFormat, CodedBlockPattern, MacroblockKind,
-    MacroblockType, PipelineError, PredictionDirection, ReferencePlane,
+    MacroblockType, PipelineError, PredictionDirection, ReferencePlane, blocks_per_macroblock,
+    pipeline_decode_block, pipeline_decode_macroblock, predict_block,
 };
 
 fn mt_intra() -> MacroblockType {

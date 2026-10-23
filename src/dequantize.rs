@@ -236,11 +236,7 @@ fn saturate_dct_recon(v: i32) -> i32 {
 /// match it line-by-line against the spec.
 #[inline]
 fn apply_mismatch_prevention(v: i32) -> i32 {
-    if (v & 1) == 0 {
-        v - sign(v)
-    } else {
-        v
-    }
+    if (v & 1) == 0 { v - sign(v) } else { v }
 }
 
 // =============================================================

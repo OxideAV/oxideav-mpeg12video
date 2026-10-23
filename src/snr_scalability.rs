@@ -62,18 +62,18 @@
 
 use oxideav_core::bits::{BitReader, BitWriter};
 
-use crate::coded_block_pattern::{encode_coded_block_pattern, CodedBlockPattern};
+use crate::coded_block_pattern::{CodedBlockPattern, encode_coded_block_pattern};
 use crate::forward_dct::fdct_8x8;
 use crate::forward_quant::forward_quantise_block;
-use crate::frame_assembly::{block_placement, BlockPlacement, FrameBuffer, IntraPictureParams};
+use crate::frame_assembly::{BlockPlacement, FrameBuffer, IntraPictureParams, block_placement};
 use crate::idct::idct_8x8_from_i32;
 use crate::inter_reconstruction::ReferenceFrames;
 use crate::macroblock_type::{MacroblockType, MacroblockTypeTable};
 use crate::mb_address_increment::{MbAddressIncrement, MbAddressIncrementContext};
 use crate::mpeg2_block_dc::{ColourComponent, DcPredictors};
-use crate::mpeg2_block_decoder::{decode_block, BlockContext};
+use crate::mpeg2_block_decoder::{BlockContext, decode_block};
 use crate::mpeg2_dequantize::{
-    intra_dc_mult, inverse_quantise_arithmetic, quantiser_scale, saturate_and_mismatch, BlockCoding,
+    BlockCoding, intra_dc_mult, inverse_quantise_arithmetic, quantiser_scale, saturate_and_mismatch,
 };
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
 use crate::p_picture_encoder::{nonintra_block_has_cbp_slot, write_inter_block_coeffs};
@@ -81,25 +81,26 @@ use crate::picture_header::{
     Mpeg2PictureHeader, PictureCodingExtension, PictureCodingType, PictureStructure,
 };
 use crate::picture_reconstruction::{
-    reconstruct_one_macroblock, reconstruct_skipped_macroblock, InterDirection,
-    PicturePredictionParams,
+    InterDirection, PicturePredictionParams, reconstruct_one_macroblock,
+    reconstruct_skipped_macroblock,
 };
 use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::sequence_extension::{ChromaFormat, Mpeg2Sequence, Mpeg2SequenceExtension};
 use crate::sequence_scalable_extension::{
-    write_sequence_scalable_extension, ScalableMode, SequenceScalableExtension,
-    SEQUENCE_SCALABLE_EXTENSION_ID,
+    SEQUENCE_SCALABLE_EXTENSION_ID, ScalableMode, SequenceScalableExtension,
+    write_sequence_scalable_extension,
 };
 use crate::slice_header::{SliceContext, SliceHeader};
 use crate::slice_macroblock_walk::{
-    reconstruct_slice_motion_vectors, walk_slice_at, SliceWalkContext,
+    SliceWalkContext, reconstruct_slice_motion_vectors, walk_slice_at,
 };
 use crate::stream_writer::{
+    PictureCodingExtensionParams, SEQUENCE_END_CODE, SequenceHeaderParams,
     write_picture_coding_extension, write_picture_header, write_sequence_header,
-    write_slice_header_in, PictureCodingExtensionParams, SequenceHeaderParams, SEQUENCE_END_CODE,
+    write_slice_header_in,
 };
 use crate::video_sequence::{
-    apply_quant_matrix_extensions, display_indices_from_coded_pictures, DecodedFrame,
+    DecodedFrame, apply_quant_matrix_extensions, display_indices_from_coded_pictures,
 };
 use crate::{Error, Result};
 
@@ -469,29 +470,30 @@ fn run_combined_loop(base: &[u8], layer: &mut dyn SnrLayer) -> Result<Vec<Decode
             geometry,
         })?;
 
-        let references =
-            match header.picture_coding_type {
-                PictureCodingType::Intra => ReferenceFrames {
-                    forward: None,
-                    backward: None,
-                },
-                PictureCodingType::Predictive => ReferenceFrames::forward_only(
-                    backward_anchor.as_ref().ok_or(Error::InvalidBitstream(
-                        "§6.1.1.11: P-picture before any I/P anchor exists",
-                    ))?,
-                ),
-                PictureCodingType::Bidirectional => ReferenceFrames::bidirectional(
-                    forward_anchor.as_ref().ok_or(Error::InvalidBitstream(
-                        "§6.1.1.11: B-picture before two I/P anchors exist",
-                    ))?,
-                    backward_anchor.as_ref().ok_or(Error::InvalidBitstream(
-                        "§6.1.1.11: B-picture before two I/P anchors exist",
-                    ))?,
-                ),
-                PictureCodingType::DcIntra => return Err(Error::InvalidBitstream(
+        let references = match header.picture_coding_type {
+            PictureCodingType::Intra => ReferenceFrames {
+                forward: None,
+                backward: None,
+            },
+            PictureCodingType::Predictive => {
+                ReferenceFrames::forward_only(backward_anchor.as_ref().ok_or(
+                    Error::InvalidBitstream("§6.1.1.11: P-picture before any I/P anchor exists"),
+                )?)
+            }
+            PictureCodingType::Bidirectional => ReferenceFrames::bidirectional(
+                forward_anchor.as_ref().ok_or(Error::InvalidBitstream(
+                    "§6.1.1.11: B-picture before two I/P anchors exist",
+                ))?,
+                backward_anchor.as_ref().ok_or(Error::InvalidBitstream(
+                    "§6.1.1.11: B-picture before two I/P anchors exist",
+                ))?,
+            ),
+            PictureCodingType::DcIntra => {
+                return Err(Error::InvalidBitstream(
                     "picture_coding_type: 100 (D-picture) shall not be used in MPEG-2 (Table 6-12)",
-                )),
-            };
+                ));
+            }
+        };
 
         let frame = reconstruct_refined_picture(
             region, &header, &ext, geometry, references, &matrices, layer,

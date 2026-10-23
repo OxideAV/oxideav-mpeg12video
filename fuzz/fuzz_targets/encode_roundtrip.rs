@@ -15,9 +15,9 @@ use libfuzzer_sys::fuzz_target;
 use oxideav_mpeg12video::quant_matrix_extension::QuantMatrixExtension;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_display_order_gop_sequence_with_options,
-    encode_ff_display_order_gop_sequence, encode_field_display_order_gop_sequence, FrameBuffer,
-    FrameEncodeOptions, IntraPictureParams,
+    FrameBuffer, FrameEncodeOptions, IntraPictureParams, decode_video_sequence,
+    encode_display_order_gop_sequence_with_options, encode_ff_display_order_gop_sequence,
+    encode_field_display_order_gop_sequence,
 };
 
 fuzz_target!(|data: &[u8]| {

@@ -920,8 +920,8 @@ mod tests {
         // Consume the padding '1' bit so the next read sees a short
         // buffer for the residual.
         br.read_bit().ok(); // skip nothing — actually we want the buf
-                            // to terminate after the 3 bits, so just
-                            // build it explicitly without padding.
+        // to terminate after the 3 bits, so just
+        // build it explicitly without padding.
         let mut bw = BitWriter::new();
         bw.write_u32(0b011, 3);
         bw.align_to_byte();

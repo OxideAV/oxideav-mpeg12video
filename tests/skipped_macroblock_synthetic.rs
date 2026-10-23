@@ -9,9 +9,9 @@
 
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::{
-    describe_skipped_macroblock, skipped_macroblock_apply_to_pmv, walk_slice, Component, Direction,
-    MvFormat, PictureCodingType, PictureStructure, Pmv, PredictionDirection, PredictionType,
-    SkippedMacroblockContext, SkippedMotionVector, SliceWalkContext, VectorIndex,
+    Component, Direction, MvFormat, PictureCodingType, PictureStructure, Pmv, PredictionDirection,
+    PredictionType, SkippedMacroblockContext, SkippedMotionVector, SliceWalkContext, VectorIndex,
+    describe_skipped_macroblock, skipped_macroblock_apply_to_pmv, walk_slice,
 };
 
 fn append_stop(mut bw: BitWriter) -> Vec<u8> {

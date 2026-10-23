@@ -6,12 +6,12 @@
 
 use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::frame_assembly::{
-    assemble_frame_from_fields, FrameBuffer, IntraPictureParams,
+    FrameBuffer, IntraPictureParams, assemble_frame_from_fields,
 };
 use oxideav_mpeg12video::picture_header::PictureStructure;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::stream_writer::{
-    write_sequence_extension, write_sequence_header, SequenceHeaderParams, SEQUENCE_END_CODE,
+    SEQUENCE_END_CODE, SequenceHeaderParams, write_sequence_extension, write_sequence_header,
 };
 use oxideav_mpeg12video::{
     decode_video_sequence, encode_field_adaptive_display_order_gop_sequence,
@@ -485,15 +485,17 @@ fn adaptive_assembler_rejects_dual_prime_with_b_pictures() {
         progressive_sequence: false,
     };
     let frames = vec![FrameBuffer::new(64, 64, ChromaFormat::Yuv420)];
-    assert!(encode_field_adaptive_display_order_gop_sequence(
-        &frames,
-        1,
-        1,
-        &frame_params,
-        6,
-        3,
-        3,
-        true
-    )
-    .is_err());
+    assert!(
+        encode_field_adaptive_display_order_gop_sequence(
+            &frames,
+            1,
+            1,
+            &frame_params,
+            6,
+            3,
+            3,
+            true
+        )
+        .is_err()
+    );
 }

@@ -48,25 +48,26 @@
 
 use oxideav_core::bits::BitWriter;
 
+use crate::Result;
 use crate::coded_block_pattern::encode_coded_block_pattern;
 use crate::encode_options::FrameEncodeOptions;
 use crate::forward_dct::fdct_8x8;
 use crate::forward_quant::forward_quantise_block;
-use crate::frame_assembly::{block_placement, FrameBuffer, IntraPictureParams};
+use crate::frame_assembly::{FrameBuffer, IntraPictureParams, block_placement};
 use crate::idct::idct_8x8_from_i32;
 use crate::inter_reconstruction::{
-    chroma_mb_extent, predict_frame_macroblock_planes, FrameMotion, MotionVectorPel,
-    ReferenceFrames,
+    FrameMotion, MotionVectorPel, ReferenceFrames, chroma_mb_extent,
+    predict_frame_macroblock_planes,
 };
 use crate::mb_address_increment::encode_mb_address_increment;
 use crate::motion_estimation::{estimate_forward_mv, max_search_range};
 use crate::motion_vector::encode_motion_component;
-use crate::mpeg2_block_dc::{encode_intra_dc, ColourComponent, DcComponent};
+use crate::mpeg2_block_dc::{ColourComponent, DcComponent, encode_intra_dc};
 use crate::mpeg2_dct_coeff::{
-    encode_dct_coeff, encode_end_of_block, CoefficientPosition, TableSelection,
+    CoefficientPosition, TableSelection, encode_dct_coeff, encode_end_of_block,
 };
 use crate::mpeg2_dequantize::{
-    intra_dc_mult, inverse_quantise_block, quantiser_scale, BlockCoding,
+    BlockCoding, intra_dc_mult, inverse_quantise_block, quantiser_scale,
 };
 use crate::mpeg2_inverse_scan::inverse_scan_table;
 use crate::mpeg2_macroblock_blocks::{block_component, block_count};
@@ -76,7 +77,6 @@ use crate::quant_matrix_extension::QuantiserMatrixState;
 use crate::stream_writer::{
     write_picture_coding_extension, write_picture_header, write_slice_header_in,
 };
-use crate::Result;
 
 /// Wrap a motion-vector `delta` (`vector' - PMV`) into the §7.6.3.1
 /// `[low, high]` codable band of `f_code`, so the §6.2.5.2.1 encoder has
@@ -681,8 +681,8 @@ pub fn encode_p_picture_with_stats(
         let mut intra_pred = IntraDcPred::reset(params.intra_dc_precision);
         let slice_first_addr = (mb_row * mb_width) as i32;
         let mut past_intra_address = slice_first_addr - 2; // §6.3.17.1 reset sentinel
-                                                           // §7.6.6: run of skipped macroblocks preceding the next coded
-                                                           // one — folded into its macroblock_address_increment.
+        // §7.6.6: run of skipped macroblocks preceding the next coded
+        // one — folded into its macroblock_address_increment.
         let mut pending_skips = 0u32;
 
         for mb_col in 0..mb_width {

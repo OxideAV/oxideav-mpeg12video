@@ -103,7 +103,7 @@ fn write_slice_open(bw: &mut BitWriter, vertical_position: u32) {
 fn write_intra_mb(bw: &mut BitWriter, dc_diff: i32, ac_neg: bool) {
     bw.write_bit(true); // macroblock_address_increment = 1
     bw.write_bit(true); // macroblock_type Intra (Table B-2) -- I pictures
-                        // DC size 2 ('01') + differential bits.
+    // DC size 2 ('01') + differential bits.
     let bits = match dc_diff {
         3 => 0b11,
         2 => 0b10,
@@ -174,7 +174,7 @@ fn write_p_dualprime_mb(bw: &mut BitWriter, pmv: &mut Pmv, target: (i32, i32), d
     bw.write_bit(true);
     bw.write_u32(0b001, 3);
     bw.write_u32(0b11, 2); // field_motion_type = Dual prime
-                           // dmv == 1: no motion_vertical_field_select (§6.2.5.2).
+    // dmv == 1: no motion_vertical_field_select (§6.2.5.2).
     write_mv_code(bw, target.0 - pmv.fwd.0);
     write_dmv(bw, dmv.0);
     write_mv_code(bw, target.1 - pmv.fwd.1);
@@ -196,15 +196,15 @@ fn write_p_16x8_mb(
     bw.write_u32(0b001, 3);
     bw.write_u32(0b10, 2); // field_motion_type = 16x8 MC
     bw.write_u32(upper.0, 1);
-    write_mv_code(bw, upper.1 .0 - pmv.fwd.0);
-    write_mv_code(bw, upper.1 .1 - pmv.fwd.1);
+    write_mv_code(bw, upper.1.0 - pmv.fwd.0);
+    write_mv_code(bw, upper.1.1 - pmv.fwd.1);
     // PMV[1] starts from PMV[0]'s post-update value per §7.6.3.1
     // (vector'[0] predicts from PMV[0], vector'[1] from PMV[1]; both
     // slots were equal at slice start and §7.6.3.3 16x8 rows update
     // both slots pairwise).
     bw.write_u32(lower.0, 1);
-    write_mv_code(bw, lower.1 .0 - pmv.bwd.0);
-    write_mv_code(bw, lower.1 .1 - pmv.bwd.1);
+    write_mv_code(bw, lower.1.0 - pmv.bwd.0);
+    write_mv_code(bw, lower.1.1 - pmv.bwd.1);
     pmv.fwd = upper.1;
     pmv.bwd = lower.1;
 }

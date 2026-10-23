@@ -962,7 +962,7 @@ mod tests {
         let top = FieldReference::new(p, 0).unwrap();
         assert_eq!(top.width(), 4);
         assert_eq!(top.height(), 3); // rows 0,2,4
-                                     // Field line k -> frame row 2k.
+        // Field line k -> frame row 2k.
         assert_eq!(top.sample(0, 0), 0); // frame (0,0)
         assert_eq!(top.sample(1, 1), 21); // frame row 2, col 1 -> 21
         assert_eq!(top.sample(3, 2), 43); // frame row 4, col 3 -> 43

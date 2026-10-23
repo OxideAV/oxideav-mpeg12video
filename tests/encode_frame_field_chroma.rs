@@ -10,7 +10,7 @@ use oxideav_core::bits::BitWriter;
 use oxideav_mpeg12video::frame_assembly::{FrameBuffer, IntraPictureParams};
 use oxideav_mpeg12video::sequence_extension::{ChromaFormat, Mpeg2Sequence};
 use oxideav_mpeg12video::stream_writer::{
-    write_sequence_extension, write_sequence_header, SequenceHeaderParams, SEQUENCE_END_CODE,
+    SEQUENCE_END_CODE, SequenceHeaderParams, write_sequence_extension, write_sequence_header,
 };
 use oxideav_mpeg12video::{
     decode_video_sequence, encode_ff_b_picture, encode_ff_display_order_gop_sequence,

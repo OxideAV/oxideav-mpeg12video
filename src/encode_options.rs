@@ -55,9 +55,9 @@
 //! §6.3.10 rules by
 //! [`crate::stream_writer::PictureCodingExtensionParams::validate_frame_picture_flags`].
 
+use crate::Result;
 use crate::frame_assembly::IntraPictureParams;
 use crate::stream_writer::PictureCodingExtensionParams;
-use crate::Result;
 
 /// Per-picture macroblock decision counts reported by the
 /// `_with_stats` frame-picture encoders.
@@ -252,11 +252,7 @@ mod tests {
         let fields: usize = (0..4)
             .map(|i| {
                 let o = FrameEncodeOptions::pulldown_32(i);
-                if o.repeat_first_field {
-                    3
-                } else {
-                    2
-                }
+                if o.repeat_first_field { 3 } else { 2 }
             })
             .sum();
         assert_eq!(fields, 10);

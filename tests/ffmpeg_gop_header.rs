@@ -14,7 +14,7 @@
 //! per Table 6-11 decodes to the zero time-code with `closed_gop = 1`
 //! and `broken_link = 0`.
 
-use oxideav_mpeg12video::{Mpeg2Gop, GROUP_START_CODE};
+use oxideav_mpeg12video::{GROUP_START_CODE, Mpeg2Gop};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/ffmpeg-352x240-25fps.m2v");
 

@@ -19,10 +19,9 @@
 #![allow(clippy::needless_range_loop)]
 
 use oxideav_mpeg12video::mpeg2_dequantize::{
-    intra_dc_mult, inverse_quantise_block, quantiser_scale, saturate,
-    select_weighting_matrix_index, sign, BlockCoding, Component, DEFAULT_INTRA_WEIGHT,
-    DEFAULT_NON_INTRA_WEIGHT, F_SATURATION_MAX, F_SATURATION_MIN, QUANTISER_SCALE_LINEAR,
-    QUANTISER_SCALE_NONLINEAR,
+    BlockCoding, Component, DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT, F_SATURATION_MAX,
+    F_SATURATION_MIN, QUANTISER_SCALE_LINEAR, QUANTISER_SCALE_NONLINEAR, intra_dc_mult,
+    inverse_quantise_block, quantiser_scale, saturate, select_weighting_matrix_index, sign,
 };
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 

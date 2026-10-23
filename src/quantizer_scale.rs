@@ -179,8 +179,8 @@ mod tests {
     fn rejects_truncated_field() {
         // Only 4 bits available, but the field needs 5.
         let buf = [0b1000u8]; // bit_position will run out after 8 bits,
-                              // but we hand the reader a buffer that is
-                              // pre-exhausted to 4 remaining bits.
+        // but we hand the reader a buffer that is
+        // pre-exhausted to 4 remaining bits.
         let mut br = BitReader::new(&buf);
         br.skip(4).expect("skip");
         let err = QuantizerScale::parse(&mut br, true).unwrap_err();

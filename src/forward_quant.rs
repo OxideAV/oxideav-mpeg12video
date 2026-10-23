@@ -213,7 +213,7 @@ pub fn mpeg1_forward_quantise_non_intra(
 mod tests {
     use super::*;
     use crate::mpeg2_dequantize::{
-        inverse_quantise_block, DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT,
+        DEFAULT_INTRA_WEIGHT, DEFAULT_NON_INTRA_WEIGHT, inverse_quantise_block,
     };
 
     #[test]
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn mpeg1_intra_ac_inverts_the_dequantiser_within_one_step() {
         use crate::dequantize::{
-            dequantize_intra_block, IntraBlockKind, IntraDcPredictors, DEFAULT_INTRA_QUANT,
+            DEFAULT_INTRA_QUANT, IntraBlockKind, IntraDcPredictors, dequantize_intra_block,
         };
         // Structured AC content; DC handled by the predictor chain so
         // dct_zz[0] stays 0 here.

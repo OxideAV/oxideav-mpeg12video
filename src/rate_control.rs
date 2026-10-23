@@ -42,12 +42,12 @@
 use oxideav_core::bits::BitWriter;
 
 use crate::frame_assembly::{FrameBuffer, IntraPictureParams};
-use crate::gop_header::{write_gop_header, Mpeg2Gop, TimeCode};
+use crate::gop_header::{Mpeg2Gop, TimeCode, write_gop_header};
 use crate::mpeg1_stream_writer::Mpeg1SequenceParams;
 use crate::stream_writer::{
-    write_sequence_extension, write_sequence_header, SequenceHeaderParams, SEQUENCE_END_CODE,
+    SEQUENCE_END_CODE, SequenceHeaderParams, write_sequence_extension, write_sequence_header,
 };
-use crate::vbv::{frame_rate_value, patch_vbv_delay, RemovalInterval, VbvCbrModel, VbvParams};
+use crate::vbv::{RemovalInterval, VbvCbrModel, VbvParams, frame_rate_value, patch_vbv_delay};
 use crate::{Error, Result};
 
 /// Static CBR configuration for [`encode_cbr_gop_sequence`].
@@ -752,7 +752,7 @@ pub fn encode_field_cbr_gop_sequence(
              (§6.3.5)",
         ));
     }
-    if frame_params.height % 32 != 0 {
+    if !frame_params.height.is_multiple_of(32) {
         return Err(Error::InvalidBitstream(
             "encode_field_cbr_gop_sequence: frame height must be a multiple of 32",
         ));

@@ -201,37 +201,39 @@ impl PictureTemporalScalableExtension {
             PictureCodingType::Intra => Ok(PictureReferences::Intra),
             // Table 7-28: forward-only prediction.
             PictureCodingType::Predictive => {
-                let forward =
-                    match self.reference_select_code {
-                        0b00 => ReferenceSource::MostRecentEnhancement,
-                        0b01 => ReferenceSource::MostRecentLowerLayer,
-                        0b10 => ReferenceSource::NextLowerLayer,
-                        _ => return Err(Error::InvalidBitstream(
+                let forward = match self.reference_select_code {
+                    0b00 => ReferenceSource::MostRecentEnhancement,
+                    0b01 => ReferenceSource::MostRecentLowerLayer,
+                    0b10 => ReferenceSource::NextLowerLayer,
+                    _ => {
+                        return Err(Error::InvalidBitstream(
                             "reference_select_code: '11' is forbidden in P-pictures (Table 7-28)",
-                        )),
-                    };
+                        ));
+                    }
+                };
                 Ok(PictureReferences::Predictive { forward })
             }
             // Table 7-29: forward + backward prediction.
             PictureCodingType::Bidirectional => {
-                let (forward, backward) =
-                    match self.reference_select_code {
-                        0b01 => (
-                            ReferenceSource::MostRecentEnhancement,
-                            ReferenceSource::MostRecentLowerLayer,
-                        ),
-                        0b10 => (
-                            ReferenceSource::MostRecentEnhancement,
-                            ReferenceSource::NextLowerLayer,
-                        ),
-                        0b11 => (
-                            ReferenceSource::MostRecentLowerLayer,
-                            ReferenceSource::NextLowerLayer,
-                        ),
-                        _ => return Err(Error::InvalidBitstream(
+                let (forward, backward) = match self.reference_select_code {
+                    0b01 => (
+                        ReferenceSource::MostRecentEnhancement,
+                        ReferenceSource::MostRecentLowerLayer,
+                    ),
+                    0b10 => (
+                        ReferenceSource::MostRecentEnhancement,
+                        ReferenceSource::NextLowerLayer,
+                    ),
+                    0b11 => (
+                        ReferenceSource::MostRecentLowerLayer,
+                        ReferenceSource::NextLowerLayer,
+                    ),
+                    _ => {
+                        return Err(Error::InvalidBitstream(
                             "reference_select_code: '00' is forbidden in B-pictures (Table 7-29)",
-                        )),
-                    };
+                        ));
+                    }
+                };
                 Ok(PictureReferences::Bidirectional { forward, backward })
             }
             // Temporal scalability is 13818-2-only; D-pictures are

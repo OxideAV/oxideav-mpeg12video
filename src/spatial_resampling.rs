@@ -200,7 +200,7 @@ fn format_ratio(lower: ChromaFormat, enhance: ChromaFormat) -> Result<(u32, u32)
         _ => {
             return Err(Error::InvalidBitstream(
                 "spatial resampling: (lower, enhancement) chroma_format pair not in Table 7-18",
-            ))
+            ));
         }
     })
 }
@@ -1239,7 +1239,7 @@ mod tests {
         assert_eq!(clamp_row_same_field(6, 6), 4); // even -> 4
         assert_eq!(clamp_row_same_field(7, 6), 5); // odd  -> 5
         assert_eq!(clamp_row_same_field(8, 6), 4); // even -> 4
-                                                   // In range is identity.
+        // In range is identity.
         assert_eq!(clamp_row_same_field(3, 6), 3);
     }
 

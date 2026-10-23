@@ -339,7 +339,7 @@ mod tests {
         bw.write_bit(true); // intra_slice_flag
         bw.write_bit(false); // intra_slice
         bw.write_u32(0, 7); // reserved_bits
-                            // Two non-conforming extra_bit_slice=1 bytes, then terminator.
+        // Two non-conforming extra_bit_slice=1 bytes, then terminator.
         bw.write_bit(true);
         bw.write_u32(0xAB, 8);
         bw.write_bit(true);

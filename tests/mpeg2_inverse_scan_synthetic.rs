@@ -13,9 +13,9 @@
 #![allow(clippy::needless_range_loop)]
 
 use oxideav_mpeg12video::{
-    mpeg2_apply_inverse_scan, mpeg2_inverse_scan_table, mpeg2_place_coefficient, mpeg2_scan_table,
     MPEG2_ALTERNATE_INVERSE_SCAN, MPEG2_ALTERNATE_SCAN, MPEG2_ZIGZAG_INVERSE_SCAN,
-    SCAN as MPEG1_SCAN,
+    SCAN as MPEG1_SCAN, mpeg2_apply_inverse_scan, mpeg2_inverse_scan_table,
+    mpeg2_place_coefficient, mpeg2_scan_table,
 };
 
 /// Figure 7-2 verbatim from ISO/IEC 13818-2:1995 page 80

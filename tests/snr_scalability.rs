@@ -12,10 +12,10 @@ use oxideav_mpeg12video::quant_matrix_extension::QuantMatrixExtension;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::sequence_scalable_extension::{ScalableMode, SequenceScalableExtension};
 use oxideav_mpeg12video::{
+    DecodedFrame, FrameBuffer, FrameEncodeOptions, IntraPictureParams,
     decode_snr_scalable_sequence, decode_video_sequence, encode_display_order_gop_sequence,
     encode_display_order_gop_sequence_with_options, encode_ff_display_order_gop_sequence,
-    encode_snr_enhancement_layer, DecodedFrame, FrameBuffer, FrameEncodeOptions,
-    IntraPictureParams,
+    encode_snr_enhancement_layer,
 };
 
 fn params(
@@ -44,7 +44,11 @@ fn frame_at(width: usize, height: usize, chroma: ChromaFormat, t: usize) -> Fram
         for x in 0..width {
             let sx = x + 2 * t;
             let g = 24 + ((sx * 3 + y * 5) % 192);
-            let c = if (sx / 4 + y / 4) % 2 == 0 { 16 } else { 0 };
+            let c = if (sx / 4 + y / 4).is_multiple_of(2) {
+                16
+            } else {
+                0
+            };
             let n = (sx * 7 + y * 13) % 9; // fine texture the coarse layer drops
             f.y.put_sample(x, y, (g + c + n).min(235) as u8);
         }

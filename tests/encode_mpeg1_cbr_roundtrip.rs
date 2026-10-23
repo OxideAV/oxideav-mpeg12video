@@ -3,9 +3,9 @@
 //! must produce streams that verify against the exact buffer model,
 //! decode faithfully, and show the controller adapting.
 
-use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
+use oxideav_mpeg12video::vbv::{VbvStandard, verify_cbr_stream};
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_mpeg1_cbr_sequence, FrameBuffer, Mpeg1SequenceParams,
+    FrameBuffer, Mpeg1SequenceParams, decode_video_sequence, encode_mpeg1_cbr_sequence,
 };
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
@@ -15,7 +15,7 @@ fn busy_frame(width: usize, height: usize, t: usize) -> FrameBuffer {
     for y in 0..height {
         for x in 0..width {
             let g = 20 + ((x * 5 + y * 3 + t * 7) % 200);
-            let c = if ((x / 2 + t) / 2 + y / 2) % 2 == 0 {
+            let c = if ((x / 2 + t) / 2 + y / 2).is_multiple_of(2) {
                 20
             } else {
                 0

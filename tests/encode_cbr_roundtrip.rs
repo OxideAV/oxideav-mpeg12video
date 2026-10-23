@@ -13,9 +13,9 @@
 //!    C.5 overflow bound.
 
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
-use oxideav_mpeg12video::vbv::{verify_cbr_stream, VbvStandard};
+use oxideav_mpeg12video::vbv::{VbvStandard, verify_cbr_stream};
 use oxideav_mpeg12video::{
-    decode_video_sequence, encode_cbr_gop_sequence, CbrConfig, FrameBuffer, IntraPictureParams,
+    CbrConfig, FrameBuffer, IntraPictureParams, decode_video_sequence, encode_cbr_gop_sequence,
 };
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
@@ -39,7 +39,7 @@ fn busy_frame(width: usize, height: usize, t: usize) -> FrameBuffer {
     for y in 0..height {
         for x in 0..width {
             let g = 20 + ((x * 5 + y * 3 + t * 7) % 200);
-            let c = if ((x / 2 + t) / 2 + y / 2) % 2 == 0 {
+            let c = if ((x / 2 + t) / 2 + y / 2).is_multiple_of(2) {
                 20
             } else {
                 0

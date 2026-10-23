@@ -15,8 +15,8 @@
 //! decoder).
 
 use oxideav_mpeg12video::{
-    add_intra_block, add_prediction_and_coefficients, combine_directional_predictions,
-    predict_block, BlockSize, BoundaryMode, PredictionDirection, ReferencePlane,
+    BlockSize, BoundaryMode, PredictionDirection, ReferencePlane, add_intra_block,
+    add_prediction_and_coefficients, combine_directional_predictions, predict_block,
 };
 
 #[test]
@@ -35,7 +35,9 @@ fn intra_block_pipeline_via_saturated_idct_only() {
     let out = add_intra_block(&transform);
     assert_eq!(
         out,
-        vec![0, 0, 50, 255, 0, 100, 255, 255, 128, 64, 32, 16, 0, 1, 0, 255]
+        vec![
+            0, 0, 50, 255, 0, 100, 255, 255, 128, 64, 32, 16, 0, 1, 0, 255
+        ]
     );
 }
 

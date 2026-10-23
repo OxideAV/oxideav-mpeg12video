@@ -284,11 +284,7 @@ impl BlockPlacement {
     /// Frame-row stride between successive block rows: `2` for a
     /// field-DCT block, `1` otherwise.
     pub fn row_stride(self) -> usize {
-        if self.field_dct {
-            2
-        } else {
-            1
-        }
+        if self.field_dct { 2 } else { 1 }
     }
 }
 
@@ -322,7 +318,7 @@ pub fn block_placement(
         // §6.1.1.8 Figure 6-10/6-13/6-14: blocks 0,1 are the top
         // 8 rows of the macroblock, blocks 2,3 the bottom 8; 0,2 are
         // the left column, 1,3 the right column.
-        let left = (i % 2) == 0; // 0,2 -> left; 1,3 -> right
+        let left = i.is_multiple_of(2); // 0,2 -> left; 1,3 -> right
         let top = i < 2; // 0,1 -> top pair; 2,3 -> bottom pair
         let base_x = luma_x0 + if left { 0 } else { 8 };
         return Some(luma_or_chroma_placement(
@@ -359,7 +355,7 @@ pub fn block_placement(
     // down each column before moving right. `chroma_index` counts the
     // block within its own component (0, 1, 2, 3 in that coded order).
     let blocks_tall = chroma_mb_h / 8; // 2 for 4:2:2 and 4:4:4
-    let top = (chroma_index % blocks_tall) == 0;
+    let top = chroma_index.is_multiple_of(blocks_tall);
     let left = chroma_index < blocks_tall;
     let base_x = chroma_x0 + if left { 0 } else { 8 };
     Some(luma_or_chroma_placement(

@@ -84,7 +84,7 @@
 
 use crate::add_coefficients::{add_intra_block, add_prediction_and_coefficients};
 use crate::coded_block_pattern::CodedBlockPattern;
-use crate::combine_predictions::{combine_directional_predictions, PredictionDirection};
+use crate::combine_predictions::{PredictionDirection, combine_directional_predictions};
 use crate::macroblock_type::MacroblockType;
 use crate::sequence_extension::ChromaFormat;
 
