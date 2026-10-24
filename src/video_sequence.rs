@@ -183,188 +183,212 @@ impl DecodedFrame {
 ///   parse.
 /// * [`Error::ShortHeader`] on truncation.
 pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
-    // The geometry is established by the leading sequence layer and
-    // re-established at every repeat / new `sequence_header()` encountered
-    // before a picture, so a multi-sequence stream whose geometry changes
-    // mid-stream tracks the new sizes (§6.1.1.6: a repeat sequence header
-    // may legally restate the parameters).
-    let mut geometry = parse_leading_sequence(stream)?;
-
-    // §6.3.11 weighting matrices: reset to the §6.3.7 defaults at
-    // every sequence_header_code, then overwritten by the header's
-    // own load flags and by any `quant_matrix_extension()` between
-    // pictures. MPEG-1 carries its matrices inside
-    // `Mpeg1PictureParams` instead (§2.4.2.3, no extension exists).
-    let mut matrices = geometry.initial_matrices();
+    // The sequence layer the pictures ahead of the first in-stream
+    // sequence_header() decode against.
+    let mut decoder = VideoSequenceDecoder::new();
+    decoder.geometry = Some(parse_leading_sequence(stream)?);
+    let coded = decoder.decode(stream)?;
 
     let mut reorder = ReorderBuffer::new();
-    let mut output: Vec<DecodedFrame> = Vec::new();
-
-    // The two running I/P anchors, newest-last. `forward_anchor` is the
-    // older of the pair (the past reference); `backward_anchor` is the
-    // newer (the future reference for B-frames, and the forward
-    // reference for the next P-frame).
-    let mut forward_anchor: Option<FrameBuffer> = None;
-    let mut backward_anchor: Option<FrameBuffer> = None;
-
-    // §6.1.1.4.1: field pictures occur in pairs (one top + one bottom)
-    // that together constitute a coded frame, encoded in output order.
-    // The first field of a pair is held here until its partner arrives,
-    // when the two are interleaved into one reconstructed frame
-    // ([`assemble_frame_from_fields`]).
-    let mut pending_field: Option<PendingField> = None;
-
-    let mut offset = 0usize;
-    while let Some(rel) = find_picture_or_sequence_start_code(&stream[offset..]) {
-        let code_start = offset + rel;
-
-        // A `sequence_header()` before the next picture re-establishes the
-        // geometry (§6.1.1.6). The reorder buffer and anchors carry across
-        // — §6.1.1.11 reordering is defined over the whole reconstructed
-        // sequence, and a repeat sequence header does not by itself force a
-        // flush (the next coded frame, which §6.1.1.11 requires not to be a
-        // B-frame, is an I/P anchor that flushes the held one in the normal
-        // way).
-        if is_start_code(&stream[code_start..], SEQUENCE_HEADER_CODE) {
-            geometry = sequence_geometry_at(&stream[code_start..])?;
-            // §6.3.11: "When a sequence_header_code is decoded all
-            // matrices shall be reset to their default values" — then
-            // the header's own load flags apply.
-            matrices = geometry.initial_matrices();
-            // Advance past this sequence header's start code; the next scan
-            // finds the sequence_extension / picture that follows.
-            offset = code_start + 4;
-            continue;
-        }
-
-        let pic_start = code_start;
-
-        // The picture spans from its picture_start_code up to the next
-        // picture / GOP / sequence / sequence-end start code. The
-        // boundary start code's own bytes are **included** in the region:
-        // the per-picture slice walkers peek for the §5.2.3 23-zero
-        // start-code prefix to detect end-of-slice, so the buffer must
-        // carry that prefix or the last slice is truncated one macroblock
-        // early. The next iteration still re-anchors on the boundary
-        // start code (`next_offset`), so including its bytes here only
-        // lends the walker its terminator — the drivers stop their own
-        // slice scan at the first non-slice start code regardless.
-        let boundary = find_next_picture_boundary(&stream[pic_start + 4..]).map(|p| p + 4);
-        let region_end = match boundary {
-            // Include the 4-byte boundary start code in the slice buffer.
-            Some(b) => (b + 4).min(stream.len() - pic_start),
-            None => stream.len() - pic_start,
-        };
-        let next_offset = match boundary {
-            Some(b) => pic_start + b,
-            None => stream.len(),
-        };
-        let picture_region = &stream[pic_start..pic_start + region_end];
-
-        let coded = match geometry {
-            SequenceGeometry::Mpeg1(mpeg1_params) => {
-                // ISO/IEC 11172-2: frame pictures only, no
-                // picture_coding_extension — the motion-vector context
-                // (f_codes + full_pel flags) lives in the picture
-                // header itself (§2.4.3.4).
-                let header = Mpeg2PictureHeader::parse(picture_region)?;
-                reconstruct_mpeg1_picture(
-                    picture_region,
-                    &header,
-                    &mpeg1_params,
-                    forward_anchor.as_ref(),
-                    backward_anchor.as_ref(),
-                )?
-            }
-            SequenceGeometry::Mpeg2(mpeg2_geometry, _) => {
-                let (header, ext) = Mpeg2PictureHeader::parse_with_extension(picture_region)?;
-
-                // §6.2.3.7 extension_and_user_data(2): any
-                // `quant_matrix_extension()` between the
-                // picture_coding_extension and the first slice updates
-                // the running §6.3.11 matrices (which then persist for
-                // the following pictures until the next
-                // sequence_header_code reset).
-                apply_quant_matrix_extensions(
-                    picture_region,
-                    mpeg2_geometry.chroma_format,
-                    &mut matrices,
-                )?;
-
-                // §6.1.1.4.1 field-picture pair: decode the field, hold the
-                // first of a pair until its partner arrives, then interleave
-                // the pair into one reconstructed frame and route that frame
-                // exactly as a frame picture would be.
-                if ext.picture_structure != PictureStructure::Frame {
-                    match reconstruct_field_pair(
-                        picture_region,
-                        &header,
-                        &ext,
-                        mpeg2_geometry,
-                        forward_anchor.as_ref(),
-                        backward_anchor.as_ref(),
-                        &mut pending_field,
-                        &matrices,
-                    )? {
-                        // First field of a pair: held back, no frame yet.
-                        None => {
-                            offset = next_offset;
-                            continue;
-                        }
-                        // Second field completed the pair into a frame.
-                        Some(frame) => frame,
-                    }
-                } else {
-                    // The slice region begins after the picture header +
-                    // extensions: the per-picture drivers find the first
-                    // slice_start_code themselves, so we hand them the whole
-                    // picture region.
-                    reconstruct_picture(
-                        picture_region,
-                        &header,
-                        &ext,
-                        mpeg2_geometry,
-                        forward_anchor.as_ref(),
-                        backward_anchor.as_ref(),
-                        &matrices,
-                    )?
-                }
-            }
-        };
-
-        // §6.1.1.11 reorder + §7.6 reference rotation.
-        match coded.picture_coding_type {
-            PictureCodingType::Bidirectional => {
-                // B-frames are displayed immediately, in coded order, and
-                // never become a reference. They emit before the held-back
-                // anchor.
-                reorder.push_b(coded.clone(), &mut output);
-            }
-            PictureCodingType::DcIntra => {
-                // 11172-2 §2.4.1: a D-picture sequence contains no
-                // other picture types, so there is no reorder and no
-                // reference rotation — D-pictures display in coded
-                // order and never serve as a prediction reference.
-                output.push(coded);
-            }
+    let mut output: Vec<DecodedFrame> = Vec::with_capacity(coded.len());
+    for frame in coded {
+        match frame.picture_coding_type {
+            PictureCodingType::Bidirectional => reorder.push_b(frame, &mut output),
+            PictureCodingType::DcIntra => output.push(frame),
             PictureCodingType::Intra | PictureCodingType::Predictive => {
-                // An I/P frame displaces the previously held-back anchor
-                // (which now displays) and becomes the new held-back
-                // anchor. Rotate the §7.6 reference pair: the old backward
-                // anchor becomes the new forward anchor.
-                reorder.push_anchor(coded.clone(), &mut output);
-                forward_anchor = backward_anchor.take();
-                backward_anchor = Some(coded.frame);
+                reorder.push_anchor(frame, &mut output)
             }
         }
-
-        offset = next_offset;
     }
-
-    // §6.1.1.11: flush the final held-back I/P anchor.
     reorder.flush(&mut output);
 
     Ok(output)
+}
+
+/// The §6.2.2 `video_sequence()` walker as a streaming decoder: the
+/// running sequence layer, the §6.3.11 matrices, the §7.6 anchor pair
+/// and a pending first field persist between calls, so a stream can be
+/// fed one access unit (or any run of whole pictures) at a time. Each
+/// call returns the frames its pictures reconstruct, in **coded**
+/// order — no §6.1.1.11 reorder, which [`decode_video_sequence`] (or
+/// the container's presentation times) applies on top.
+#[derive(Debug, Default)]
+pub struct VideoSequenceDecoder {
+    geometry: Option<SequenceGeometry>,
+    matrices: QuantiserMatrixState,
+    forward_anchor: Option<FrameBuffer>,
+    backward_anchor: Option<FrameBuffer>,
+    pending_field: Option<PendingField>,
+}
+
+impl VideoSequenceDecoder {
+    /// A decoder that has seen no sequence header yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether a `sequence_header()` has established the geometry.
+    pub fn has_sequence(&self) -> bool {
+        self.geometry.is_some()
+    }
+
+    /// Forget the anchors and any pending field (a seek); the sequence
+    /// layer stays.
+    pub fn reset(&mut self) {
+        self.forward_anchor = None;
+        self.backward_anchor = None;
+        self.pending_field = None;
+    }
+
+    /// Decode every whole picture in `data` (start-code delimited; the
+    /// last picture ends at the end of `data`). A `sequence_header()`
+    /// in `data` replaces the sequence layer. Returns the reconstructed
+    /// frames in coded order; the first field of a field-picture pair
+    /// returns nothing until its partner is decoded.
+    ///
+    /// # Errors
+    ///
+    /// A picture before any `sequence_header()`, or any picture-layer
+    /// error of the per-picture drivers.
+    pub fn decode(&mut self, stream: &[u8]) -> Result<Vec<DecodedFrame>> {
+        let mut output: Vec<DecodedFrame> = Vec::new();
+        let mut offset = 0usize;
+        while let Some(rel) = find_picture_or_sequence_start_code(&stream[offset..]) {
+            let code_start = offset + rel;
+
+            // A `sequence_header()` before the next picture re-establishes the
+            // geometry (§6.1.1.6). The anchors carry across: a repeat
+            // sequence header does not by itself end the prediction chain.
+            if is_start_code(&stream[code_start..], SEQUENCE_HEADER_CODE) {
+                let geometry = sequence_geometry_at(&stream[code_start..])?;
+                // §6.3.11: "When a sequence_header_code is decoded all
+                // matrices shall be reset to their default values" — then
+                // the header's own load flags apply.
+                self.matrices = geometry.initial_matrices();
+                self.geometry = Some(geometry);
+                // Advance past this sequence header's start code; the next scan
+                // finds the sequence_extension / picture that follows.
+                offset = code_start + 4;
+                continue;
+            }
+
+            let pic_start = code_start;
+
+            // The picture spans from its picture_start_code up to the next
+            // picture / GOP / sequence / sequence-end start code. The
+            // boundary start code's own bytes are **included** in the region:
+            // the per-picture slice walkers peek for the §5.2.3 23-zero
+            // start-code prefix to detect end-of-slice, so the buffer must
+            // carry that prefix or the last slice is truncated one macroblock
+            // early. The next iteration still re-anchors on the boundary
+            // start code (`next_offset`), so including its bytes here only
+            // lends the walker its terminator — the drivers stop their own
+            // slice scan at the first non-slice start code regardless.
+            let boundary = find_next_picture_boundary(&stream[pic_start + 4..]).map(|p| p + 4);
+            let region_end = match boundary {
+                // Include the 4-byte boundary start code in the slice buffer.
+                Some(b) => (b + 4).min(stream.len() - pic_start),
+                None => stream.len() - pic_start,
+            };
+            let next_offset = match boundary {
+                Some(b) => pic_start + b,
+                None => stream.len(),
+            };
+            let picture_region = &stream[pic_start..pic_start + region_end];
+
+            let Some(geometry) = self.geometry else {
+                return Err(Error::InvalidBitstream(
+                    "video_sequence(): picture before any sequence_header_code 0x000001B3 (§6.2.2)",
+                ));
+            };
+            let coded = match geometry {
+                SequenceGeometry::Mpeg1(mpeg1_params) => {
+                    // ISO/IEC 11172-2: frame pictures only, no
+                    // picture_coding_extension — the motion-vector context
+                    // (f_codes + full_pel flags) lives in the picture
+                    // header itself (§2.4.3.4).
+                    let header = Mpeg2PictureHeader::parse(picture_region)?;
+                    reconstruct_mpeg1_picture(
+                        picture_region,
+                        &header,
+                        &mpeg1_params,
+                        self.forward_anchor.as_ref(),
+                        self.backward_anchor.as_ref(),
+                    )?
+                }
+                SequenceGeometry::Mpeg2(mpeg2_geometry, _) => {
+                    let (header, ext) = Mpeg2PictureHeader::parse_with_extension(picture_region)?;
+
+                    // §6.2.3.7 extension_and_user_data(2): any
+                    // `quant_matrix_extension()` between the
+                    // picture_coding_extension and the first slice updates
+                    // the running §6.3.11 matrices (which then persist for
+                    // the following pictures until the next
+                    // sequence_header_code reset).
+                    apply_quant_matrix_extensions(
+                        picture_region,
+                        mpeg2_geometry.chroma_format,
+                        &mut self.matrices,
+                    )?;
+
+                    // §6.1.1.4.1 field-picture pair: decode the field, hold the
+                    // first of a pair until its partner arrives, then interleave
+                    // the pair into one reconstructed frame and route that frame
+                    // exactly as a frame picture would be.
+                    if ext.picture_structure != PictureStructure::Frame {
+                        match reconstruct_field_pair(
+                            picture_region,
+                            &header,
+                            &ext,
+                            mpeg2_geometry,
+                            self.forward_anchor.as_ref(),
+                            self.backward_anchor.as_ref(),
+                            &mut self.pending_field,
+                            &self.matrices,
+                        )? {
+                            // First field of a pair: held back, no frame yet.
+                            None => {
+                                offset = next_offset;
+                                continue;
+                            }
+                            // Second field completed the pair into a frame.
+                            Some(frame) => frame,
+                        }
+                    } else {
+                        // The slice region begins after the picture header +
+                        // extensions: the per-picture drivers find the first
+                        // slice_start_code themselves, so we hand them the whole
+                        // picture region.
+                        reconstruct_picture(
+                            picture_region,
+                            &header,
+                            &ext,
+                            mpeg2_geometry,
+                            self.forward_anchor.as_ref(),
+                            self.backward_anchor.as_ref(),
+                            &self.matrices,
+                        )?
+                    }
+                }
+            };
+
+            // §7.6 reference rotation: an I/P frame becomes the backward
+            // anchor and the previous one the forward anchor; B- and
+            // D-pictures never serve as a reference.
+            if matches!(
+                coded.picture_coding_type,
+                PictureCodingType::Intra | PictureCodingType::Predictive
+            ) {
+                self.forward_anchor = self.backward_anchor.take();
+                self.backward_anchor = Some(coded.frame.clone());
+            }
+            output.push(coded);
+
+            offset = next_offset;
+        }
+
+        Ok(output)
+    }
 }
 
 /// Compute the **continuous display index** of each frame in a
@@ -1014,6 +1038,7 @@ fn mpeg1_inter_params(
 /// The first field of a §6.1.1.4.1 coded-frame pair, held until its
 /// partner field arrives so the two can be interleaved into one
 /// reconstructed frame.
+#[derive(Debug)]
 struct PendingField {
     /// The reconstructed first field (field-height [`FrameBuffer`]).
     field: FrameBuffer,
