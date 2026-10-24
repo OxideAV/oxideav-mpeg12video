@@ -18,6 +18,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SequenceDecoder::coded_order` / `SequenceDecoder::end_access_unit`: frames in coded order (no §6.1.1.11 hold-back; the §7.6 reference rotation is unchanged) and a caller-declared access-unit end, so a container that delimits pictures gets each one back as soon as its unit is pushed rather than when the next start code arrives — the coded-order, per-access-unit shape proposed in #14, on the streaming decoder
 - `DecodedFrame` is `#[non_exhaustive]` (it gained a field in this release) with `DecodedFrame::new` / `with_display_flags` / `with_stream_offset` for construction outside the crate
 - `DecodedFrame::stream_offset`: the stream offset of the picture start code that began each frame (the first field's for a field pair), set by `SequenceDecoder`, so callers can attach the presentation time of the packet that carried it (ISO/IEC 13818-1 2.4.3.7); `None` from the scalable-layer decoders
 - `SequenceDecoder::with_concealment`: a picture that fails to decode is replaced by a copy of its nearest reference, keeping its frame slot and the reference rotation so the chain recovers at the next intra picture; B-pictures without a forward reference (an open GOP's leading pictures when decoding starts mid-stream) are dropped; `concealed()` / `skipped()` count both. The strict default is unchanged

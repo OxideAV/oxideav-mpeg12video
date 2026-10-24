@@ -256,6 +256,14 @@ pub fn decode_video_sequence(stream: &[u8]) -> Result<Vec<DecodedFrame>> {
 /// releasing the last picture and the held anchor. Pushing a whole stream
 /// and finishing yields exactly what [`decode_video_sequence`] returns.
 ///
+/// A container that delimits access units can call
+/// [`end_access_unit`](Self::end_access_unit) after pushing each one, so
+/// its picture is decoded at once rather than when the next start code
+/// arrives; with [`coded_order`](Self::coded_order) each picture is then
+/// returned as soon as it is decoded, for consumers (a VideoToolbox-style
+/// decompression session, a demuxer carrying presentation times) that
+/// apply the §6.1.1.11 reorder themselves.
+///
 /// After an error the decoder skips the failed picture; continuing is the
 /// caller's choice (a later picture may then lack a valid reference).
 #[derive(Debug, Default)]
@@ -285,6 +293,12 @@ pub struct SequenceDecoder {
     consumed: u64,
     concealed: usize,
     skipped: usize,
+    /// Return frames in coded order, skipping the §6.1.1.11 reorder (see
+    /// [`coded_order`](Self::coded_order)).
+    coded_order: bool,
+    /// Stream offset at which the caller declared an access unit to end
+    /// (see [`end_access_unit`](Self::end_access_unit)).
+    unit_end: Option<u64>,
 }
 
 /// The running decode state of the §6.2.2 `video_sequence()` walk.
@@ -337,6 +351,17 @@ impl SequenceDecoder {
         }
     }
 
+    /// Return frames in **coded** order, as each picture (or field pair)
+    /// is reconstructed, instead of the §6.1.1.11 display order: no
+    /// anchor is held back, so the caller (or the container's
+    /// presentation times) applies the reorder. The §7.6 reference
+    /// rotation is unchanged. Chains after [`new`](Self::new) or
+    /// [`with_concealment`](Self::with_concealment).
+    pub fn coded_order(mut self) -> Self {
+        self.coded_order = true;
+        self
+    }
+
     /// Pictures replaced by a concealment copy so far.
     pub fn concealed(&self) -> usize {
         self.concealed
@@ -350,6 +375,21 @@ impl SequenceDecoder {
     /// Append the next piece of the elementary stream.
     pub fn push(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
+    }
+
+    /// Declare that the bytes pushed so far end on a picture boundary (the
+    /// container delimited an access unit): the picture at the end of the
+    /// buffer is decoded without waiting for the start code that follows
+    /// it. Pushing more bytes first withdraws the declaration, which only
+    /// ever describes the current end of the buffer.
+    pub fn end_access_unit(&mut self) {
+        self.unit_end = Some(self.consumed + self.buf.len() as u64);
+    }
+
+    /// Whether the unit at the end of the buffer is known to be complete:
+    /// the stream is finished, or the caller ended an access unit there.
+    fn at_unit_end(&self) -> bool {
+        self.finished || self.unit_end == Some(self.consumed + self.buf.len() as u64)
     }
 
     /// Mark the end of the stream: the last picture runs to the end of
@@ -397,7 +437,7 @@ impl SequenceDecoder {
             }
             return Ok(false);
         };
-        if !self.finished
+        if !self.at_unit_end()
             && self
                 .find_from(at + 4, find_picture_or_sequence_start_code)
                 .is_none()
@@ -444,7 +484,7 @@ impl SequenceDecoder {
         // B-frame, is an I/P anchor that flushes the held one in the normal
         // way).
         if is_start_code(&self.buf[code_start..], SEQUENCE_HEADER_CODE) {
-            if !self.finished
+            if !self.at_unit_end()
                 && self
                     .find_from(code_start + 4, find_picture_or_sequence_start_code)
                     .is_none()
@@ -477,7 +517,7 @@ impl SequenceDecoder {
         // lends the walker its terminator — the drivers stop their own
         // slice scan at the first non-slice start code regardless.
         let boundary = self.find_from(pic_start + 4, find_next_picture_boundary);
-        if boundary.is_none() && !self.finished {
+        if boundary.is_none() && !self.at_unit_end() {
             self.offset = pic_start;
             return Ok(false);
         }
@@ -537,7 +577,7 @@ impl SequenceDecoder {
         };
         coded.stream_offset = Some(frame_offset);
         let mut output = Vec::new();
-        route(state, coded, &mut output);
+        route(state, coded, self.coded_order, &mut output);
         self.ready.extend(output);
         Ok(true)
     }
@@ -713,8 +753,26 @@ fn decode_picture(
 }
 
 /// §6.1.1.11 reorder + §7.6 reference rotation of a reconstructed (or
-/// concealed) picture; frames ready for display go to `output`.
-fn route(state: &mut SequenceState, coded: DecodedFrame, output: &mut Vec<DecodedFrame>) {
+/// concealed) picture; frames ready for display go to `output`. In coded
+/// order the picture goes straight to `output` and only the reference
+/// rotation applies.
+fn route(
+    state: &mut SequenceState,
+    coded: DecodedFrame,
+    coded_order: bool,
+    output: &mut Vec<DecodedFrame>,
+) {
+    if coded_order {
+        if matches!(
+            coded.picture_coding_type,
+            PictureCodingType::Intra | PictureCodingType::Predictive
+        ) {
+            state.forward_anchor = state.backward_anchor.take();
+            state.backward_anchor = Some(coded.frame.clone());
+        }
+        output.push(coded);
+        return;
+    }
     match coded.picture_coding_type {
         PictureCodingType::Bidirectional => {
             // B-frames are displayed immediately, in coded order, and
