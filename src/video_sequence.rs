@@ -112,7 +112,13 @@ use crate::{Error, Result};
 /// A reconstructed frame paired with its §6.3.10 `temporal_reference` —
 /// the display index (modulo 1024) the §6.1.1.11 reorder is defined
 /// against.
+///
+/// `#[non_exhaustive]`: the record grows as the decoder surfaces more
+/// per-picture state (as [`stream_offset`](Self::stream_offset) did);
+/// build one outside the crate with [`new`](Self::new) and the
+/// `with_*` setters.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DecodedFrame {
     /// The reconstructed picture in display form.
     pub frame: FrameBuffer,
@@ -145,6 +151,44 @@ pub struct DecodedFrame {
 }
 
 impl DecodedFrame {
+    /// A progressive frame (`progressive_frame = true`, no field flags,
+    /// no stream offset): the shape an MPEG-1 frame decodes to.
+    pub fn new(
+        frame: FrameBuffer,
+        temporal_reference: u16,
+        picture_coding_type: PictureCodingType,
+    ) -> Self {
+        Self {
+            frame,
+            temporal_reference,
+            picture_coding_type,
+            top_field_first: false,
+            repeat_first_field: false,
+            progressive_frame: true,
+            stream_offset: None,
+        }
+    }
+
+    /// Sets the §6.3.10 display flags `top_field_first`,
+    /// `repeat_first_field` and `progressive_frame`.
+    pub fn with_display_flags(
+        mut self,
+        top_field_first: bool,
+        repeat_first_field: bool,
+        progressive_frame: bool,
+    ) -> Self {
+        self.top_field_first = top_field_first;
+        self.repeat_first_field = repeat_first_field;
+        self.progressive_frame = progressive_frame;
+        self
+    }
+
+    /// Sets [`stream_offset`](Self::stream_offset).
+    pub fn with_stream_offset(mut self, stream_offset: Option<u64>) -> Self {
+        self.stream_offset = stream_offset;
+        self
+    }
+
     /// The number of **fields** the display process outputs for this
     /// frame in an interlaced sequence (§6.3.10): 3 when
     /// `repeat_first_field` is set, else 2.

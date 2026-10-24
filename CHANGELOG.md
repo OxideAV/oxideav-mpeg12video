@@ -18,6 +18,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `DecodedFrame` is `#[non_exhaustive]` (it gained a field in this release) with `DecodedFrame::new` / `with_display_flags` / `with_stream_offset` for construction outside the crate
 - `DecodedFrame::stream_offset`: the stream offset of the picture start code that began each frame (the first field's for a field pair), set by `SequenceDecoder`, so callers can attach the presentation time of the packet that carried it (ISO/IEC 13818-1 2.4.3.7); `None` from the scalable-layer decoders
 - `SequenceDecoder::with_concealment`: a picture that fails to decode is replaced by a copy of its nearest reference, keeping its frame slot and the reference rotation so the chain recovers at the next intra picture; B-pictures without a forward reference (an open GOP's leading pictures when decoding starts mid-stream) are dropped; `concealed()` / `skipped()` count both. The strict default is unchanged
 - `SequenceDecoder`: incremental `video_sequence()` decode — `push` elementary-stream bytes in pieces of any size, `next_frame` returns display-order frames as each picture's terminating start code arrives, `finish` releases the last picture and held anchor; `decode_video_sequence` is now a push-everything wrapper over it, and a corpus-wide test holds piecewise decode (1, 3, 188, 2048 bytes and whole) frame-identical to it
