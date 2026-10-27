@@ -889,6 +889,82 @@ pub struct DctCoeffStep {
     pub bit_position_after: u64,
 }
 
+/// Bits of the cursor a [`Slot`] table is indexed by: the longest
+/// Table B.5c..B.5e codeword (sign bit excluded).
+const LOOKUP_BITS: u32 = 16;
+
+/// Bits that must remain for the lookup path: the escape prefix with
+/// its long-form payload (6 + 6 + 16), the longest symbol. Below this
+/// the reference scan runs, so short-buffer behavior is unchanged.
+const LOOKUP_MIN_AVAILABLE: u32 = ESCAPE_BITS + 6 + 16;
+
+/// What a 16-bit window at the cursor decodes to at one position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    /// No codeword, escape or end-of-block starts here.
+    Invalid,
+    /// A Table B.5c..B.5e codeword of `bits` bits (sign bit follows).
+    Entry { bits: u8, run: u8, level: u8 },
+    /// The Table B.5f escape prefix.
+    Escape,
+    /// `end_of_block`.
+    EndOfBlock,
+}
+
+/// Builds the decode table for one position. Filled in the reference
+/// scan's priority, lowest first, so a later fill wins where prefixes
+/// overlap: `end_of_block`, then the escape, then the codewords
+/// shortest to longest. The same FIRST / NEXT gating as the scan
+/// applies.
+fn build_lookup(position: CoefficientPosition) -> Box<[Slot]> {
+    let mut slots = vec![Slot::Invalid; 1 << LOOKUP_BITS].into_boxed_slice();
+    let mut fill = |code: u32, bits: u32, slot: Slot| {
+        let shift = LOOKUP_BITS - bits;
+        let start = (code << shift) as usize;
+        slots[start..start + (1 << shift)].fill(slot);
+    };
+    if position == CoefficientPosition::Next {
+        fill(END_OF_BLOCK_CODE, END_OF_BLOCK_BITS, Slot::EndOfBlock);
+    }
+    fill(ESCAPE_CODE, ESCAPE_BITS, Slot::Escape);
+    let mut entries: Vec<CoeffEntry> = [TABLE_B5C, TABLE_B5D, TABLE_B5E]
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|entry| {
+            !((entry.bits == 1 && position == CoefficientPosition::Next)
+                || (entry.bits == 2
+                    && entry.code == 0b11
+                    && position == CoefficientPosition::First))
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.bits);
+    for entry in entries {
+        fill(
+            u32::from(entry.code),
+            u32::from(entry.bits),
+            Slot::Entry {
+                bits: entry.bits,
+                run: entry.run,
+                level: entry.level,
+            },
+        );
+    }
+    slots
+}
+
+/// The two decode tables, built once: `[First, Next]`.
+fn lookup(position: CoefficientPosition) -> &'static [Slot] {
+    static LOOKUPS: std::sync::OnceLock<[Box<[Slot]>; 2]> = std::sync::OnceLock::new();
+    let lookups = LOOKUPS.get_or_init(|| {
+        [
+            build_lookup(CoefficientPosition::First),
+            build_lookup(CoefficientPosition::Next),
+        ]
+    });
+    &lookups[usize::from(position == CoefficientPosition::Next)]
+}
+
 impl DctCoeffStep {
     /// Walk Tables B.5c / B.5d / B.5e / B.5f for the next
     /// `dct_coeff_*` symbol at the cursor `br`. The `position`
@@ -897,7 +973,56 @@ impl DctCoeffStep {
     ///
     /// On success the matched bits (codeword + sign bit, or escape
     /// prefix + fixed-length payload, or end-of-block) are consumed.
+    ///
+    /// One table lookup on the next 16 bits (a prefix-code decode
+    /// table built once from the transcribed tables) instead of a walk
+    /// over every codeword; within the last 28 bits of the buffer the
+    /// reference scan decides, as before.
     pub fn parse(br: &mut BitReader<'_>, position: CoefficientPosition) -> Result<Self> {
+        let available = br.bits_remaining() as u32;
+        if available < LOOKUP_MIN_AVAILABLE {
+            return Self::parse_by_scan(br, position);
+        }
+        let window = br.peek_u32(LOOKUP_BITS).map_err(|_| Error::ShortHeader)?;
+        match lookup(position)[window as usize] {
+            Slot::Entry { bits, run, level } => {
+                br.consume(u32::from(bits))
+                    .map_err(|_| Error::ShortHeader)?;
+                let sign = br.read_u1().map_err(|_| Error::ShortHeader)?;
+                let signed_level = if sign == 0 {
+                    i16::from(level)
+                } else {
+                    -i16::from(level)
+                };
+                Ok(Self {
+                    symbol: DctCoeff::RunLevel {
+                        run,
+                        signed_level,
+                        escape: false,
+                    },
+                    bit_position_after: br.bit_position(),
+                })
+            }
+            Slot::Escape => Self::parse_escape(br),
+            Slot::EndOfBlock => {
+                br.consume(END_OF_BLOCK_BITS)
+                    .map_err(|_| Error::ShortHeader)?;
+                Ok(Self {
+                    symbol: DctCoeff::EndOfBlock,
+                    bit_position_after: br.bit_position(),
+                })
+            }
+            Slot::Invalid => Err(Error::InvalidBitstream(
+                "dct_coeff: no Table B.5c / B.5d / B.5e codeword matches the bit prefix (§2.4.3.7)",
+            )),
+        }
+    }
+
+    /// The reference decode: the transcribed tables walked codeword by
+    /// codeword, longest width first, then the escape, then
+    /// `end_of_block`. Runs near the end of the buffer, and is the
+    /// oracle the decode tables are tested against.
+    fn parse_by_scan(br: &mut BitReader<'_>, position: CoefficientPosition) -> Result<Self> {
         // Match the longest-first codeword against the prefix.
         //
         // The walker tries every distinct width that appears in
@@ -1193,6 +1318,45 @@ mod tests {
     }
 
     // ----- table invariants -----
+
+    /// The table-driven parser decodes exactly as the reference scan
+    /// (the transcribed tables walked longest codeword first) for
+    /// every 16-bit window at the cursor, both positions, followed by
+    /// tails that vary the sign bit and both escape forms; and below
+    /// 28 bits left, where the scan still runs. Symbols, consumed bits
+    /// and errors must all agree.
+    #[test]
+    fn table_lookup_matches_the_reference_scan_over_every_prefix() {
+        let agree = |buf: &[u8], position| {
+            let fast = DctCoeffStep::parse(&mut BitReader::new(buf), position);
+            let scan = DctCoeffStep::parse_by_scan(&mut BitReader::new(buf), position);
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{scan:?}"),
+                "{position:?} {buf:02x?}"
+            );
+        };
+        for position in [CoefficientPosition::First, CoefficientPosition::Next] {
+            for prefix in 0..=u16::MAX {
+                let [hi, lo] = prefix.to_be_bytes();
+                for tail in [
+                    [0x00, 0x00, 0x00],
+                    [0xFF, 0xFF, 0xFF],
+                    [0x80, 0x01, 0x5A],
+                    [0x40, 0x20, 0x01],
+                ] {
+                    agree(&[hi, lo, tail[0], tail[1], tail[2]], position);
+                }
+                // 32 bits, then fewer than 28.
+                agree(&[hi, lo, 0x00, 0x00], position);
+                agree(&[hi, lo, 0xFF], position);
+                agree(&[hi, lo], position);
+            }
+            for byte in 0..=u8::MAX {
+                agree(&[byte], position);
+            }
+        }
+    }
 
     #[test]
     fn table_b5c_has_expected_row_count() {
