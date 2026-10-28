@@ -405,3 +405,118 @@ fn ieee_1180_deterministic_dc_only_input_is_flat() {
         }
     }
 }
+
+// ---- IEEE 1180-1990 procedure on the decoder's integer output ----
+//
+// The procedure itself, as an integer IDCT must meet it: random pixel
+// blocks in `[-L, H]` (and the same with every sign reversed), a
+// double-precision forward DCT rounded to integers and clamped to the
+// 12-bit coefficient range, then the decoder's `idct_8x8` output
+// against the double-precision reference rounded to integers, both
+// clamped to the 9-bit pel range. The errors are integers, and all
+// five statistics plus the peak are taken over them, for the standard
+// block count of 10 000 per condition.
+
+use oxideav_mpeg12video::fdct_candidate_f64;
+
+/// IEEE 1180's block count per condition.
+const PROCEDURE_BLOCKS: usize = 10_000;
+
+/// `Round` half away from zero, then the 12-bit coefficient clamp.
+fn coefficient(value: f64) -> i16 {
+    (value.round() as i32).clamp(F_INPUT_MIN, F_INPUT_MAX) as i16
+}
+
+fn run_integer_procedure(l: i32, h: i32, negate: bool, seed: u64) -> Metrics {
+    let mut rng = Lcg64::new(seed);
+    let mut sum_error = [[0i64; 8]; 8];
+    let mut sum_sq_error = [[0i64; 8]; 8];
+    let mut peak_error = 0;
+    for _ in 0..PROCEDURE_BLOCKS {
+        let mut pixels = [[0.0f64; 8]; 8];
+        for row in pixels.iter_mut() {
+            for pixel in row.iter_mut() {
+                let value = rng.next_in_range(-l, h);
+                *pixel = f64::from(if negate { -value } else { value });
+            }
+        }
+        let coefficients = fdct_candidate_f64(&pixels).map(|row| row.map(coefficient));
+        let reference = idct_candidate_f64(&coefficients.map(|row| row.map(f64::from)));
+        let tested = idct_8x8(&coefficients);
+        for y in 0..8usize {
+            for x in 0..8usize {
+                let expected = clamp_pel_i32(reference[y][x].round() as i32);
+                let error = i64::from(i32::from(tested[y][x]) - expected);
+                sum_error[y][x] += error;
+                sum_sq_error[y][x] += error * error;
+                peak_error = peak_error.max(error.unsigned_abs() as i32);
+            }
+        }
+    }
+    let q = PROCEDURE_BLOCKS as f64;
+    let (mut pmse, mut omse, mut pme, mut ome) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for y in 0..8usize {
+        for x in 0..8usize {
+            let mse = sum_sq_error[y][x] as f64 / q;
+            let mean = (sum_error[y][x] as f64 / q).abs();
+            pmse = pmse.max(mse);
+            omse += mse / 64.0;
+            pme = pme.max(mean);
+            ome += mean / 64.0;
+        }
+    }
+    Metrics {
+        peak_error,
+        pmse,
+        omse,
+        pme,
+        ome,
+    }
+}
+
+fn assert_procedure(l: i32, h: i32, negate: bool, seed: u64) {
+    let m = run_integer_procedure(l, h, negate, seed);
+    let label = format!("L={l} H={h}{}", if negate { " negated" } else { "" });
+    assert!(m.peak_error <= bounds::PEAK_ERROR, "{label}: {m:?}");
+    assert!(m.pmse <= bounds::PMSE, "{label}: {m:?}");
+    assert!(m.omse <= bounds::OMSE, "{label}: {m:?}");
+    assert!(m.pme <= bounds::PME, "{label}: {m:?}");
+    assert!(m.ome <= bounds::OME, "{label}: {m:?}");
+}
+
+#[test]
+fn ieee_1180_procedure_l_256_h_255() {
+    assert_procedure(256, 255, false, 0x1180_0001);
+    assert_procedure(256, 255, true, 0x1180_0002);
+}
+
+#[test]
+fn ieee_1180_procedure_l_5_h_5() {
+    assert_procedure(5, 5, false, 0x1180_0003);
+    assert_procedure(5, 5, true, 0x1180_0004);
+}
+
+#[test]
+fn ieee_1180_procedure_l_300_h_300() {
+    assert_procedure(300, 300, false, 0x1180_0005);
+    assert_procedure(300, 300, true, 0x1180_0006);
+}
+
+/// A block with a single coefficient of +1 or -1, at any of the 64
+/// positions, comes out exactly as the rounded reference does (the
+/// 1990 standard's deterministic sparse-input check).
+#[test]
+fn ieee_1180_single_unit_coefficients_match_the_reference() {
+    for v in 0..8usize {
+        for u in 0..8usize {
+            for unit in [1i16, -1] {
+                let mut block = [[0i16; 8]; 8];
+                block[v][u] = unit;
+                let reference = idct_candidate_f64(&block.map(|row| row.map(f64::from)));
+                let expected = reference
+                    .map(|row| row.map(|value| clamp_pel_i32(value.round() as i32) as i16));
+                assert_eq!(idct_8x8(&block), expected, "F[{v}][{u}] = {unit}");
+            }
+        }
+    }
+}

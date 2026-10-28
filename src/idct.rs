@@ -254,6 +254,7 @@ pub fn saturate_input(value: i32) -> i32 {
 /// `f64::round` already implements ties-away-from-zero on stable Rust,
 /// matching the `Round` operator in ISO/IEC 13818-2 §4.1.
 #[inline]
+#[cfg(test)]
 fn round_to_int(value: f64) -> i32 {
     value.round() as i32
 }
@@ -374,25 +375,85 @@ pub fn idct_candidate_f64(input: &[[f64; 8]; 8]) -> [[f64; 8]; 8] {
 /// guarantees the input range) and the §7.4.4 MPEG-2 mismatch-control
 /// (`F[7][7]` parity toggle) or the MPEG-1 §2.4.4 per-coefficient
 /// oddification before invoking the IDCT.
+///
+/// The transform runs in integer arithmetic: the separable row and
+/// column passes multiply by [`COS_FIXED`] (`C(u)·cos` in 15-bit fixed
+/// point), the row pass keeping [`ROW_FRACTION_BITS`] of fraction for
+/// the column pass, and both round half away from zero. It meets the
+/// IEEE 1180-1990 accuracy procedure (tests/idct_p1180_conformance.rs);
+/// a block holding only its DC coefficient, the most common kind, is
+/// exact (`F[0][0] / 8`, rounded).
 pub fn idct_8x8(input: &[[i16; 8]; 8]) -> [[i16; 8]; 8] {
-    // Promote to f64 once; the IDCT formula factor naturally produces
-    // an unrounded sample value that we round + clamp here.
-    let mut promoted = [[0.0f64; 8]; 8];
+    let dc_only = input.iter().enumerate().all(|(v, row)| {
+        row.iter()
+            .enumerate()
+            .all(|(u, &c)| c == 0 || (u == 0 && v == 0))
+    });
+    if dc_only {
+        let sample = saturate_output(divide_rounded(i64::from(input[0][0]), 3) as i32) as i16;
+        return [[sample; 8]; 8];
+    }
+    // Row pass: 0.5 · Σ_u C(u)·F[v][u]·cos, kept with ROW_FRACTION_BITS of fraction.
+    let mut rows = [[0i32; 8]; 8];
     for v in 0..8usize {
-        for u in 0..8usize {
-            promoted[v][u] = f64::from(input[v][u]);
+        if input[v].iter().all(|&c| c == 0) {
+            continue;
+        }
+        for x in 0..8usize {
+            let mut sum = 0i32;
+            for u in 0..8usize {
+                sum += i32::from(input[v][u]) * COS_FIXED[x][u];
+            }
+            rows[v][x] =
+                divide_rounded(i64::from(sum), COS_FRACTION_BITS + 1 - ROW_FRACTION_BITS) as i32;
         }
     }
-    let real = idct_candidate_f64(&promoted);
+    // Column pass: 0.5 · Σ_v C(v)·row[v]·cos, back to whole samples.
     let mut out = [[0i16; 8]; 8];
-    for y in 0..8usize {
-        for x in 0..8usize {
-            let clamped = saturate_output(round_to_int(real[y][x]));
-            // The clamp guarantees `clamped` fits in i16.
-            out[y][x] = clamped as i16;
+    for x in 0..8usize {
+        for y in 0..8usize {
+            let mut sum = 0i64;
+            for v in 0..8usize {
+                sum += i64::from(rows[v][x]) * i64::from(COS_FIXED[y][v]);
+            }
+            let sample = divide_rounded(sum, COS_FRACTION_BITS + 1 + ROW_FRACTION_BITS);
+            // The clamp guarantees the sample fits in i16.
+            out[y][x] = saturate_output(sample as i32) as i16;
         }
     }
     out
+}
+
+/// Fraction bits of [`COS_FIXED`].
+const COS_FRACTION_BITS: u32 = 15;
+
+/// Fraction bits the row pass keeps for the column pass.
+const ROW_FRACTION_BITS: u32 = 8;
+
+/// `C(u)·cos((2x+1)uπ/16)` scaled by `2^15` and rounded, indexed
+/// `[x][u]`: the integer IDCT's constants (tested against the cosine
+/// they stand for).
+const COS_FIXED: [[i32; 8]; 8] = [
+    [23170, 32138, 30274, 27246, 23170, 18205, 12540, 6393],
+    [23170, 27246, 12540, -6393, -23170, -32138, -30274, -18205],
+    [23170, 18205, -12540, -32138, -23170, 6393, 30274, 27246],
+    [23170, 6393, -30274, -18205, 23170, 27246, -12540, -32138],
+    [23170, -6393, -30274, 18205, 23170, -27246, -12540, 32138],
+    [23170, -18205, -12540, 32138, -23170, -6393, 30274, -27246],
+    [23170, -27246, 12540, 6393, -23170, 32138, -30274, 18205],
+    [23170, -32138, 30274, -27246, 23170, -18205, 12540, -6393],
+];
+
+/// `value / 2^shift`, rounded half away from zero (the §4.1 `Round`),
+/// in integers.
+#[inline]
+fn divide_rounded(value: i64, shift: u32) -> i64 {
+    let half = 1i64 << (shift - 1);
+    if value >= 0 {
+        (value + half) >> shift
+    } else {
+        -((-value + half) >> shift)
+    }
 }
 
 /// Convenience wrapper around [`idct_8x8`] that accepts an `i32`
@@ -417,6 +478,35 @@ pub fn idct_8x8_from_i32(input: &[[i32; 8]; 8]) -> [[i16; 8]; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each fixed-point constant is the rounded `C(u)·cos` it stands for.
+    #[test]
+    fn fixed_point_cosines_are_the_rounded_cosines() {
+        let table = cos_table_ref();
+        for x in 0..8usize {
+            for u in 0..8usize {
+                let exact = alpha(u) * table[x][u] * f64::from(1u32 << COS_FRACTION_BITS);
+                assert_eq!(COS_FIXED[x][u], exact.round() as i32, "[{x}][{u}]");
+            }
+        }
+    }
+
+    /// A DC-only block is `F[0][0] / 8` rounded half away from zero, as
+    /// the double-precision transform gives, for every DC value.
+    #[test]
+    fn dc_only_blocks_are_exact() {
+        for dc in F_INPUT_MIN..=F_INPUT_MAX {
+            let mut block = [[0i16; 8]; 8];
+            block[0][0] = dc as i16;
+            assert_eq!(idct_8x8(&block), idct_8x8_float(&block), "DC {dc}");
+        }
+    }
+
+    /// The double-precision transform rounded, for comparisons.
+    fn idct_8x8_float(input: &[[i16; 8]; 8]) -> [[i16; 8]; 8] {
+        idct_candidate_f64(&input.map(|row| row.map(f64::from)))
+            .map(|row| row.map(|v| saturate_output(round_to_int(v)) as i16))
+    }
 
     #[test]
     fn all_zero_input_yields_all_zero_output() {

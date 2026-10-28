@@ -251,3 +251,18 @@ e5d00c6f007bed3a0e5bfdf3a10875050aef68bced62c5dd04768defc6dc5d38  selfenc-mpeg1-
 9882e3a029dbdcb9d643fd21696b883d8287b976b8488887729045c831fc4687  selfenc-mpeg1-qmat-48x32.m1v
 4916b08fb15265aa3d795cfd37d63c0bbe870f126846cabe7a6509ec8a81ee77  selfenc-mpeg1-qmat-48x32.m1v.ref.yuv
 ```
+
+2026-10-27: `idct_8x8` became an integer transform (15-bit fixed-point
+cosines, 8 fraction bits between the separable passes, rounding half
+away from zero; DC-only blocks exact), which meets the IEEE 1180-1990
+procedure on its integer output (`tests/idct_p1180_conformance.rs`)
+and removes floating point, and with it any host math-library
+dependence, from the encoder's reconstruction. The encoder's
+reconstruction runs through it, so the 27 streams with predicted
+pictures were regenerated; the 7 intra-only streams regenerate
+byte-identical. Their references were re-decoded with the same
+black-box invocation (FFmpeg 9.0.1 this time; `-pix_fmt yuv422p` /
+`yuv444p` for the 4:2:2 / 4:4:4 streams), and every committed decode
+agrees with ours within the corpus contract. The strict pass reports
+nothing new: the four field-coded streams draw the same
+field-picture-pair notes as their previous versions did.
