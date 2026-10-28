@@ -393,35 +393,65 @@ pub fn idct_8x8(input: &[[i16; 8]; 8]) -> [[i16; 8]; 8] {
         let sample = saturate_output(divide_rounded(i64::from(input[0][0]), 3) as i32) as i16;
         return [[sample; 8]; 8];
     }
-    // Row pass: 0.5 · Σ_u C(u)·F[v][u]·cos, kept with ROW_FRACTION_BITS of fraction.
-    let mut rows = [[0i32; 8]; 8];
+    // Row pass: 0.5 · Σ_u C(u)·F[v][u]·cos, kept with ROW_FRACTION_BITS of fraction and
+    // stored transposed (`columns[x][v]`), so the column pass reads each column whole.
+    let mut columns = [[0i64; 8]; 8];
     for v in 0..8usize {
         if input[v].iter().all(|&c| c == 0) {
             continue;
         }
+        let sums = partial_butterfly(input[v].map(i64::from));
         for x in 0..8usize {
-            let mut sum = 0i32;
-            for u in 0..8usize {
-                sum += i32::from(input[v][u]) * COS_FIXED[x][u];
-            }
-            rows[v][x] =
-                divide_rounded(i64::from(sum), COS_FRACTION_BITS + 1 - ROW_FRACTION_BITS) as i32;
+            columns[x][v] = divide_rounded(sums[x], COS_FRACTION_BITS + 1 - ROW_FRACTION_BITS);
         }
     }
     // Column pass: 0.5 · Σ_v C(v)·row[v]·cos, back to whole samples.
     let mut out = [[0i16; 8]; 8];
     for x in 0..8usize {
+        let sums = partial_butterfly(columns[x]);
         for y in 0..8usize {
-            let mut sum = 0i64;
-            for v in 0..8usize {
-                sum += i64::from(rows[v][x]) * i64::from(COS_FIXED[y][v]);
-            }
-            let sample = divide_rounded(sum, COS_FRACTION_BITS + 1 + ROW_FRACTION_BITS);
+            let sample = divide_rounded(sums[y], COS_FRACTION_BITS + 1 + ROW_FRACTION_BITS);
             // The clamp guarantees the sample fits in i16.
             out[y][x] = saturate_output(sample as i32) as i16;
         }
     }
     out
+}
+
+/// `Σ_u f[u]·COS_FIXED[x][u]` for every `x`, exactly, with 22 multiplies
+/// in place of 64: an even/odd (partial butterfly) regrouping of the
+/// 8-point inverse DCT. Row `7 − x` of the cosine table is row `x` with
+/// the odd columns negated, so outputs `x` and `7 − x` share an even part
+/// `E` and an odd part `O` (`E + O` and `E − O`); the even part folds
+/// once more the same way. Integer products are exact, so the sums equal
+/// the plain matrix product's bit for bit.
+#[inline]
+fn partial_butterfly(f: [i64; 8]) -> [i64; 8] {
+    let [a, c1, c2, c3, _, c5, c6, c7] = COS_FIXED[0].map(i64::from);
+    let (even_0, even_1) = (a * (f[0] + f[4]), a * (f[0] - f[4]));
+    let (odd_even_0, odd_even_1) = (c2 * f[2] + c6 * f[6], c6 * f[2] - c2 * f[6]);
+    let e = [
+        even_0 + odd_even_0,
+        even_1 + odd_even_1,
+        even_1 - odd_even_1,
+        even_0 - odd_even_0,
+    ];
+    let o = [
+        c1 * f[1] + c3 * f[3] + c5 * f[5] + c7 * f[7],
+        c3 * f[1] - c7 * f[3] - c1 * f[5] - c5 * f[7],
+        c5 * f[1] - c1 * f[3] + c7 * f[5] + c3 * f[7],
+        c7 * f[1] - c5 * f[3] + c3 * f[5] - c1 * f[7],
+    ];
+    [
+        e[0] + o[0],
+        e[1] + o[1],
+        e[2] + o[2],
+        e[3] + o[3],
+        e[3] - o[3],
+        e[2] - o[2],
+        e[1] - o[1],
+        e[0] - o[0],
+    ]
 }
 
 /// Fraction bits of [`COS_FIXED`].
@@ -445,15 +475,14 @@ const COS_FIXED: [[i32; 8]; 8] = [
 ];
 
 /// `value / 2^shift`, rounded half away from zero (the §4.1 `Round`),
-/// in integers.
+/// in integers and without a branch: the magnitude is rounded, then
+/// the sign (all ones for a negative value) is put back.
 #[inline]
 fn divide_rounded(value: i64, shift: u32) -> i64 {
-    let half = 1i64 << (shift - 1);
-    if value >= 0 {
-        (value + half) >> shift
-    } else {
-        -((-value + half) >> shift)
-    }
+    let sign = value >> 63;
+    let magnitude = (value ^ sign) - sign;
+    let rounded = (magnitude + (1i64 << (shift - 1))) >> shift;
+    (rounded ^ sign) - sign
 }
 
 /// Convenience wrapper around [`idct_8x8`] that accepts an `i32`
@@ -478,6 +507,117 @@ pub fn idct_8x8_from_i32(input: &[[i32; 8]; 8]) -> [[i16; 8]; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The integer IDCT as a plain matrix product, one multiply per
+    /// coefficient and output: the form the fast passes regroup, kept as
+    /// their oracle.
+    fn idct_8x8_by_matrix(input: &[[i16; 8]; 8]) -> [[i16; 8]; 8] {
+        let mut rows = [[0i64; 8]; 8];
+        for v in 0..8usize {
+            for x in 0..8usize {
+                let sum: i64 = (0..8)
+                    .map(|u| i64::from(input[v][u]) * i64::from(COS_FIXED[x][u]))
+                    .sum();
+                rows[v][x] = divide_rounded(sum, COS_FRACTION_BITS + 1 - ROW_FRACTION_BITS);
+            }
+        }
+        let mut out = [[0i16; 8]; 8];
+        for x in 0..8usize {
+            for y in 0..8usize {
+                let sum: i64 = (0..8)
+                    .map(|v| rows[v][x] * i64::from(COS_FIXED[y][v]))
+                    .sum();
+                let sample = divide_rounded(sum, COS_FRACTION_BITS + 1 + ROW_FRACTION_BITS);
+                out[y][x] = saturate_output(sample as i32) as i16;
+            }
+        }
+        out
+    }
+
+    /// `divide_rounded` as the §4.1 `Round` reads, one branch per sign.
+    fn divide_rounded_by_sign(value: i64, shift: u32) -> i64 {
+        let half = 1i64 << (shift - 1);
+        if value >= 0 {
+            (value + half) >> shift
+        } else {
+            -((-value + half) >> shift)
+        }
+    }
+
+    /// The branchless rounding equals the per-sign definition for every
+    /// value within ±2^20 at the shifts the passes use, and at the ends
+    /// of the largest sums they can form.
+    #[test]
+    fn branchless_rounding_equals_round_half_away_from_zero() {
+        let shifts = [
+            COS_FRACTION_BITS + 1 - ROW_FRACTION_BITS,
+            COS_FRACTION_BITS + 1 + ROW_FRACTION_BITS,
+            3,
+        ];
+        for shift in shifts {
+            for value in (-(1i64 << 20)..=(1i64 << 20)).chain([
+                i64::from(i32::MIN),
+                i64::from(i32::MAX),
+                -(1i64 << 40),
+                1i64 << 40,
+            ]) {
+                assert_eq!(
+                    divide_rounded(value, shift),
+                    divide_rounded_by_sign(value, shift),
+                    "{value} >> {shift}"
+                );
+            }
+        }
+    }
+
+    /// xorshift64*, seeded: the same blocks on every platform.
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state >> 12;
+        *state ^= *state << 25;
+        *state ^= *state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// The fast passes give exactly the matrix product's samples: over
+    /// blocks at the input range's ends, every single coefficient at its
+    /// extremes, and 50,000 seeded random blocks from sparse (a few
+    /// low-frequency coefficients, as real blocks are) to full. A block
+    /// holding only its DC coefficient takes the exact shortcut instead
+    /// (`dc_only_blocks_are_exact`) and is left out here.
+    #[test]
+    fn the_fast_passes_equal_the_matrix_product_exactly() {
+        let mut blocks: Vec<[[i16; 8]; 8]> =
+            vec![[[F_INPUT_MAX as i16; 8]; 8], [[F_INPUT_MIN as i16; 8]; 8]];
+        for v in 0..8 {
+            for u in 0..8 {
+                for value in [F_INPUT_MIN, -1, 1, F_INPUT_MAX] {
+                    let mut block = [[0i16; 8]; 8];
+                    block[v][u] = value as i16;
+                    blocks.push(block);
+                }
+            }
+        }
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for n in 0..50_000usize {
+            let filled = 1 + n % 64;
+            let mut block = [[0i16; 8]; 8];
+            for _ in 0..filled {
+                let at = (next(&mut state) % 64) as usize;
+                let span = if n % 2 == 0 { 64 } else { 4096 };
+                let value = (next(&mut state) % span) as i32 - span as i32 / 2;
+                block[at / 8][at % 8] = value.clamp(F_INPUT_MIN, F_INPUT_MAX) as i16;
+            }
+            blocks.push(block);
+        }
+        let dc_only = |b: &[[i16; 8]; 8]| b.iter().flatten().skip(1).all(|&c| c == 0);
+        for (n, block) in blocks.iter().enumerate().filter(|(_, b)| !dc_only(b)) {
+            assert_eq!(
+                idct_8x8(block),
+                idct_8x8_by_matrix(block),
+                "block {n}: {block:?}"
+            );
+        }
+    }
 
     /// Each fixed-point constant is the rounded `C(u)·cos` it stands for.
     #[test]
