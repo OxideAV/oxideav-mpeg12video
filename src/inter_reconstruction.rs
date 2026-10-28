@@ -1962,15 +1962,28 @@ fn write_inter_block(
         ColourComponent::Cr => &mut dest.cr,
     };
 
+    // A row at a time, so the add-and-saturate vectorizes; a prediction
+    // plane cut short reads 0 past its end, as `mb_local_sample` does.
     for r in 0..8usize {
-        let frame_y = placement.base_y + r * stride;
         let local_y = local_y0 + r * stride;
-        for c in 0..8usize {
-            let frame_x = placement.base_x + c;
-            let p = mb_local_sample(pred, mb_plane_width, local_x0 + c, local_y) as i32;
-            let f = f_pel.map(|m| m[r][c] as i32).unwrap_or(0);
-            let d = saturate(f + p);
-            plane.put_sample(frame_x, frame_y, d);
+        let start = local_y * mb_plane_width + local_x0;
+        let mut p = [0u8; 8];
+        match pred.get(start..start + 8) {
+            Some(row) => p.copy_from_slice(row),
+            None => {
+                for (c, sample) in p.iter_mut().enumerate() {
+                    *sample = mb_local_sample(pred, mb_plane_width, local_x0 + c, local_y);
+                }
+            }
+        }
+        let row = plane.row_span_mut(placement.base_x, placement.base_y + r * stride, 8);
+        match f_pel {
+            Some(f) => {
+                for ((d, &p), &f) in row.iter_mut().zip(&p).zip(&f[r]) {
+                    *d = saturate(i32::from(f) + i32::from(p));
+                }
+            }
+            None => row.copy_from_slice(&p[..row.len()]),
         }
     }
     Ok(())
@@ -3201,6 +3214,153 @@ mod tests {
         assert_eq!(written, 6);
         for y in 0..16usize {
             assert_eq!(dest.y.get(0, y), Some(124), "row {y}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod row_write_tests {
+    use super::*;
+    use crate::mpeg2_macroblock_blocks::block_count;
+
+    /// xorshift64*, seeded: the same cases on every platform.
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state >> 12;
+        *state ^= *state << 25;
+        *state ^= *state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(state: &mut u64, n: usize) -> usize {
+        (next(state) % n as u64) as usize
+    }
+
+    fn random_bytes(state: &mut u64, len: usize) -> Vec<u8> {
+        (0..len).map(|_| next(state) as u8).collect()
+    }
+
+    /// The §7.6.8 write-out one sample at a time, as first written: the
+    /// oracle the row-wise [`write_inter_block`] must match exactly.
+    #[allow(clippy::too_many_arguments)]
+    fn write_inter_block_by_sample(
+        dest: &mut FrameBuffer,
+        block_index: u8,
+        chroma_format: ChromaFormat,
+        mb_col: usize,
+        mb_row: usize,
+        field_dct: bool,
+        luma_pred: &[u8],
+        cb_pred: &[u8],
+        cr_pred: &[u8],
+        f_pel: Option<&[[i16; 8]; 8]>,
+    ) -> InterResult<()> {
+        let placement = block_placement(
+            block_index as usize,
+            chroma_format,
+            mb_col,
+            mb_row,
+            field_dct,
+        )
+        .ok_or(InterError::InvalidBlockIndex)?;
+        let (component, mb_plane_width) = block_component_and_mb_width(block_index, chroma_format)?;
+        let pred = match component {
+            ColourComponent::Y => luma_pred,
+            ColourComponent::Cb => cb_pred,
+            ColourComponent::Cr => cr_pred,
+        };
+        let (sx, sy) = crate::frame_assembly::chroma_shift(chroma_format);
+        let (mb_origin_x, mb_origin_y) = match component {
+            ColourComponent::Y => (mb_col * 16, mb_row * 16),
+            ColourComponent::Cb | ColourComponent::Cr => (mb_col * (16 >> sx), mb_row * (16 >> sy)),
+        };
+        let local_x0 = placement.base_x - mb_origin_x;
+        let local_y0 = placement.base_y - mb_origin_y;
+        let stride = placement.row_stride();
+        let plane = match component {
+            ColourComponent::Y => &mut dest.y,
+            ColourComponent::Cb => &mut dest.cb,
+            ColourComponent::Cr => &mut dest.cr,
+        };
+        for r in 0..8usize {
+            let frame_y = placement.base_y + r * stride;
+            let local_y = local_y0 + r * stride;
+            for c in 0..8usize {
+                let frame_x = placement.base_x + c;
+                let p = mb_local_sample(pred, mb_plane_width, local_x0 + c, local_y) as i32;
+                let f = f_pel.map(|m| m[r][c] as i32).unwrap_or(0);
+                plane.put_sample(frame_x, frame_y, saturate(f + p));
+            }
+        }
+        Ok(())
+    }
+
+    /// Every block of every chroma format, frame and field DCT, residuals
+    /// that saturate both ways, uncoded blocks, macroblocks one past the
+    /// picture's grid (their writes are dropped) and prediction planes cut
+    /// short (their missing samples read 0): the row-wise write leaves the
+    /// destination exactly as the per-sample one does.
+    #[test]
+    fn row_writes_equal_per_sample_writes_exactly() {
+        const CASES: usize = 20_000;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for case in 0..CASES {
+            let cf = [
+                ChromaFormat::Yuv420,
+                ChromaFormat::Yuv422,
+                ChromaFormat::Yuv444,
+            ][below(&mut state, 3)];
+            let (w, h) = (16 + below(&mut state, 40), 16 + below(&mut state, 40));
+            let mut ours = FrameBuffer::new(w, h, cf);
+            for plane in [&mut ours.y, &mut ours.cb, &mut ours.cr] {
+                for y in 0..plane.height() {
+                    for x in 0..plane.width() {
+                        plane.put_sample(x, y, next(&mut state) as u8);
+                    }
+                }
+            }
+            let mut oracle = ours.clone();
+            let mb_col = below(&mut state, w.div_ceil(16) + 1);
+            let mb_row = below(&mut state, h.div_ceil(16) + 1);
+            let block_index = below(&mut state, block_count(cf)) as u8;
+            let field_dct = next(&mut state) & 1 == 1;
+            let (cw, ch) = chroma_mb_extent(cf);
+            let mut pred = |len: usize| {
+                let len = if below(&mut state, 8) == 0 {
+                    below(&mut state, len)
+                } else {
+                    len
+                };
+                random_bytes(&mut state, len)
+            };
+            let (luma, cb, cr) = (pred(256), pred(cw * ch), pred(cw * ch));
+            let mut f = [[0i16; 8]; 8];
+            for value in f.iter_mut().flatten() {
+                *value = below(&mut state, 601) as i16 - 300;
+            }
+            let f_pel = (below(&mut state, 4) != 0).then_some(&f);
+            let args = (block_index, cf, mb_col, mb_row, field_dct);
+            let got = write_inter_block(
+                &mut ours, args.0, args.1, args.2, args.3, args.4, &luma, &cb, &cr, f_pel,
+            );
+            let want = write_inter_block_by_sample(
+                &mut oracle,
+                args.0,
+                args.1,
+                args.2,
+                args.3,
+                args.4,
+                &luma,
+                &cb,
+                &cr,
+                f_pel,
+            );
+            assert_eq!(got, want, "case {case}: {args:?}");
+            assert!(
+                ours.y.samples() == oracle.y.samples()
+                    && ours.cb.samples() == oracle.cb.samples()
+                    && ours.cr.samples() == oracle.cr.samples(),
+                "case {case}: {args:?} wrote different samples"
+            );
         }
     }
 }
