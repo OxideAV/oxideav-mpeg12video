@@ -6,9 +6,50 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Default` on the stats, report and layer-output records that lacked it; full-field `FieldSearchResult::new`, `IntraPictureParams::new`, `TemporalScalableDecoded::new` and `VbvParams::new`; `with_<field>` setters on every newly `#[non_exhaustive]` record. Tests, examples and fuzz targets build records through them.
+
 ### Changed
 
+- API hygiene: enums `Error`, `InterError`, `PictureStructureOption`, `RateControlOption`, `PulldownOption`, `RemovalInterval`, `VbvViolation`, `VbvStandard` and `VbvVerifyError` are now `#[non_exhaustive]`, as are the option / stats / params / layer-output records `FrameEncodeStats`, `FrameEncodeOptions`, `Mpeg12EncoderOptions`, `FieldSearchResult`, `FieldModeStats`, `FrameBuffer`, `IntraPictureParams`, `IntraDecodeContext`, `FrameFieldStats`, `Mpeg1SequenceParams`, `Mpeg1PictureParams`, `CbrConfig`, `CbrEncoded`, `SnrEncoded`, `SpatialScalableDecoded`, `SpatialLayerConfig`, `SpatialStats`, `SpatialEncoded`, `TemporalScalableDecoded`, `TemporalLayerConfig`, `TemporalEncoded`, `VbvParams`, `VbvPictureRecord`, `VbvStreamReport`. `PictureCodingType`, `ChromaFormat` and the `dct_coeff` syntax enums stay exhaustive (spec-fixed). The §6/§7 syntax-walker modules were already `#[doc(hidden)]`.
+
+## [0.0.14](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.13...v0.0.14) - 2026-10-24
+
+### Added
+
+- SequenceDecoder coded-order output and caller-declared access-unit ends
+- DecodedFrame::stream_offset — the picture start code offset of each frame from SequenceDecoder, for attaching packet presentation times
+- SequenceDecoder::with_concealment — damaged pictures keep their frame slot as a copy of their nearest reference; unreferenced leading B-pictures are dropped
+- SequenceDecoder — incremental video_sequence() decode; the runtime Decoder streams frames instead of decoding the whole stream at flush
+- arbitrary slice structures — a slice's first macroblock_address_increment positions it within the row (§6.3.17.1 / 11172-2 §2.4.3.6 reset) instead of being rejected, so several slices per row (13818-2 §6.1.2) and row-spanning, mid-row-starting slices (11172-2 §2.4.1) decode; slice-length intra encoders for both syntaxes; two black-box-validated slice-structure corpus streams
+- §7.7 spatial scalability (progressive layers, weight table 00) — two-layer decode loop over the §7.7.3 resampled lower frame (Tables B-5 / B-6 / B-7 via the walker's new scalable-table plumbing, §7.7.4 class 0 / 1 / 4 prediction, §7.7.6 skips, §7.7.5.1 resets, Table 7-18 chroma upgrades, §6.3.7 non-scalable pictures) + the self-made enhancement-layer encoder (mirrored GOP, intra / temporal / spatial-only / half-weight decision); picture_spatial_scalable_extension() writer; pinned spatial corpus pair (base black-box validated); spatial_decode fuzz target
+- §7.9 temporal scalability — two-layer decode loop (Table 7-28 / 7-29 reference selection resolved by multiplex position with the §6.3.13 temporal-reference cross-check, no enhancement reorder) + §6.3.7 remultiplex + the self-made enhancement-layer encoder (leading P from the next lower frame, B from surrounding lower frames or the most recent enhancement picture); picture_temporal_scalable_extension() writer; pinned temporal corpus pair (base black-box validated); temporal_decode fuzz target
+- §7.8 SNR scalability — two-layer decode loop (Table B-8 enhancement macroblocks, non-intra refinement blocks, §7.8.3.4 coefficient addition before saturation, one combined frame store, dct_type coincidence, F''lower = 0 for lower-layer skips) + the self-made enhancement-layer encoder that is its oracle; sequence_scalable_extension() writer; pinned SNR corpus pair (base black-box validated); snr_decode fuzz target
+- typed registry encoder options — Mpeg12EncoderOptions (CodecOptionsStruct schema) drives every assembler behind oxideav_core::make_encoder: picture_structure frame / field / frame_field / field_adaptive, interlace + entropy flags, FrameEncodeOptions (skips, concealment vectors, cadence, 3:2 pulldown), dual-prime, Annex C CBR, §7.10 data partitioning, MPEG-1 D-pictures, 4:2:2 / 4:4:4 pixel formats
+- vertical_size > 2800 — §6.2.4 / §6.3.16 slice_vertical_position_extension emitted by every MPEG-2 encoder (write_slice_header_in), honoured by the frame / field decode drivers, carried through the §7.10 data-partitioning split / merge; fuzz: round-trip target covers field / frame-field / all-chroma / tall pictures
+- 4:2:2 / 4:4:4 on the frame-picture field-based encode path — §6.1.3 field-DCT chroma organisation, all-block dct_type costing, chroma-generic coded_block_pattern() in the frame-field I/P/B encoders
+- 4:2:2 / 4:4:4 on the field-picture encode paths — chroma-generic residual gathering + coded_block_pattern() emission in the plain and adaptive field encoders, field assembler and field CBR
+
+### Fixed
+
+- fixup for #13: DecodedFrame is #[non_exhaustive] with new() / with_* setters
+- MPEG-1 motion vectors on the +f*16 wrap seam decode with the ordinary wrap instead of failing the picture
+- clippy 1.97 findings in the spatial scalability module (type_complexity, identity_op) and its test (unused closure binding)
+
+### Other
+
 - edition 2024, MSRV 1.95
+- README examples use the current registry API
+- slice walker — a first macroblock_address_increment above one starts the slice mid-row (§6.3.17.1 / §2.4.3.6), replacing the stale rejection premise; reject a first increment beyond the declared row (§6.3.16 / §2.4.3.5)
+- README + CHANGELOG — round 456: interlaced 4:2:2 / 4:4:4, vertical_size > 2800, typed runtime encoder options, SNR / temporal / spatial two-layer loops + enhancement encoders, arbitrary slice structures; Not-yet-supported rewritten
+- four black-box-validated interlaced 4:2:2 / 4:4:4 streams join the pinned self-encoded corpus (twenty-six) — 4:2:2 field pairs, 4:2:2 frame-field, 4:2:2 adaptive field modes, 4:4:4 frame-field
+
+### Changed
+
+- MPEG-1 motion vectors with `little == +f * 16` decode with the ordinary modulo-32f wrap instead of failing the picture: §2.4.4.2 states that limit as an encoder constraint, deployed encoders violate it, and the reconstruction stays unambiguous
+- edition 2024, MSRV 1.95
+- the runtime `Decoder` adapter streams: each frame is returned as soon as the §6.1.1.11 reorder commits it instead of after `flush`, and memory stays bounded by one coded picture plus the reference anchors rather than the whole elementary stream and every decoded frame
 
 ### Other
 
@@ -16,6 +57,11 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SequenceDecoder::coded_order` / `SequenceDecoder::end_access_unit`: frames in coded order (no §6.1.1.11 hold-back; the §7.6 reference rotation is unchanged) and a caller-declared access-unit end, so a container that delimits pictures gets each one back as soon as its unit is pushed rather than when the next start code arrives — the coded-order, per-access-unit shape proposed in #14, on the streaming decoder
+- `DecodedFrame` is `#[non_exhaustive]` (it gained a field in this release) with `DecodedFrame::new` / `with_display_flags` / `with_stream_offset` for construction outside the crate
+- `DecodedFrame::stream_offset`: the stream offset of the picture start code that began each frame (the first field's for a field pair), set by `SequenceDecoder`, so callers can attach the presentation time of the packet that carried it (ISO/IEC 13818-1 2.4.3.7); `None` from the scalable-layer decoders
+- `SequenceDecoder::with_concealment`: a picture that fails to decode is replaced by a copy of its nearest reference, keeping its frame slot and the reference rotation so the chain recovers at the next intra picture; B-pictures without a forward reference (an open GOP's leading pictures when decoding starts mid-stream) are dropped; `concealed()` / `skipped()` count both. The strict default is unchanged
+- `SequenceDecoder`: incremental `video_sequence()` decode — `push` elementary-stream bytes in pieces of any size, `next_frame` returns display-order frames as each picture's terminating start code arrives, `finish` releases the last picture and held anchor; `decode_video_sequence` is now a push-everything wrapper over it, and a corpus-wide test holds piecewise decode (1, 3, 188, 2048 bytes and whole) frame-identical to it
 - arbitrary slice structures decode: a slice's first `macroblock_address_increment` positions it within the row against the §6.3.17.1 / ISO/IEC 11172-2 §2.4.3.6 reset instead of being rejected — several slices per row (13818-2 §6.1.2) and row-spanning, mid-row-starting slices (11172-2 §2.4.1) now decode; `encode_intra_picture_with_slice_length` / `encode_mpeg1_intra_picture_with_slice_length` emit both shapes; two black-box-validated slice-structure streams join the corpus
 - §7.7 spatial scalability (progressive layers, weight table 00) — the two-layer decode loop (`decode_spatial_scalable_sequence`: §7.7.3 resampled `spat_pred_pic` per picture, Tables B-5 / B-6 / B-7 through the walker's new scalable-table plumbing, §7.7.4 class 0 / 1 / 4 prediction, §7.7.6 skips, §7.7.5.1 resets, Table 7-18 chroma upgrades, §6.3.7 non-scalable pictures) and the self-made enhancement-layer encoder (`encode_spatial_enhancement_layer`: mirrored GOP structure, per-macroblock intra / temporal / spatial-only / half-weight decision); `picture_spatial_scalable_extension()` writer; `SliceWalkContext::with_scalable_tables` + `MacroblockRecord::spatial_temporal_weight`; pinned spatial pair in the corpus (lower layer black-box validated) and a `spatial_decode` fuzz target
 - §7.9 temporal scalability — the two-layer decode loop (`decode_temporal_scalable_sequence`: Table 7-28 / 7-29 reference selection from the most recent enhancement picture / most recent / next lower-layer frame resolved by multiplex position, §6.3.13 temporal-reference cross-check, no enhancement reorder) with the §6.3.7 `remultiplex`, and the self-made enhancement-layer encoder (`encode_temporal_enhancement_layer`: leading P pictures from the next lower frame, B pictures from the surrounding lower frames or the most recent enhancement picture); `picture_temporal_scalable_extension()` writer; pinned temporal pair in the corpus (lower layer black-box validated) and a `temporal_decode` fuzz target

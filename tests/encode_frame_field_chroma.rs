@@ -18,17 +18,7 @@ use oxideav_mpeg12video::{
 };
 
 fn ff_params(width: usize, height: usize, chroma: ChromaFormat) -> IntraPictureParams {
-    IntraPictureParams {
-        progressive_sequence: false,
-        width,
-        height,
-        chroma_format: chroma,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-    }
+    IntraPictureParams::new(width, height, chroma, false, 0, false, false, false, false)
 }
 
 /// A textured base frame whose chroma planes carry per-row detail at

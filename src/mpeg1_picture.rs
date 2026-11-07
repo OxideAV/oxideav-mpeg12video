@@ -54,7 +54,8 @@ use crate::{Error, Result};
 /// the geometry plus the sequence-header quantiser matrices
 /// (§2.4.2.3 — one intra and one non-intra matrix, shared by
 /// luminance and chrominance).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct Mpeg1PictureParams {
     /// `horizontal_size` from the sequence header.
     pub width: usize,
@@ -66,6 +67,36 @@ pub struct Mpeg1PictureParams {
     /// `non_intra_quant[m][n]` in raster order — the loaded matrix or
     /// the §2.4.2.3 all-16 default.
     pub non_intra_quant: [[u8; 8]; 8],
+}
+
+impl Mpeg1PictureParams {
+    /// Set `width`.
+    #[must_use]
+    pub fn with_width(mut self, v: usize) -> Self {
+        self.width = v;
+        self
+    }
+
+    /// Set `height`.
+    #[must_use]
+    pub fn with_height(mut self, v: usize) -> Self {
+        self.height = v;
+        self
+    }
+
+    /// Set `intra_quant`.
+    #[must_use]
+    pub fn with_intra_quant(mut self, v: [[u8; 8]; 8]) -> Self {
+        self.intra_quant = v;
+        self
+    }
+
+    /// Set `non_intra_quant`.
+    #[must_use]
+    pub fn with_non_intra_quant(mut self, v: [[u8; 8]; 8]) -> Self {
+        self.non_intra_quant = v;
+        self
+    }
 }
 
 impl Mpeg1PictureParams {

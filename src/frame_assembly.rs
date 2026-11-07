@@ -153,6 +153,7 @@ impl Plane {
 /// * 4:2:2 — chroma is half width, full height.
 /// * 4:4:4 — chroma is full width, full height.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameBuffer {
     /// Visible picture width (`horizontal_size`).
     pub width: usize,
@@ -166,6 +167,50 @@ pub struct FrameBuffer {
     pub cb: Plane,
     /// Cr chrominance plane.
     pub cr: Plane,
+}
+
+impl FrameBuffer {
+    /// Set `width`.
+    #[must_use]
+    pub fn with_width(mut self, v: usize) -> Self {
+        self.width = v;
+        self
+    }
+
+    /// Set `height`.
+    #[must_use]
+    pub fn with_height(mut self, v: usize) -> Self {
+        self.height = v;
+        self
+    }
+
+    /// Set `chroma_format`.
+    #[must_use]
+    pub fn with_chroma_format(mut self, v: ChromaFormat) -> Self {
+        self.chroma_format = v;
+        self
+    }
+
+    /// Set `y`.
+    #[must_use]
+    pub fn with_y(mut self, v: Plane) -> Self {
+        self.y = v;
+        self
+    }
+
+    /// Set `cb`.
+    #[must_use]
+    pub fn with_cb(mut self, v: Plane) -> Self {
+        self.cb = v;
+        self
+    }
+
+    /// Set `cr`.
+    #[must_use]
+    pub fn with_cr(mut self, v: Plane) -> Self {
+        self.cr = v;
+        self
+    }
 }
 
 /// Horizontal / vertical chroma subsampling shift for a
@@ -500,6 +545,7 @@ pub fn place_intra_macroblock(
 /// (the four DCT-context flags), so the driver does not re-parse the
 /// sequence layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct IntraPictureParams {
     /// Coded picture width (`horizontal_size`).
     pub width: usize,
@@ -531,6 +577,97 @@ pub struct IntraPictureParams {
     /// set this `true` — see `field_geometry` in
     /// [`crate::video_sequence`].
     pub progressive_sequence: bool,
+}
+
+impl IntraPictureParams {
+    /// Build a `IntraPictureParams` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        width: usize,
+        height: usize,
+        chroma_format: ChromaFormat,
+        frame_pred_frame_dct: bool,
+        intra_dc_precision: u8,
+        intra_vlc_format: bool,
+        alternate_scan: bool,
+        q_scale_type: bool,
+        progressive_sequence: bool,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            chroma_format,
+            frame_pred_frame_dct,
+            intra_dc_precision,
+            intra_vlc_format,
+            alternate_scan,
+            q_scale_type,
+            progressive_sequence,
+        }
+    }
+
+    /// Set `width`.
+    #[must_use]
+    pub fn with_width(mut self, v: usize) -> Self {
+        self.width = v;
+        self
+    }
+
+    /// Set `height`.
+    #[must_use]
+    pub fn with_height(mut self, v: usize) -> Self {
+        self.height = v;
+        self
+    }
+
+    /// Set `chroma_format`.
+    #[must_use]
+    pub fn with_chroma_format(mut self, v: ChromaFormat) -> Self {
+        self.chroma_format = v;
+        self
+    }
+
+    /// Set `frame_pred_frame_dct`.
+    #[must_use]
+    pub fn with_frame_pred_frame_dct(mut self, v: bool) -> Self {
+        self.frame_pred_frame_dct = v;
+        self
+    }
+
+    /// Set `intra_dc_precision`.
+    #[must_use]
+    pub fn with_intra_dc_precision(mut self, v: u8) -> Self {
+        self.intra_dc_precision = v;
+        self
+    }
+
+    /// Set `intra_vlc_format`.
+    #[must_use]
+    pub fn with_intra_vlc_format(mut self, v: bool) -> Self {
+        self.intra_vlc_format = v;
+        self
+    }
+
+    /// Set `alternate_scan`.
+    #[must_use]
+    pub fn with_alternate_scan(mut self, v: bool) -> Self {
+        self.alternate_scan = v;
+        self
+    }
+
+    /// Set `q_scale_type`.
+    #[must_use]
+    pub fn with_q_scale_type(mut self, v: bool) -> Self {
+        self.q_scale_type = v;
+        self
+    }
+
+    /// Set `progressive_sequence`.
+    #[must_use]
+    pub fn with_progressive_sequence(mut self, v: bool) -> Self {
+        self.progressive_sequence = v;
+        self
+    }
 }
 
 impl IntraPictureParams {
@@ -630,6 +767,7 @@ pub fn decode_intra_picture_with_matrices(
 /// `marker_bit` (§6.2.5 / §7.6.3.9), which the walker must consume to
 /// stay in step with the block data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct IntraDecodeContext {
     /// `concealment_motion_vectors` (§6.3.11).
     pub concealment_motion_vectors: bool,
@@ -638,6 +776,29 @@ pub struct IntraDecodeContext {
     pub f_code_fwd_horiz: u8,
     /// `f_code[0][1]` — forward vertical f_code.
     pub f_code_fwd_vert: u8,
+}
+
+impl IntraDecodeContext {
+    /// Set `concealment_motion_vectors`.
+    #[must_use]
+    pub fn with_concealment_motion_vectors(mut self, v: bool) -> Self {
+        self.concealment_motion_vectors = v;
+        self
+    }
+
+    /// Set `f_code_fwd_horiz`.
+    #[must_use]
+    pub fn with_f_code_fwd_horiz(mut self, v: u8) -> Self {
+        self.f_code_fwd_horiz = v;
+        self
+    }
+
+    /// Set `f_code_fwd_vert`.
+    #[must_use]
+    pub fn with_f_code_fwd_vert(mut self, v: u8) -> Self {
+        self.f_code_fwd_vert = v;
+        self
+    }
 }
 
 impl Default for IntraDecodeContext {

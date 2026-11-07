@@ -45,6 +45,7 @@ use crate::{Error, Result};
 /// transmitted in §2.4.4.1 zigzag order); `None` writes the flag
 /// `'0'` and the §2.4.3.2 default matrix applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Mpeg1SequenceParams {
     /// `horizontal_size` (12 bits) — width of the displayable
     /// luminance in pels. Zero is forbidden.
@@ -76,6 +77,71 @@ pub struct Mpeg1SequenceParams {
     /// `load_non_intra_quantizer_matrix` is to be `'1'`. §2.4.3.2:
     /// zero values are forbidden.
     pub non_intra_quant_matrix: Option<[u8; 64]>,
+}
+
+impl Mpeg1SequenceParams {
+    /// Set `horizontal_size`.
+    #[must_use]
+    pub fn with_horizontal_size(mut self, v: u16) -> Self {
+        self.horizontal_size = v;
+        self
+    }
+
+    /// Set `vertical_size`.
+    #[must_use]
+    pub fn with_vertical_size(mut self, v: u16) -> Self {
+        self.vertical_size = v;
+        self
+    }
+
+    /// Set `pel_aspect_ratio_code`.
+    #[must_use]
+    pub fn with_pel_aspect_ratio_code(mut self, v: u8) -> Self {
+        self.pel_aspect_ratio_code = v;
+        self
+    }
+
+    /// Set `picture_rate_code`.
+    #[must_use]
+    pub fn with_picture_rate_code(mut self, v: u8) -> Self {
+        self.picture_rate_code = v;
+        self
+    }
+
+    /// Set `bit_rate_value`.
+    #[must_use]
+    pub fn with_bit_rate_value(mut self, v: u32) -> Self {
+        self.bit_rate_value = v;
+        self
+    }
+
+    /// Set `vbv_buffer_size_value`.
+    #[must_use]
+    pub fn with_vbv_buffer_size_value(mut self, v: u16) -> Self {
+        self.vbv_buffer_size_value = v;
+        self
+    }
+
+    /// Set `constrained_parameters_flag`.
+    #[must_use]
+    pub fn with_constrained_parameters_flag(mut self, v: bool) -> Self {
+        self.constrained_parameters_flag = v;
+        self
+    }
+
+    /// Set `intra_quant_matrix`.
+    #[must_use]
+    pub fn with_intra_quant_matrix(mut self, v: Option<[u8; 64]>) -> Self {
+        self.intra_quant_matrix = v;
+        self
+    }
+
+    /// Set `non_intra_quant_matrix`.
+    #[must_use]
+    pub fn with_non_intra_quant_matrix(mut self, v: Option<[u8; 64]>) -> Self {
+        self.non_intra_quant_matrix = v;
+        self
+    }
 }
 
 impl Default for Mpeg1SequenceParams {

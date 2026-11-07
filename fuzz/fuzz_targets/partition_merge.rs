@@ -17,17 +17,17 @@ use std::sync::OnceLock;
 fn partitions() -> &'static Vec<(Vec<u8>, Vec<u8>)> {
     static P: OnceLock<Vec<(Vec<u8>, Vec<u8>)>> = OnceLock::new();
     P.get_or_init(|| {
-        let params = IntraPictureParams {
-            width: 48,
-            height: 32,
-            chroma_format: ChromaFormat::Yuv420,
-            frame_pred_frame_dct: true,
-            intra_dc_precision: 0,
-            intra_vlc_format: false,
-            alternate_scan: false,
-            q_scale_type: false,
-            progressive_sequence: true,
-        };
+        let params = IntraPictureParams::new(
+            48,
+            32,
+            ChromaFormat::Yuv420,
+            true,
+            0,
+            false,
+            false,
+            false,
+            true,
+        );
         let frames: Vec<FrameBuffer> = (0..3)
             .map(|t| {
                 let mut f = FrameBuffer::new(48, 32, ChromaFormat::Yuv420);

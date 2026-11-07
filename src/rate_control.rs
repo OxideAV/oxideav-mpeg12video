@@ -52,6 +52,7 @@ use crate::{Error, Result};
 
 /// Static CBR configuration for [`encode_cbr_gop_sequence`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CbrConfig {
     /// §6.2.2.1 `bit_rate_value` (18 bits, units of 400 bit/s). The
     /// actual rate `R` the VBV model runs at is exactly
@@ -69,6 +70,36 @@ pub struct CbrConfig {
     pub initial_quantiser_scale_code: u8,
 }
 
+impl CbrConfig {
+    /// Set `bit_rate_value`.
+    #[must_use]
+    pub fn with_bit_rate_value(mut self, v: u32) -> Self {
+        self.bit_rate_value = v;
+        self
+    }
+
+    /// Set `vbv_buffer_size_value`.
+    #[must_use]
+    pub fn with_vbv_buffer_size_value(mut self, v: u16) -> Self {
+        self.vbv_buffer_size_value = v;
+        self
+    }
+
+    /// Set `frame_rate_code`.
+    #[must_use]
+    pub fn with_frame_rate_code(mut self, v: u8) -> Self {
+        self.frame_rate_code = v;
+        self
+    }
+
+    /// Set `initial_quantiser_scale_code`.
+    #[must_use]
+    pub fn with_initial_quantiser_scale_code(mut self, v: u8) -> Self {
+        self.initial_quantiser_scale_code = v;
+        self
+    }
+}
+
 impl Default for CbrConfig {
     fn default() -> Self {
         Self {
@@ -82,7 +113,8 @@ impl Default for CbrConfig {
 
 /// The result of a CBR encode: the elementary stream plus the
 /// controller's per-picture decisions for inspection / tests.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct CbrEncoded {
     /// The finished elementary stream.
     pub stream: Vec<u8>,
@@ -92,6 +124,29 @@ pub struct CbrEncoded {
     /// Zero stuffing bytes appended across the stream to hold the C.5
     /// overflow bound.
     pub stuffing_bytes: u64,
+}
+
+impl CbrEncoded {
+    /// Set `stream`.
+    #[must_use]
+    pub fn with_stream(mut self, v: Vec<u8>) -> Self {
+        self.stream = v;
+        self
+    }
+
+    /// Set `quantiser_scale_codes`.
+    #[must_use]
+    pub fn with_quantiser_scale_codes(mut self, v: Vec<u8>) -> Self {
+        self.quantiser_scale_codes = v;
+        self
+    }
+
+    /// Set `stuffing_bytes`.
+    #[must_use]
+    pub fn with_stuffing_bytes(mut self, v: u64) -> Self {
+        self.stuffing_bytes = v;
+        self
+    }
 }
 
 /// Per-type index into the running quantiser table.

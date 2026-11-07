@@ -21,17 +21,17 @@ use oxideav_mpeg12video::{
 /// `frame_pred_frame_dct = 0` (the §6.3.3 grid is
 /// `2 * Ceil(height / 32)` macroblock rows).
 fn ff_params(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
-        progressive_sequence: false,
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-    }
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    )
 }
 
 /// Deterministic pseudo-noise in `[-amp, amp]`.
@@ -424,19 +424,13 @@ fn ff_encoders_reject_bad_configurations() {
     let frames = vec![frame.clone()];
 
     // Progressive params are rejected (§6.3.10).
-    let progressive = IntraPictureParams {
-        progressive_sequence: true,
-        ..ff_params(64, 64)
-    };
+    let progressive = ff_params(64, 64).with_progressive_sequence(true);
     assert!(
         encode_ff_display_order_gop_sequence(&frames, 0, 1, &progressive, 6, 3, 3, false).is_err()
     );
 
     // frame_pred_frame_dct = 1 params are rejected.
-    let fpfd = IntraPictureParams {
-        frame_pred_frame_dct: true,
-        ..ff_params(64, 64)
-    };
+    let fpfd = ff_params(64, 64).with_frame_pred_frame_dct(true);
     assert!(encode_ff_display_order_gop_sequence(&frames, 0, 1, &fpfd, 6, 3, 3, false).is_err());
 
     // Dual-prime with B-pictures in between is rejected (§7.6.3.6).
@@ -465,13 +459,11 @@ fn ff_assembler_honours_alternate_scan_and_intra_vlc_format() {
     // bounded distortion through `decode_video_sequence`.
     let width = 64;
     let height = 64;
-    let params = IntraPictureParams {
-        alternate_scan: true,
-        intra_vlc_format: true,
-        q_scale_type: true,
-        intra_dc_precision: 2,
-        ..ff_params(width, height)
-    };
+    let params = ff_params(width, height)
+        .with_alternate_scan(true)
+        .with_intra_vlc_format(true)
+        .with_q_scale_type(true)
+        .with_intra_dc_precision(2);
     let base = textured_frame(width, height);
     let frames: Vec<FrameBuffer> = (0i32..5)
         .map(|i| shift_fields(&base, 2 * i, -2 * i))

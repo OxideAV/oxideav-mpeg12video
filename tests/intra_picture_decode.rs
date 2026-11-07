@@ -46,18 +46,18 @@ fn fixture_params() -> (IntraPictureParams, usize) {
     assert_eq!(pic.picture_coding_type, PictureCodingType::Intra);
     assert_eq!(ext.picture_structure, PictureStructure::Frame);
 
-    let params = IntraPictureParams {
+    let params = IntraPictureParams::new(
+        seq.horizontal_size as usize,
+        seq.vertical_size as usize,
+        seq.extension.chroma_format,
+        ext.frame_pred_frame_dct,
+        ext.intra_dc_precision,
+        ext.intra_vlc_format,
+        ext.alternate_scan,
+        ext.q_scale_type,
         // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
-        progressive_sequence: true,
-        width: seq.horizontal_size as usize,
-        height: seq.vertical_size as usize,
-        chroma_format: seq.extension.chroma_format,
-        frame_pred_frame_dct: ext.frame_pred_frame_dct,
-        intra_dc_precision: ext.intra_dc_precision,
-        intra_vlc_format: ext.intra_vlc_format,
-        alternate_scan: ext.alternate_scan,
-        q_scale_type: ext.q_scale_type,
-    };
+        true,
+    );
     (params, pic_pos)
 }
 

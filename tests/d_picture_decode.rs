@@ -130,12 +130,11 @@ fn d_picture_driver_reconstructs_flat_planes() {
     write_d_picture(&mut bw, 0, 7);
     let picture = bw.into_bytes();
 
-    let params = Mpeg1PictureParams {
-        width: 32,
-        height: 16,
-        intra_quant: DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
+    let params = Mpeg1PictureParams::default()
+        .with_width(32)
+        .with_height(16)
+        .with_intra_quant(DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
     let (frame, placed) = decode_mpeg1_d_picture(&picture, &params).expect("D-picture decodes");
     assert_eq!(placed, 2, "two macroblocks decoded");
 
@@ -244,12 +243,11 @@ fn d_macroblock_type_zero_bit_is_rejected() {
     bw.align_to_byte();
     let picture = bw.into_bytes();
 
-    let params = Mpeg1PictureParams {
-        width: 16,
-        height: 16,
-        intra_quant: DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
+    let params = Mpeg1PictureParams::default()
+        .with_width(16)
+        .with_height(16)
+        .with_intra_quant(DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
     let err = decode_mpeg1_d_picture(&picture, &params).unwrap_err();
     assert!(err.to_string().contains("B.2d"), "unexpected error: {err}");
 }
@@ -272,12 +270,11 @@ fn d_end_of_macroblock_zero_is_rejected() {
     bw.align_to_byte();
     let picture = bw.into_bytes();
 
-    let params = Mpeg1PictureParams {
-        width: 16,
-        height: 16,
-        intra_quant: DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
+    let params = Mpeg1PictureParams::default()
+        .with_width(16)
+        .with_height(16)
+        .with_intra_quant(DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
     let err = decode_mpeg1_d_picture(&picture, &params).unwrap_err();
     assert!(
         err.to_string().contains("end_of_macroblock"),
@@ -299,12 +296,11 @@ fn skipped_macroblock_in_d_picture_is_rejected() {
     bw.align_to_byte();
     let picture = bw.into_bytes();
 
-    let params = Mpeg1PictureParams {
-        width: 48,
-        height: 16,
-        intra_quant: DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
+    let params = Mpeg1PictureParams::default()
+        .with_width(48)
+        .with_height(16)
+        .with_intra_quant(DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
     let err = decode_mpeg1_d_picture(&picture, &params).unwrap_err();
     assert!(
         err.to_string().contains("2.4.4.4"),

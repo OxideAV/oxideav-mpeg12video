@@ -200,6 +200,7 @@ fn neighbours(e: usize, mux: &TemporalScalabilityParams) -> (Option<usize>, usiz
 
 /// The result of [`decode_temporal_scalable_sequence`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TemporalScalableDecoded {
     /// The lower layer's frames in display order.
     pub lower: Vec<DecodedFrame>,
@@ -207,6 +208,42 @@ pub struct TemporalScalableDecoded {
     pub enhancement: Vec<DecodedFrame>,
     /// The enhancement layer's §6.3.7 multiplex parameters.
     pub mux: TemporalScalabilityParams,
+}
+
+impl TemporalScalableDecoded {
+    /// Build a `TemporalScalableDecoded` from every field.
+    pub fn new(
+        lower: Vec<DecodedFrame>,
+        enhancement: Vec<DecodedFrame>,
+        mux: TemporalScalabilityParams,
+    ) -> Self {
+        Self {
+            lower,
+            enhancement,
+            mux,
+        }
+    }
+
+    /// Set `lower`.
+    #[must_use]
+    pub fn with_lower(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.lower = v;
+        self
+    }
+
+    /// Set `enhancement`.
+    #[must_use]
+    pub fn with_enhancement(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.enhancement = v;
+        self
+    }
+
+    /// Set `mux`.
+    #[must_use]
+    pub fn with_mux(mut self, v: TemporalScalabilityParams) -> Self {
+        self.mux = v;
+        self
+    }
 }
 
 impl TemporalScalableDecoded {
@@ -417,6 +454,7 @@ pub fn decode_temporal_scalable_sequence(
             top_field_first: ext.top_field_first,
             repeat_first_field: ext.repeat_first_field,
             progressive_frame: ext.progressive_frame,
+            stream_offset: None,
         });
     }
 
@@ -459,6 +497,7 @@ fn prediction_params(
 
 /// Configuration of [`encode_temporal_enhancement_layer`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TemporalLayerConfig {
     /// The per-slice `quantiser_scale_code` (`1..=31`).
     pub quantiser_scale_code: u8,
@@ -477,6 +516,43 @@ pub struct TemporalLayerConfig {
     pub use_enhancement_references: bool,
 }
 
+impl TemporalLayerConfig {
+    /// Set `quantiser_scale_code`.
+    #[must_use]
+    pub fn with_quantiser_scale_code(mut self, v: u8) -> Self {
+        self.quantiser_scale_code = v;
+        self
+    }
+
+    /// Set `f_code`.
+    #[must_use]
+    pub fn with_f_code(mut self, v: u8) -> Self {
+        self.f_code = v;
+        self
+    }
+
+    /// Set `picture_mux_order`.
+    #[must_use]
+    pub fn with_picture_mux_order(mut self, v: u8) -> Self {
+        self.picture_mux_order = v;
+        self
+    }
+
+    /// Set `picture_mux_factor`.
+    #[must_use]
+    pub fn with_picture_mux_factor(mut self, v: u8) -> Self {
+        self.picture_mux_factor = v;
+        self
+    }
+
+    /// Set `use_enhancement_references`.
+    #[must_use]
+    pub fn with_use_enhancement_references(mut self, v: bool) -> Self {
+        self.use_enhancement_references = v;
+        self
+    }
+}
+
 impl Default for TemporalLayerConfig {
     fn default() -> Self {
         Self {
@@ -490,7 +566,8 @@ impl Default for TemporalLayerConfig {
 }
 
 /// The output of [`encode_temporal_enhancement_layer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct TemporalEncoded {
     /// The enhancement-layer elementary stream.
     pub stream: Vec<u8>,
@@ -502,6 +579,36 @@ pub struct TemporalEncoded {
     pub enhancement: Vec<DecodedFrame>,
     /// The `reference_select_code` of every enhancement picture.
     pub reference_select_codes: Vec<u8>,
+}
+
+impl TemporalEncoded {
+    /// Set `stream`.
+    #[must_use]
+    pub fn with_stream(mut self, v: Vec<u8>) -> Self {
+        self.stream = v;
+        self
+    }
+
+    /// Set `lower`.
+    #[must_use]
+    pub fn with_lower(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.lower = v;
+        self
+    }
+
+    /// Set `enhancement`.
+    #[must_use]
+    pub fn with_enhancement(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.enhancement = v;
+        self
+    }
+
+    /// Set `reference_select_codes`.
+    #[must_use]
+    pub fn with_reference_select_codes(mut self, v: Vec<u8>) -> Self {
+        self.reference_select_codes = v;
+        self
+    }
 }
 
 /// Write a `sequence_extension()` carrying every parsed field.
@@ -779,6 +886,7 @@ pub fn encode_temporal_enhancement_layer(
             top_field_first: false,
             repeat_first_field: false,
             progressive_frame: geometry.progressive_sequence,
+            stream_offset: None,
         });
     }
 

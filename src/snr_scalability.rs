@@ -507,6 +507,7 @@ fn run_combined_loop(base: &[u8], layer: &mut dyn SnrLayer) -> Result<Vec<Decode
             top_field_first: ext.top_field_first,
             repeat_first_field: ext.repeat_first_field,
             progressive_frame: ext.progressive_frame,
+            stream_offset: None,
         };
         match header.picture_coding_type {
             PictureCodingType::Bidirectional => output.push(decoded),
@@ -1132,7 +1133,8 @@ pub fn decode_snr_scalable_sequence(base: &[u8], enhancement: &[u8]) -> Result<V
 // -------------------------------------------------------------------
 
 /// The output of [`encode_snr_enhancement_layer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct SnrEncoded {
     /// The enhancement-layer elementary stream (sequence header +
     /// extension + `sequence_scalable_extension()`, coincident GOP /
@@ -1145,6 +1147,36 @@ pub struct SnrEncoded {
     pub coded_macroblocks: usize,
     /// See `coded_macroblocks`.
     pub not_coded_macroblocks: usize,
+}
+
+impl SnrEncoded {
+    /// Set `stream`.
+    #[must_use]
+    pub fn with_stream(mut self, v: Vec<u8>) -> Self {
+        self.stream = v;
+        self
+    }
+
+    /// Set `recon`.
+    #[must_use]
+    pub fn with_recon(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.recon = v;
+        self
+    }
+
+    /// Set `coded_macroblocks`.
+    #[must_use]
+    pub fn with_coded_macroblocks(mut self, v: usize) -> Self {
+        self.coded_macroblocks = v;
+        self
+    }
+
+    /// Set `not_coded_macroblocks`.
+    #[must_use]
+    pub fn with_not_coded_macroblocks(mut self, v: usize) -> Self {
+        self.not_coded_macroblocks = v;
+        self
+    }
 }
 
 struct EncodingLayer<'s> {

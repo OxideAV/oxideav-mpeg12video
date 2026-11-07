@@ -25,19 +25,18 @@ use oxideav_mpeg12video::{
 /// Field geometry for a 16×16-luma **field** (the field of a 16×32
 /// reference frame), 4:2:0, single-macroblock-wide.
 fn field_geometry_16x16() -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
+        16,
+        16,                   // FIELD height (the frame is 32 rows)
+        ChromaFormat::Yuv420, // A field picture forbids frame_pred_frame_dct.
+        false,
+        0,
+        false,
+        false,
+        false,
         // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
-        progressive_sequence: true,
-        width: 16,
-        height: 16, // FIELD height (the frame is 32 rows)
-        chroma_format: ChromaFormat::Yuv420,
-        // A field picture forbids frame_pred_frame_dct.
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-    }
+        true,
+    )
 }
 
 fn write_slice_header(bw: &mut BitWriter, q_scale: u8) {
@@ -211,12 +210,10 @@ fn field_picture_two_macroblocks_with_skip() {
     // MV, top-field select), then increment = 2 reaching address 2, which
     // skips address 1. The §7.6.6.2 P-picture skip is a (0,0) forward
     // copy reading the same-parity (top) reference field.
-    let geom = IntraPictureParams {
+    let geom = (field_geometry_16x16())
         // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
-        progressive_sequence: true,
-        width: 48,
-        ..field_geometry_16x16()
-    };
+        .with_progressive_sequence(true)
+        .with_width(48);
     let params = PicturePredictionParams {
         geometry: geom,
         ..p_params()
@@ -454,12 +451,10 @@ fn b_field_picture_skip_inherits_previous_direction_same_parity() {
         }
         f
     };
-    let geom = IntraPictureParams {
+    let geom = (field_geometry_16x16())
         // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
-        progressive_sequence: true,
-        width: 48,
-        ..field_geometry_16x16()
-    };
+        .with_progressive_sequence(true)
+        .with_width(48);
     let params = PicturePredictionParams {
         geometry: geom,
         picture_coding_type: PictureCodingType::Bidirectional,

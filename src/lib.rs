@@ -553,7 +553,7 @@ pub use temporal_scalability::{
     decode_temporal_scalable_sequence, encode_temporal_enhancement_layer, remultiplex,
 };
 pub use video_sequence::{
-    DecodedFrame, VideoSequenceDecoder, decode_video_sequence, display_indices_from_coded_pictures,
+    DecodedFrame, SequenceDecoder, decode_video_sequence, display_indices_from_coded_pictures,
     display_indices_from_temporal_references, verify_display_order,
     verify_display_order_with_types,
 };
@@ -820,6 +820,7 @@ pub use stream_writer::{
 /// specific decoder stage named in its docstring; sites may grow as
 /// future rounds add slice/macroblock layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// A bitstream constraint defined by ISO/IEC 13818-2 was
     /// violated (forbidden value, marker_bit zero, wrong start code,
