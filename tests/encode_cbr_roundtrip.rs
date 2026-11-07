@@ -79,7 +79,7 @@ fn cbr_stream_verifies_and_decodes() {
     let (w, h) = (64usize, 48usize);
     let frames: Vec<FrameBuffer> = (0..9).map(|t| busy_frame(w, h, t)).collect();
     let cbr = CbrConfig::default()
-        .with_bit_rate_value(375)
+        .with_bit_rate_value(375) // 150 kbit/s
         .with_vbv_buffer_size_value(4)
         .with_frame_rate_code(3)
         .with_initial_quantiser_scale_code(6);
@@ -132,7 +132,7 @@ fn cbr_flat_content_stuffs_against_overflow() {
     let (w, h) = (64usize, 48usize);
     let frames: Vec<FrameBuffer> = (0..6).map(|t| flat_frame(w, h, t)).collect();
     let cbr = CbrConfig::default()
-        .with_bit_rate_value(250)
+        .with_bit_rate_value(250) // 100 kbit/s — far more than flat frames need
         .with_vbv_buffer_size_value(2)
         .with_frame_rate_code(3)
         .with_initial_quantiser_scale_code(4);
@@ -186,13 +186,13 @@ fn cbr_rejects_impossible_configs() {
     let frames = vec![busy_frame(w, h, 0)];
     // vbv_delay unrepresentable: 90000 * B / R > 0xFFFE.
     let bad = CbrConfig::default()
-        .with_bit_rate_value(25)
+        .with_bit_rate_value(25) // 10 kbit/s
         .with_vbv_buffer_size_value(20);
     assert!(encode_cbr_gop_sequence(&frames, 0, 1, params(w, h), &bad, 3, 3).is_err());
 
     // Rate far too small for even q=31 content.
     let starved = CbrConfig::default()
-        .with_bit_rate_value(3)
+        .with_bit_rate_value(3) // 1200 bit/s
         .with_vbv_buffer_size_value(1);
     assert!(encode_cbr_gop_sequence(&frames, 0, 1, params(w, h), &starved, 3, 3).is_err());
 }
@@ -230,7 +230,7 @@ fn cbr_field_coded_sequence_verifies_and_decodes() {
         .collect();
 
     let cbr = CbrConfig::default()
-        .with_bit_rate_value(375)
+        .with_bit_rate_value(375) // 150 kbit/s
         .with_vbv_buffer_size_value(4)
         .with_frame_rate_code(3)
         .with_initial_quantiser_scale_code(6);

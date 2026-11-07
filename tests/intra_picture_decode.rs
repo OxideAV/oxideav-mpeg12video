@@ -55,6 +55,7 @@ fn fixture_params() -> (IntraPictureParams, usize) {
         ext.intra_vlc_format,
         ext.alternate_scan,
         ext.q_scale_type,
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         true,
     );
     (params, pic_pos)

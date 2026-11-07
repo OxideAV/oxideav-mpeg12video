@@ -478,7 +478,7 @@ fn cbr_422_gop_sequence_is_vbv_conformant_and_decodes() {
 
     let frames_in: Vec<FrameBuffer> = (0..5).map(|k| frame_422(64, 48, 2 * k)).collect();
     let cbr = CbrConfig::default()
-        .with_bit_rate_value(800)
+        .with_bit_rate_value(800) // 320 kbit/s (4:2:2 carries more chroma)
         .with_vbv_buffer_size_value(4)
         .with_frame_rate_code(3)
         .with_initial_quantiser_scale_code(6);

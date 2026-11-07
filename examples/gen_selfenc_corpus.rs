@@ -196,7 +196,7 @@ fn main() {
     //     adaptation + zero stuffing).
     let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 4)).collect();
     let cbr = CbrConfig::default()
-        .with_bit_rate_value(600)
+        .with_bit_rate_value(600) // 240 kbit/s
         .with_vbv_buffer_size_value(4)
         .with_frame_rate_code(3)
         .with_initial_quantiser_scale_code(6);

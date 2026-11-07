@@ -34,6 +34,7 @@ fn params(width: usize, height: usize) -> IntraPictureParams {
         false,
         false,
         false,
+        // progressive sequence: Ceil(h/16) macroblock grid (§6.3.3)
         true,
     )
 }

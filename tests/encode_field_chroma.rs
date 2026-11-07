@@ -31,7 +31,7 @@ fn field_params(chroma: ChromaFormat) -> IntraPictureParams {
     frame_params(chroma)
         .with_height(H / 2)
         .with_frame_pred_frame_dct(false)
-        .with_progressive_sequence(true)
+        .with_progressive_sequence(true) // 16-aligned grid in field coordinates
 }
 
 /// Interlaced-looking source frame at full chroma resolution for the
@@ -363,7 +363,7 @@ fn field_cbr_422_holds_the_annex_c_bounds() {
     let chroma = ChromaFormat::Yuv422;
     let frames: Vec<FrameBuffer> = (0..4).map(|t| frame_at(chroma, t)).collect();
     let cbr = CbrConfig::default()
-        .with_bit_rate_value(600)
+        .with_bit_rate_value(600) // 240 kbit/s
         .with_vbv_buffer_size_value(4)
         .with_frame_rate_code(3)
         .with_initial_quantiser_scale_code(6);

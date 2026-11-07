@@ -71,7 +71,8 @@ fuzz_target!(|data: &[u8]| {
     let n_frames = if tall { 1 + b(8) % 2 } else { 1 + b(8) % 3 };
     let options = FrameEncodeOptions::default()
         .with_skipped_macroblocks(b(9) & 1 != 0)
-        .with_concealment_motion_vectors(b(9) & 2 != 0)
+        .with_concealment_motion_vectors(b(9) & 2 != 0) // §6.3.10: in a progressive sequence top_field_first may be 1
+        // only with repeat_first_field 1.
         .with_repeat_first_field(b(9) & 4 != 0)
         .with_top_field_first(b(9) & 4 != 0 && b(9) & 8 != 0)
         .with_progressive_frame(None);

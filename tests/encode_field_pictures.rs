@@ -49,7 +49,7 @@ fn field_params() -> IntraPictureParams {
     frame_params()
         .with_height(H / 2)
         .with_frame_pred_frame_dct(false)
-        .with_progressive_sequence(true)
+        .with_progressive_sequence(true) // 16-aligned grid in field coordinates
 }
 
 /// Interlaced-looking source frame: per-line phase (so the two fields

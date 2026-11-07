@@ -27,13 +27,14 @@ use oxideav_mpeg12video::{
 fn field_geometry_16x16() -> IntraPictureParams {
     IntraPictureParams::new(
         16,
-        16,
-        ChromaFormat::Yuv420,
+        16,                   // FIELD height (the frame is 32 rows)
+        ChromaFormat::Yuv420, // A field picture forbids frame_pred_frame_dct.
         false,
         0,
         false,
         false,
         false,
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         true,
     )
 }
@@ -209,7 +210,8 @@ fn field_picture_two_macroblocks_with_skip() {
     // MV, top-field select), then increment = 2 reaching address 2, which
     // skips address 1. The §7.6.6.2 P-picture skip is a (0,0) forward
     // copy reading the same-parity (top) reference field.
-    let geom = field_geometry_16x16()
+    let geom = (field_geometry_16x16())
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         .with_progressive_sequence(true)
         .with_width(48);
     let params = PicturePredictionParams {
@@ -449,7 +451,8 @@ fn b_field_picture_skip_inherits_previous_direction_same_parity() {
         }
         f
     };
-    let geom = field_geometry_16x16()
+    let geom = (field_geometry_16x16())
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         .with_progressive_sequence(true)
         .with_width(48);
     let params = PicturePredictionParams {

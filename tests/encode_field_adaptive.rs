@@ -30,7 +30,7 @@ fn field_params(width: usize, field_height: usize) -> IntraPictureParams {
         false,
         false,
         false,
-        true,
+        true, // field grid arithmetic (Ceil(h/16))
     )
 }
 

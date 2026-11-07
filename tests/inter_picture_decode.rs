@@ -32,6 +32,7 @@ fn geometry_16x16() -> IntraPictureParams {
         false,
         false,
         false,
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         true,
     )
 }
@@ -217,7 +218,8 @@ fn p_picture_field_based_zero_mv_copies_reference() {
     // a verbatim copy of the reference frame (each parity copies its own
     // lines), exercising the field-based per-field reference assembly
     // end-to-end.
-    let geom = geometry_16x16()
+    let geom = (geometry_16x16())
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         .with_progressive_sequence(true)
         .with_frame_pred_frame_dct(false);
     let params = PicturePredictionParams {
@@ -279,7 +281,8 @@ fn p_picture_field_based_top_field_vector_shifts_only_even_lines() {
     // lines (frame rows two apart) — proving the field grid, not the
     // frame grid, is sampled; the odd lines copy verbatim. The two field
     // vectors address their own parity independently.
-    let geom = geometry_16x16()
+    let geom = (geometry_16x16())
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         .with_progressive_sequence(true)
         .with_frame_pred_frame_dct(false);
     let params = PicturePredictionParams {
@@ -355,7 +358,8 @@ fn p_picture_skipped_macroblock_copies_reference() {
     // so use mb_width = 3. MB0 coded at addr 0, increment 2 → MB at
     // addr 2, skipping addr 1. The skipped MB (P-picture) is a (0,0)
     // forward copy of the reference.
-    let geom = geometry_16x16()
+    let geom = (geometry_16x16())
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         .with_progressive_sequence(true)
         .with_width(48)
         .with_height(16);
@@ -420,7 +424,8 @@ fn p_picture_frame_dual_prime_averages_four_field_predictions() {
     // bottom field = 180) the top predicted field = avg(60, 180) = 120 and
     // the bottom predicted field = avg(180, 60) = 120 — the whole 16×16
     // frame is 120, formed through the four-field interleave path.
-    let geom = geometry_16x16()
+    let geom = (geometry_16x16())
+        // hand-built stream: progressive grid (Ceil(h/16) macroblock rows)
         .with_progressive_sequence(true)
         .with_frame_pred_frame_dct(false);
     let params = PicturePredictionParams {
