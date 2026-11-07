@@ -14,6 +14,10 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 - API hygiene: enums `Error`, `InterError`, `PictureStructureOption`, `RateControlOption`, `PulldownOption`, `RemovalInterval`, `VbvViolation`, `VbvStandard` and `VbvVerifyError` are now `#[non_exhaustive]`, as are the option / stats / params / layer-output records `FrameEncodeStats`, `FrameEncodeOptions`, `Mpeg12EncoderOptions`, `FieldSearchResult`, `FieldModeStats`, `FrameBuffer`, `IntraPictureParams`, `IntraDecodeContext`, `FrameFieldStats`, `Mpeg1SequenceParams`, `Mpeg1PictureParams`, `CbrConfig`, `CbrEncoded`, `SnrEncoded`, `SpatialScalableDecoded`, `SpatialLayerConfig`, `SpatialStats`, `SpatialEncoded`, `TemporalScalableDecoded`, `TemporalLayerConfig`, `TemporalEncoded`, `VbvParams`, `VbvPictureRecord`, `VbvStreamReport`. `PictureCodingType`, `ChromaFormat` and the `dct_coeff` syntax enums stay exhaustive (spec-fixed). The §6/§7 syntax-walker modules were already `#[doc(hidden)]`.
 
+### Performance
+
+- `dct_coeff` decode (MPEG-1 Tables B.5c–B.5f, MPEG-2 Tables B-14 / B-15 / B-16) is one lookup on the next 16 bits in a prefix-code table built once from the transcribed rows, instead of a walk over every codeword; the walk still decides near the end of the buffer, so results and errors are unchanged (about 2.6–3× faster decode on 720×576 MPEG-2).
+
 ## [0.0.14](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.13...v0.0.14) - 2026-10-24
 
 ### Added
