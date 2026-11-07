@@ -106,6 +106,7 @@ fn any_coded(flags: &[bool; 12]) -> bool {
 /// vector, its reference-field parity, and the luma SAD of the exact
 /// §7.6.4 prediction it forms.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct FieldSearchResult {
     /// The chosen luminance vector in half-sample field units.
     pub vector: MotionVectorPel,
@@ -114,6 +115,38 @@ pub struct FieldSearchResult {
     pub parity: FieldParity,
     /// Luma SAD of the prediction against the current field macroblock.
     pub sad: u32,
+}
+
+impl FieldSearchResult {
+    /// Build a `FieldSearchResult` from every field.
+    pub fn new(vector: MotionVectorPel, parity: FieldParity, sad: u32) -> Self {
+        Self {
+            vector,
+            parity,
+            sad,
+        }
+    }
+
+    /// Set `vector`.
+    #[must_use]
+    pub fn with_vector(mut self, v: MotionVectorPel) -> Self {
+        self.vector = v;
+        self
+    }
+
+    /// Set `parity`.
+    #[must_use]
+    pub fn with_parity(mut self, v: FieldParity) -> Self {
+        self.parity = v;
+        self
+    }
+
+    /// Set `sad`.
+    #[must_use]
+    pub fn with_sad(mut self, v: u32) -> Self {
+        self.sad = v;
+        self
+    }
 }
 
 /// SAD between the current field's macroblock and the §7.6.4 field
@@ -1068,6 +1101,7 @@ const DUAL_PRIME_BIAS: u32 = 32;
 /// so callers and tests can confirm the Table 6-18 mode decisions
 /// actually fire.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FieldModeStats {
     /// Macroblocks coded `field_motion_type = 01` (simple field
     /// prediction, Table 7-13 `Field-based`).
@@ -1079,6 +1113,36 @@ pub struct FieldModeStats {
     pub dual_prime: usize,
     /// Intra-coded macroblocks (P intra fallbacks).
     pub intra: usize,
+}
+
+impl FieldModeStats {
+    /// Set `simple_field`.
+    #[must_use]
+    pub fn with_simple_field(mut self, v: usize) -> Self {
+        self.simple_field = v;
+        self
+    }
+
+    /// Set `sixteen_by_eight`.
+    #[must_use]
+    pub fn with_sixteen_by_eight(mut self, v: usize) -> Self {
+        self.sixteen_by_eight = v;
+        self
+    }
+
+    /// Set `dual_prime`.
+    #[must_use]
+    pub fn with_dual_prime(mut self, v: usize) -> Self {
+        self.dual_prime = v;
+        self
+    }
+
+    /// Set `intra`.
+    #[must_use]
+    pub fn with_intra(mut self, v: usize) -> Self {
+        self.intra = v;
+        self
+    }
 }
 
 impl FieldModeStats {

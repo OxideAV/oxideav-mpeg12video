@@ -16,17 +16,17 @@ use oxideav_mpeg12video::{
 };
 
 fn params(width: usize, height: usize, progressive: bool) -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: progressive,
-    }
+        ChromaFormat::Yuv420,
+        true,
+        0,
+        false,
+        false,
+        false,
+        progressive,
+    )
 }
 
 /// Content at "time" `t2` in half-frame units: the lower layer takes
@@ -132,13 +132,12 @@ fn build(
 
 #[test]
 fn doubling_the_frame_rate_roundtrips_exactly_and_remultiplexes() {
-    let config = TemporalLayerConfig {
-        quantiser_scale_code: 6,
-        f_code: 3,
-        picture_mux_order: 0,
-        picture_mux_factor: 1,
-        use_enhancement_references: false,
-    };
+    let config = TemporalLayerConfig::default()
+        .with_quantiser_scale_code(6)
+        .with_f_code(3)
+        .with_picture_mux_order(0)
+        .with_picture_mux_factor(1)
+        .with_use_enhancement_references(false);
     let (base, sources, enc) = build(5, true, config);
     assert_eq!(enc.enhancement.len(), 4);
     assert_eq!(
@@ -209,13 +208,12 @@ fn doubling_the_frame_rate_roundtrips_exactly_and_remultiplexes() {
 fn leading_pictures_and_enhancement_references_cover_the_reference_codes() {
     // order = 2 (two P pictures from the *next* lower frame, code 10),
     // factor = 3 with enhancement references: B 11 then B 10, B 10.
-    let config = TemporalLayerConfig {
-        quantiser_scale_code: 5,
-        f_code: 3,
-        picture_mux_order: 2,
-        picture_mux_factor: 3,
-        use_enhancement_references: true,
-    };
+    let config = TemporalLayerConfig::default()
+        .with_quantiser_scale_code(5)
+        .with_f_code(3)
+        .with_picture_mux_order(2)
+        .with_picture_mux_factor(3)
+        .with_use_enhancement_references(true);
     let (base, _sources, enc) = build(3, true, config);
     assert_eq!(enc.enhancement.len(), 2 + 3 * 2);
     assert_eq!(
@@ -266,10 +264,7 @@ fn mismatched_pairs_and_garbage_are_rejected_not_panicked() {
 
     // Wrong source count / geometry / configuration.
     assert!(encode_temporal_enhancement_layer(&base, &sources[..1], &config).is_err());
-    let bad_cfg = TemporalLayerConfig {
-        picture_mux_factor: 0,
-        ..config
-    };
+    let bad_cfg = config.with_picture_mux_factor(0);
     assert!(encode_temporal_enhancement_layer(&base, &sources, &bad_cfg).is_err());
     let m1 = oxideav_mpeg12video::encode_mpeg1_display_order_sequence(
         &sources
@@ -280,11 +275,9 @@ fn mismatched_pairs_and_garbage_are_rejected_not_panicked() {
             .collect::<Vec<_>>(),
         1,
         2,
-        &oxideav_mpeg12video::Mpeg1SequenceParams {
-            horizontal_size: 64,
-            vertical_size: 48,
-            ..Default::default()
-        },
+        &oxideav_mpeg12video::Mpeg1SequenceParams::default()
+            .with_horizontal_size(64)
+            .with_vertical_size(48),
         6,
         3,
         3,

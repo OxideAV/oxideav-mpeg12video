@@ -36,17 +36,17 @@ fn frame_at(t: usize) -> FrameBuffer {
 }
 
 fn params(progressive: bool) -> IntraPictureParams {
-    IntraPictureParams {
-        width: W,
-        height: H,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: progressive,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: progressive,
-    }
+    IntraPictureParams::new(
+        W,
+        H,
+        ChromaFormat::Yuv420,
+        progressive,
+        0,
+        false,
+        false,
+        false,
+        progressive,
+    )
 }
 
 /// Every slice start code position in `stream`.

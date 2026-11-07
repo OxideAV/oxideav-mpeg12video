@@ -21,17 +21,17 @@ use oxideav_mpeg12video::{
 
 /// Field-geometry parameters (`height` = field height).
 fn field_params(width: usize, field_height: usize) -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
         width,
-        height: field_height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: true, // field grid arithmetic (Ceil(h/16))
-    }
+        field_height,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        true, // field grid arithmetic (Ceil(h/16))
+    )
 }
 
 /// A textured field-height buffer.
@@ -387,17 +387,17 @@ fn b_field_16x8_modes_roundtrip_exactly() {
 fn adaptive_assembler_emits_whole_sequence_with_bounded_error() {
     let width = 64;
     let frame_h = 64;
-    let frame_params = IntraPictureParams {
+    let frame_params = IntraPictureParams::new(
         width,
-        height: frame_h,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+        frame_h,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     // Frames whose 16x8 regions (in field coordinates: 16-frame-line
     // bands) drift apart.
     let base = {
@@ -473,17 +473,17 @@ fn adaptive_assembler_emits_whole_sequence_with_bounded_error() {
 
 #[test]
 fn adaptive_assembler_rejects_dual_prime_with_b_pictures() {
-    let frame_params = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let frame_params = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let frames = vec![FrameBuffer::new(64, 64, ChromaFormat::Yuv420)];
     assert!(
         encode_field_adaptive_display_order_gop_sequence(

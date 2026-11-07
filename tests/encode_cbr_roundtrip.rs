@@ -19,17 +19,17 @@ use oxideav_mpeg12video::{
 };
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: true,
-    }
+        ChromaFormat::Yuv420,
+        true,
+        0,
+        false,
+        false,
+        false,
+        true,
+    )
 }
 
 /// Deterministic detailed content: a moving diagonal gradient with a
@@ -78,12 +78,11 @@ fn flat_frame(width: usize, height: usize, t: usize) -> FrameBuffer {
 fn cbr_stream_verifies_and_decodes() {
     let (w, h) = (64usize, 48usize);
     let frames: Vec<FrameBuffer> = (0..9).map(|t| busy_frame(w, h, t)).collect();
-    let cbr = CbrConfig {
-        bit_rate_value: 375, // 150 kbit/s
-        vbv_buffer_size_value: 4,
-        frame_rate_code: 3,
-        initial_quantiser_scale_code: 6,
-    };
+    let cbr = CbrConfig::default()
+        .with_bit_rate_value(375) // 150 kbit/s
+        .with_vbv_buffer_size_value(4)
+        .with_frame_rate_code(3)
+        .with_initial_quantiser_scale_code(6);
     let enc = encode_cbr_gop_sequence(&frames, 2, 2, params(w, h), &cbr, 3, 3).expect("CBR encode");
 
     // 1. Annex C conformance against the declared parameters.
@@ -132,12 +131,11 @@ fn cbr_stream_verifies_and_decodes() {
 fn cbr_flat_content_stuffs_against_overflow() {
     let (w, h) = (64usize, 48usize);
     let frames: Vec<FrameBuffer> = (0..6).map(|t| flat_frame(w, h, t)).collect();
-    let cbr = CbrConfig {
-        bit_rate_value: 250, // 100 kbit/s — far more than flat frames need
-        vbv_buffer_size_value: 2,
-        frame_rate_code: 3,
-        initial_quantiser_scale_code: 4,
-    };
+    let cbr = CbrConfig::default()
+        .with_bit_rate_value(250) // 100 kbit/s — far more than flat frames need
+        .with_vbv_buffer_size_value(2)
+        .with_frame_rate_code(3)
+        .with_initial_quantiser_scale_code(4);
     let enc = encode_cbr_gop_sequence(&frames, 1, 2, params(w, h), &cbr, 2, 2).expect("CBR encode");
     assert!(
         enc.stuffing_bytes > 0,
@@ -166,11 +164,9 @@ fn cbr_single_frame_and_tail_anchor_edge_cases() {
     // Single frame: one I picture, sequence_end_code included in its
     // picture data (Annex C C.5).
     let one = vec![busy_frame(w, h, 0)];
-    let cbr = CbrConfig {
-        bit_rate_value: 500,
-        vbv_buffer_size_value: 4,
-        ..Default::default()
-    };
+    let cbr = CbrConfig::default()
+        .with_bit_rate_value(500)
+        .with_vbv_buffer_size_value(4);
     let enc = encode_cbr_gop_sequence(&one, 2, 1, params(w, h), &cbr, 3, 3).expect("encode");
     verify_cbr_stream(&enc.stream, VbvStandard::Mpeg2).expect("VBV conformant");
     assert_eq!(decode_video_sequence(&enc.stream).unwrap().len(), 1);
@@ -189,19 +185,15 @@ fn cbr_rejects_impossible_configs() {
     let (w, h) = (64usize, 48usize);
     let frames = vec![busy_frame(w, h, 0)];
     // vbv_delay unrepresentable: 90000 * B / R > 0xFFFE.
-    let bad = CbrConfig {
-        bit_rate_value: 25, // 10 kbit/s
-        vbv_buffer_size_value: 20,
-        ..Default::default()
-    };
+    let bad = CbrConfig::default()
+        .with_bit_rate_value(25) // 10 kbit/s
+        .with_vbv_buffer_size_value(20);
     assert!(encode_cbr_gop_sequence(&frames, 0, 1, params(w, h), &bad, 3, 3).is_err());
 
     // Rate far too small for even q=31 content.
-    let starved = CbrConfig {
-        bit_rate_value: 3, // 1200 bit/s
-        vbv_buffer_size_value: 1,
-        ..Default::default()
-    };
+    let starved = CbrConfig::default()
+        .with_bit_rate_value(3) // 1200 bit/s
+        .with_vbv_buffer_size_value(1);
     assert!(encode_cbr_gop_sequence(&frames, 0, 1, params(w, h), &starved, 3, 3).is_err());
 }
 
@@ -237,12 +229,11 @@ fn cbr_field_coded_sequence_verifies_and_decodes() {
         })
         .collect();
 
-    let cbr = CbrConfig {
-        bit_rate_value: 375, // 150 kbit/s
-        vbv_buffer_size_value: 4,
-        frame_rate_code: 3,
-        initial_quantiser_scale_code: 6,
-    };
+    let cbr = CbrConfig::default()
+        .with_bit_rate_value(375) // 150 kbit/s
+        .with_vbv_buffer_size_value(4)
+        .with_frame_rate_code(3)
+        .with_initial_quantiser_scale_code(6);
     let enc =
         encode_field_cbr_gop_sequence(&frames, 1, 2, &fp, &cbr, 3, 3).expect("field CBR encode");
 

@@ -37,17 +37,17 @@ fn frame_at(width: usize, height: usize) -> FrameBuffer {
 }
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: true,
-    }
+        ChromaFormat::Yuv420,
+        true,
+        0,
+        false,
+        false,
+        false,
+        true,
+    )
 }
 
 /// `(offset, slice_vertical_position)` of every slice start code.
@@ -95,17 +95,14 @@ fn mpeg1_slices_span_rows_and_start_mid_row() {
     // 64x48 = 4 x 3 macroblocks; five per slice → slices of 5, 5, 2
     // crossing row boundaries and starting mid-row (§2.4.1).
     let f = frame_at(64, 48);
-    let p = Mpeg1PictureParams {
-        width: 64,
-        height: 48,
-        intra_quant: oxideav_mpeg12video::DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
-    let seq = oxideav_mpeg12video::Mpeg1SequenceParams {
-        horizontal_size: 64,
-        vertical_size: 48,
-        ..Default::default()
-    };
+    let p = Mpeg1PictureParams::default()
+        .with_width(64)
+        .with_height(48)
+        .with_intra_quant(oxideav_mpeg12video::DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
+    let seq = oxideav_mpeg12video::Mpeg1SequenceParams::default()
+        .with_horizontal_size(64)
+        .with_vertical_size(48);
     let wrap = |picture: Vec<u8>| -> Vec<u8> {
         let mut bw = BitWriter::new();
         oxideav_mpeg12video::write_mpeg1_sequence_header(&mut bw, &seq).unwrap();
@@ -194,12 +191,11 @@ fn walker_positions_a_mid_row_first_macroblock_without_skips() {
 fn zero_macroblocks_per_slice_is_rejected() {
     let f = frame_at(32, 32);
     assert!(encode_intra_picture_with_slice_length(&f, params(32, 32), 0, 6, 0).is_err());
-    let p = Mpeg1PictureParams {
-        width: 32,
-        height: 32,
-        intra_quant: oxideav_mpeg12video::DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
+    let p = Mpeg1PictureParams::default()
+        .with_width(32)
+        .with_height(32)
+        .with_intra_quant(oxideav_mpeg12video::DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
     let mut bw = BitWriter::new();
     assert!(encode_mpeg1_intra_picture_with_slice_length(&mut bw, &f, &p, 0, 6, 0).is_err());
 }

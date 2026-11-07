@@ -820,6 +820,7 @@ pub use stream_writer::{
 /// specific decoder stage named in its docstring; sites may grow as
 /// future rounds add slice/macroblock layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// A bitstream constraint defined by ISO/IEC 13818-2 was
     /// violated (forbidden value, marker_bit zero, wrong start code,

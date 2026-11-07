@@ -46,17 +46,7 @@ fn coarse_intra_payload(weight: u8) -> QuantiserMatrixPayload {
 }
 
 fn params(width: usize, height: usize, chroma: ChromaFormat) -> IntraPictureParams {
-    IntraPictureParams {
-        progressive_sequence: true,
-        width,
-        height,
-        chroma_format: chroma,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-    }
+    IntraPictureParams::new(width, height, chroma, true, 0, false, false, false, true)
 }
 
 fn busy_frame(width: usize, height: usize, chroma: ChromaFormat, shift: usize) -> FrameBuffer {

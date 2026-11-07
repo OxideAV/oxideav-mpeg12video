@@ -155,6 +155,7 @@ impl<'a> ReferenceFrames<'a> {
 
 /// Local error type for the inter-reconstruction driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InterError {
     /// A forward prediction was requested but [`ReferenceFrames::forward`]
     /// is `None`.

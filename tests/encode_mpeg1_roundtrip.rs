@@ -51,20 +51,17 @@ fn frame_at(width: usize, height: usize, dx: usize, dy: usize, stamp: bool) -> F
 }
 
 fn seq(width: u16, height: u16) -> Mpeg1SequenceParams {
-    Mpeg1SequenceParams {
-        horizontal_size: width,
-        vertical_size: height,
-        ..Default::default()
-    }
+    Mpeg1SequenceParams::default()
+        .with_horizontal_size(width)
+        .with_vertical_size(height)
 }
 
 fn params(width: usize, height: usize) -> Mpeg1PictureParams {
-    Mpeg1PictureParams {
-        width,
-        height,
-        intra_quant: oxideav_mpeg12video::DEFAULT_INTRA_QUANT,
-        non_intra_quant: oxideav_mpeg12video::DEFAULT_NON_INTRA_QUANT,
-    }
+    Mpeg1PictureParams::default()
+        .with_width(width)
+        .with_height(height)
+        .with_intra_quant(oxideav_mpeg12video::DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant(oxideav_mpeg12video::DEFAULT_NON_INTRA_QUANT)
 }
 
 /// Assert two frames match sample-for-sample over the visible area.
@@ -353,11 +350,9 @@ fn loaded_quantizer_matrices_thread_through_encode_and_decode() {
         *v = 12 + (i as u8 % 8);
     }
     let non_intra = [20u8; 64];
-    let seq_custom = Mpeg1SequenceParams {
-        intra_quant_matrix: Some(intra),
-        non_intra_quant_matrix: Some(non_intra),
-        ..seq(w as u16, h as u16)
-    };
+    let seq_custom = seq(w as u16, h as u16)
+        .with_intra_quant_matrix(Some(intra))
+        .with_non_intra_quant_matrix(Some(non_intra));
 
     let custom = encode_mpeg1_display_order_sequence(&display, 1, 1, &seq_custom, 6, 3, 3)
         .expect("custom-matrix encode");

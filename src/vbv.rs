@@ -82,6 +82,7 @@ pub fn frame_rate_value(frame_rate_code: u8) -> Result<(u32, u32)> {
 /// picture, per the 13818-2 C.9 / C.11 cadence (with
 /// `repeat_first_field = 0`) and the 11172-2 C.1.4 picture interval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RemovalInterval {
     /// One frame period (`1 / frame_rate`): every 11172-2 picture
     /// (C.1.4) and every 13818-2 frame picture (C.9 / C.11 with
@@ -94,6 +95,7 @@ pub enum RemovalInterval {
 
 /// Static parameters of a CBR VBV run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VbvParams {
     /// `R` — the actual bitrate in bits/second. For the streams this
     /// crate emits this equals the declared `bit_rate * 400` exactly
@@ -107,8 +109,43 @@ pub struct VbvParams {
     pub frame_rate: (u32, u32),
 }
 
+impl VbvParams {
+    /// Build a `VbvParams` from its mandatory fields.
+    pub fn new(bit_rate: u64, buffer_size_bits: u64, frame_rate: (u32, u32)) -> Self {
+        Self {
+            bit_rate,
+            buffer_size_bits,
+            frame_rate,
+        }
+    }
+}
+
+impl VbvParams {
+    /// Set `bit_rate`.
+    #[must_use]
+    pub fn with_bit_rate(mut self, v: u64) -> Self {
+        self.bit_rate = v;
+        self
+    }
+
+    /// Set `buffer_size_bits`.
+    #[must_use]
+    pub fn with_buffer_size_bits(mut self, v: u64) -> Self {
+        self.buffer_size_bits = v;
+        self
+    }
+
+    /// Set `frame_rate`.
+    #[must_use]
+    pub fn with_frame_rate(mut self, v: (u32, u32)) -> Self {
+        self.frame_rate = v;
+        self
+    }
+}
+
 /// A VBV constraint violation found while running the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VbvViolation {
     /// 13818-2 C.6 / 11172-2 C.1.4: not all of picture `picture`'s data
     /// had entered the buffer at its removal time.
@@ -354,6 +391,7 @@ pub fn patch_vbv_delay(picture: &mut [u8], vbv_delay: u16) -> Result<()> {
 /// Which standard's sequence layer a stream under
 /// [`verify_cbr_stream`] declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VbvStandard {
     /// ISO/IEC 11172-2: no `sequence_extension()`, every picture is a
     /// frame picture removed at the §2.4.3.2 nominal picture rate
@@ -366,7 +404,8 @@ pub enum VbvStandard {
 }
 
 /// One picture's bookkeeping inside a [`VbvStreamReport`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct VbvPictureRecord {
     /// Coded `vbv_delay`.
     pub vbv_delay: u16,
@@ -379,8 +418,39 @@ pub struct VbvPictureRecord {
     pub occupancy_before_bits: i64,
 }
 
+impl VbvPictureRecord {
+    /// Set `vbv_delay`.
+    #[must_use]
+    pub fn with_vbv_delay(mut self, v: u16) -> Self {
+        self.vbv_delay = v;
+        self
+    }
+
+    /// Set `expected_delay`.
+    #[must_use]
+    pub fn with_expected_delay(mut self, v: u16) -> Self {
+        self.expected_delay = v;
+        self
+    }
+
+    /// Set `data_bits`.
+    #[must_use]
+    pub fn with_data_bits(mut self, v: u64) -> Self {
+        self.data_bits = v;
+        self
+    }
+
+    /// Set `occupancy_before_bits`.
+    #[must_use]
+    pub fn with_occupancy_before_bits(mut self, v: i64) -> Self {
+        self.occupancy_before_bits = v;
+        self
+    }
+}
+
 /// The result of a successful [`verify_cbr_stream`] run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VbvStreamReport {
     /// The declared `R` in bits/second (`bit_rate * 400`).
     pub bit_rate: u64,
@@ -396,9 +466,47 @@ pub struct VbvStreamReport {
     pub max_occupancy_before_bits: i64,
 }
 
+impl VbvStreamReport {
+    /// Set `bit_rate`.
+    #[must_use]
+    pub fn with_bit_rate(mut self, v: u64) -> Self {
+        self.bit_rate = v;
+        self
+    }
+
+    /// Set `buffer_size_bits`.
+    #[must_use]
+    pub fn with_buffer_size_bits(mut self, v: u64) -> Self {
+        self.buffer_size_bits = v;
+        self
+    }
+
+    /// Set `pictures`.
+    #[must_use]
+    pub fn with_pictures(mut self, v: Vec<VbvPictureRecord>) -> Self {
+        self.pictures = v;
+        self
+    }
+
+    /// Set `min_occupancy_after_bits`.
+    #[must_use]
+    pub fn with_min_occupancy_after_bits(mut self, v: i64) -> Self {
+        self.min_occupancy_after_bits = v;
+        self
+    }
+
+    /// Set `max_occupancy_before_bits`.
+    #[must_use]
+    pub fn with_max_occupancy_before_bits(mut self, v: i64) -> Self {
+        self.max_occupancy_before_bits = v;
+        self
+    }
+}
+
 /// A [`verify_cbr_stream`] failure: either the stream could not be
 /// parsed at all, or it parsed but violates an Annex C constraint.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VbvVerifyError {
     /// A syntax-level failure while locating / parsing headers.
     Parse(Error),

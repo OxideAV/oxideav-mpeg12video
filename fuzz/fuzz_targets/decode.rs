@@ -42,25 +42,23 @@ fn prefixes() -> &'static (Vec<u8>, Vec<u8>) {
                 frame.cr.put_sample(x, y, 128);
             }
         }
-        let params = IntraPictureParams {
-            width: 48,
-            height: 32,
-            chroma_format: ChromaFormat::Yuv420,
-            frame_pred_frame_dct: true,
-            intra_dc_precision: 0,
-            intra_vlc_format: false,
-            alternate_scan: false,
-            q_scale_type: false,
-            progressive_sequence: true,
-        };
+        let params = IntraPictureParams::new(
+            48,
+            32,
+            ChromaFormat::Yuv420,
+            true,
+            0,
+            false,
+            false,
+            false,
+            true,
+        );
         let m2v = encode_intra_picture(&frame, params, 0, 6).expect("valid intra stream");
         let m1v = encode_mpeg1_intra_stream(
             &frame,
-            &Mpeg1SequenceParams {
-                horizontal_size: 48,
-                vertical_size: 32,
-                ..Default::default()
-            },
+            &Mpeg1SequenceParams::default()
+                .with_horizontal_size(48)
+                .with_vertical_size(32),
             6,
         )
         .expect("valid mpeg1 stream");
