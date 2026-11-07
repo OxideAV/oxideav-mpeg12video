@@ -60,17 +60,17 @@ fn layers() -> &'static (Vec<u8>, Vec<u8>) {
     LAYERS.get_or_init(|| {
         let sources: Vec<FrameBuffer> = (0..3).map(full_frame).collect();
         let lower: Vec<FrameBuffer> = sources.iter().map(downsample).collect();
-        let params = IntraPictureParams {
-            width: 24,
-            height: 16,
-            chroma_format: ChromaFormat::Yuv420,
-            frame_pred_frame_dct: true,
-            intra_dc_precision: 0,
-            intra_vlc_format: false,
-            alternate_scan: false,
-            q_scale_type: false,
-            progressive_sequence: true,
-        };
+        let params = IntraPictureParams::new(
+            24,
+            16,
+            ChromaFormat::Yuv420,
+            true,
+            0,
+            false,
+            false,
+            false,
+            true,
+        );
         let base =
             encode_display_order_gop_sequence(&lower, 1, 2, params, 8, 3, 3).expect("lower layer");
         let enh = encode_spatial_enhancement_layer(&base, &sources, &SpatialLayerConfig::default())

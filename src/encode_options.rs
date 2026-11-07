@@ -62,6 +62,7 @@ use crate::stream_writer::PictureCodingExtensionParams;
 /// Per-picture macroblock decision counts reported by the
 /// `_with_stats` frame-picture encoders.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameEncodeStats {
     /// Macroblocks coded with a residual (`macroblock_pattern = 1`).
     pub coded: usize,
@@ -71,6 +72,36 @@ pub struct FrameEncodeStats {
     pub intra: usize,
     /// §7.6.6 skipped macroblocks (no data on the wire).
     pub skipped: usize,
+}
+
+impl FrameEncodeStats {
+    /// Set `coded`.
+    #[must_use]
+    pub fn with_coded(mut self, v: usize) -> Self {
+        self.coded = v;
+        self
+    }
+
+    /// Set `not_coded`.
+    #[must_use]
+    pub fn with_not_coded(mut self, v: usize) -> Self {
+        self.not_coded = v;
+        self
+    }
+
+    /// Set `intra`.
+    #[must_use]
+    pub fn with_intra(mut self, v: usize) -> Self {
+        self.intra = v;
+        self
+    }
+
+    /// Set `skipped`.
+    #[must_use]
+    pub fn with_skipped(mut self, v: usize) -> Self {
+        self.skipped = v;
+        self
+    }
 }
 
 impl FrameEncodeStats {
@@ -90,6 +121,7 @@ impl FrameEncodeStats {
 
 /// Optional behaviours for the frame-picture encoders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct FrameEncodeOptions {
     /// Emit §7.6.6 skipped macroblocks where the skip reconstruction
     /// equals the coded one.
@@ -104,6 +136,43 @@ pub struct FrameEncodeOptions {
     /// `progressive_frame` override; `None` inherits
     /// `progressive_sequence` (the baseline behaviour).
     pub progressive_frame: Option<bool>,
+}
+
+impl FrameEncodeOptions {
+    /// Set `skipped_macroblocks`.
+    #[must_use]
+    pub fn with_skipped_macroblocks(mut self, v: bool) -> Self {
+        self.skipped_macroblocks = v;
+        self
+    }
+
+    /// Set `concealment_motion_vectors`.
+    #[must_use]
+    pub fn with_concealment_motion_vectors(mut self, v: bool) -> Self {
+        self.concealment_motion_vectors = v;
+        self
+    }
+
+    /// Set `top_field_first`.
+    #[must_use]
+    pub fn with_top_field_first(mut self, v: bool) -> Self {
+        self.top_field_first = v;
+        self
+    }
+
+    /// Set `repeat_first_field`.
+    #[must_use]
+    pub fn with_repeat_first_field(mut self, v: bool) -> Self {
+        self.repeat_first_field = v;
+        self
+    }
+
+    /// Set `progressive_frame`.
+    #[must_use]
+    pub fn with_progressive_frame(mut self, v: Option<bool>) -> Self {
+        self.progressive_frame = v;
+        self
+    }
 }
 
 impl FrameEncodeOptions {

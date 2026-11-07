@@ -35,20 +35,17 @@ fn synthetic_frame(width: usize, height: usize, pic: usize) -> FrameBuffer {
 }
 
 fn seq_params(width: u16, height: u16) -> Mpeg1SequenceParams {
-    Mpeg1SequenceParams {
-        horizontal_size: width,
-        vertical_size: height,
-        ..Default::default()
-    }
+    Mpeg1SequenceParams::default()
+        .with_horizontal_size(width)
+        .with_vertical_size(height)
 }
 
 fn params_for(seq: &Mpeg1SequenceParams) -> oxideav_mpeg12video::mpeg1_picture::Mpeg1PictureParams {
-    oxideav_mpeg12video::mpeg1_picture::Mpeg1PictureParams {
-        width: usize::from(seq.horizontal_size),
-        height: usize::from(seq.vertical_size),
-        intra_quant: oxideav_mpeg12video::dequantize::DEFAULT_INTRA_QUANT,
-        non_intra_quant: oxideav_mpeg12video::dequantize::DEFAULT_NON_INTRA_QUANT,
-    }
+    oxideav_mpeg12video::mpeg1_picture::Mpeg1PictureParams::default()
+        .with_width(usize::from(seq.horizontal_size))
+        .with_height(usize::from(seq.vertical_size))
+        .with_intra_quant(oxideav_mpeg12video::dequantize::DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant(oxideav_mpeg12video::dequantize::DEFAULT_NON_INTRA_QUANT)
 }
 
 fn assert_frames_equal(a: &FrameBuffer, b: &FrameBuffer, what: &str) {

@@ -6,6 +6,14 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Default` on the stats, report and layer-output records that lacked it; full-field `FieldSearchResult::new`, `IntraPictureParams::new`, `TemporalScalableDecoded::new` and `VbvParams::new`; `with_<field>` setters on every newly `#[non_exhaustive]` record. Tests, examples and fuzz targets build records through them.
+
+### Changed
+
+- API hygiene: enums `Error`, `InterError`, `PictureStructureOption`, `RateControlOption`, `PulldownOption`, `RemovalInterval`, `VbvViolation`, `VbvStandard` and `VbvVerifyError` are now `#[non_exhaustive]`, as are the option / stats / params / layer-output records `FrameEncodeStats`, `FrameEncodeOptions`, `Mpeg12EncoderOptions`, `FieldSearchResult`, `FieldModeStats`, `FrameBuffer`, `IntraPictureParams`, `IntraDecodeContext`, `FrameFieldStats`, `Mpeg1SequenceParams`, `Mpeg1PictureParams`, `CbrConfig`, `CbrEncoded`, `SnrEncoded`, `SpatialScalableDecoded`, `SpatialLayerConfig`, `SpatialStats`, `SpatialEncoded`, `TemporalScalableDecoded`, `TemporalLayerConfig`, `TemporalEncoded`, `VbvParams`, `VbvPictureRecord`, `VbvStreamReport`. `PictureCodingType`, `ChromaFormat` and the `dct_coeff` syntax enums stay exhaustive (spec-fixed). The §6/§7 syntax-walker modules were already `#[doc(hidden)]`.
+
 ## [0.0.14](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.13...v0.0.14) - 2026-10-24
 
 ### Added

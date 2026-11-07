@@ -17,17 +17,17 @@ use oxideav_mpeg12video::{
 };
 
 fn params(width: usize, height: usize, progressive: bool) -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: progressive,
-    }
+        ChromaFormat::Yuv420,
+        true,
+        0,
+        false,
+        false,
+        false,
+        progressive,
+    )
 }
 
 /// A mostly-static frame: flat background with a small high-contrast
@@ -95,10 +95,7 @@ fn p_picture_skips_static_macroblocks_and_decodes_exactly() {
         6,
         3,
         &QuantiserMatrixState::defaults(),
-        FrameEncodeOptions {
-            skipped_macroblocks: true,
-            ..Default::default()
-        },
+        FrameEncodeOptions::default().with_skipped_macroblocks(true),
     )
     .expect("P with skips");
     assert!(
@@ -180,10 +177,7 @@ fn b_picture_skips_inherit_direction_and_decode_exactly() {
         3,
         3,
         &QuantiserMatrixState::defaults(),
-        FrameEncodeOptions {
-            skipped_macroblocks: true,
-            ..Default::default()
-        },
+        FrameEncodeOptions::default().with_skipped_macroblocks(true),
     )
     .expect("B with skips");
     assert!(
@@ -216,10 +210,7 @@ fn gop_assembler_with_skips_shrinks_stream_and_round_trips() {
         3,
         3,
         &QuantMatrixExtension::default(),
-        &|_| FrameEncodeOptions {
-            skipped_macroblocks: true,
-            ..Default::default()
-        },
+        &|_| FrameEncodeOptions::default().with_skipped_macroblocks(true),
     )
     .expect("skip stream");
     assert!(stats.skipped > 0, "no skips emitted: {stats:?}");
@@ -257,10 +248,7 @@ fn concealment_vectors_do_not_change_the_reconstruction() {
         3,
         3,
         &QuantMatrixExtension::default(),
-        &|_| FrameEncodeOptions {
-            concealment_motion_vectors: true,
-            ..Default::default()
-        },
+        &|_| FrameEncodeOptions::default().with_concealment_motion_vectors(true),
     )
     .expect("concealment stream");
     assert_ne!(plain, concealed, "concealment vectors must move bits");
@@ -294,10 +282,7 @@ fn intra_picture_with_concealment_round_trips_standalone() {
         0,
         6,
         &QuantMatrixExtension::default(),
-        FrameEncodeOptions {
-            concealment_motion_vectors: true,
-            ..Default::default()
-        },
+        FrameEncodeOptions::default().with_concealment_motion_vectors(true),
         3,
         Some(&reference),
     )
@@ -354,10 +339,7 @@ fn section_6_3_10_flag_violations_are_rejected() {
         0,
         6,
         &QuantMatrixExtension::default(),
-        FrameEncodeOptions {
-            top_field_first: true,
-            ..Default::default()
-        },
+        FrameEncodeOptions::default().with_top_field_first(true),
         15,
         None,
     );
@@ -369,10 +351,7 @@ fn section_6_3_10_flag_violations_are_rejected() {
         0,
         6,
         &QuantMatrixExtension::default(),
-        FrameEncodeOptions {
-            concealment_motion_vectors: true,
-            ..Default::default()
-        },
+        FrameEncodeOptions::default().with_concealment_motion_vectors(true),
         15,
         None,
     );

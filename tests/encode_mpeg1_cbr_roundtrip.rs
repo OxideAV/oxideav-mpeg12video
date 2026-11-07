@@ -49,13 +49,11 @@ fn flat_frame(width: usize, height: usize) -> FrameBuffer {
 }
 
 fn seq(width: u16, height: u16, bit_rate_value: u32, vbv: u16) -> Mpeg1SequenceParams {
-    Mpeg1SequenceParams {
-        horizontal_size: width,
-        vertical_size: height,
-        bit_rate_value,
-        vbv_buffer_size_value: vbv,
-        ..Default::default()
-    }
+    Mpeg1SequenceParams::default()
+        .with_horizontal_size(width)
+        .with_vertical_size(height)
+        .with_bit_rate_value(bit_rate_value)
+        .with_vbv_buffer_size_value(vbv)
 }
 
 #[test]

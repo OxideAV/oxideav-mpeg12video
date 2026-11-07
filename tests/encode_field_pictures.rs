@@ -32,26 +32,24 @@ const W: usize = 48;
 const H: usize = 64; // frame height (multiple of 32); fields are 48x32
 
 fn frame_params() -> IntraPictureParams {
-    IntraPictureParams {
-        width: W,
-        height: H,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    }
+    IntraPictureParams::new(
+        W,
+        H,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    )
 }
 
 fn field_params() -> IntraPictureParams {
-    IntraPictureParams {
-        height: H / 2,
-        frame_pred_frame_dct: false,
-        progressive_sequence: true, // 16-aligned grid in field coordinates
-        ..frame_params()
-    }
+    frame_params()
+        .with_height(H / 2)
+        .with_frame_pred_frame_dct(false)
+        .with_progressive_sequence(true)
 }
 
 /// Interlaced-looking source frame: per-line phase (so the two fields
@@ -390,13 +388,11 @@ fn field_sequence_honours_alternate_scan_and_intra_vlc_format() {
     // Round 453: the field-picture encoders code `alternate_scan` /
     // `intra_vlc_format` (+ non-linear quantiser, 10-bit DC) on the
     // wire instead of rejecting them.
-    let params = IntraPictureParams {
-        alternate_scan: true,
-        intra_vlc_format: true,
-        q_scale_type: true,
-        intra_dc_precision: 2,
-        ..frame_params()
-    };
+    let params = frame_params()
+        .with_alternate_scan(true)
+        .with_intra_vlc_format(true)
+        .with_q_scale_type(true)
+        .with_intra_dc_precision(2);
     let frames: Vec<FrameBuffer> = (0..5).map(|t| frame_at(t, 0)).collect();
     let stream = encode_field_display_order_gop_sequence(&frames, 1, 2, &params, 6, 3, 3)
         .expect("encode full-flag field sequence");

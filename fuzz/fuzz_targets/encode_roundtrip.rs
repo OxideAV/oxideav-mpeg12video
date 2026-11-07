@@ -51,17 +51,17 @@ fuzz_target!(|data: &[u8]| {
         1 => ChromaFormat::Yuv422,
         _ => ChromaFormat::Yuv444,
     };
-    let params = IntraPictureParams {
+    let params = IntraPictureParams::new(
         width,
         height,
         chroma_format,
-        frame_pred_frame_dct: structure == 0,
-        intra_dc_precision: (b(3) % 4) as u8,
-        intra_vlc_format: b(4) & 1 != 0,
-        alternate_scan: b(4) & 2 != 0,
-        q_scale_type: b(4) & 4 != 0,
-        progressive_sequence: structure == 0,
-    };
+        structure == 0,
+        (b(3) % 4) as u8,
+        b(4) & 1 != 0,
+        b(4) & 2 != 0,
+        b(4) & 4 != 0,
+        structure == 0,
+    );
     let quantiser_scale_code = 1 + (b(5) % 31) as u8;
     let f_code = 1 + (b(6) % 4) as u8;
     let b_between = b(7) % 3;
@@ -69,15 +69,12 @@ fuzz_target!(|data: &[u8]| {
     // Tall pictures are ~176 macroblock rows each: keep them to one
     // or two frames so an iteration stays cheap.
     let n_frames = if tall { 1 + b(8) % 2 } else { 1 + b(8) % 3 };
-    let options = FrameEncodeOptions {
-        skipped_macroblocks: b(9) & 1 != 0,
-        concealment_motion_vectors: b(9) & 2 != 0,
-        // §6.3.10: in a progressive sequence top_field_first may be 1
-        // only with repeat_first_field 1.
-        repeat_first_field: b(9) & 4 != 0,
-        top_field_first: b(9) & 4 != 0 && b(9) & 8 != 0,
-        progressive_frame: None,
-    };
+    let options = FrameEncodeOptions::default()
+        .with_skipped_macroblocks(b(9) & 1 != 0)
+        .with_concealment_motion_vectors(b(9) & 2 != 0)
+        .with_repeat_first_field(b(9) & 4 != 0)
+        .with_top_field_first(b(9) & 4 != 0 && b(9) & 8 != 0)
+        .with_progressive_frame(None);
     // Dual-prime needs b_between == 0 (§7.6.3.6).
     let allow_dual_prime = b(10) & 1 != 0 && b_between == 0;
 

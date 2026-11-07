@@ -136,6 +136,7 @@ const DUAL_PRIME_BIAS: u32 = 32;
 /// callers and tests can confirm the per-macroblock adaptive decisions
 /// (frame/field prediction, dual-prime, field DCT) actually fire.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameFieldStats {
     /// Macroblocks coded with Table 6-17 `Frame-based` prediction.
     pub frame_mc: usize,
@@ -148,6 +149,43 @@ pub struct FrameFieldStats {
     pub intra: usize,
     /// Macroblocks whose transmitted `dct_type` selected **field DCT**.
     pub field_dct: usize,
+}
+
+impl FrameFieldStats {
+    /// Set `frame_mc`.
+    #[must_use]
+    pub fn with_frame_mc(mut self, v: usize) -> Self {
+        self.frame_mc = v;
+        self
+    }
+
+    /// Set `field_mc`.
+    #[must_use]
+    pub fn with_field_mc(mut self, v: usize) -> Self {
+        self.field_mc = v;
+        self
+    }
+
+    /// Set `dual_prime`.
+    #[must_use]
+    pub fn with_dual_prime(mut self, v: usize) -> Self {
+        self.dual_prime = v;
+        self
+    }
+
+    /// Set `intra`.
+    #[must_use]
+    pub fn with_intra(mut self, v: usize) -> Self {
+        self.intra = v;
+        self
+    }
+
+    /// Set `field_dct`.
+    #[must_use]
+    pub fn with_field_dct(mut self, v: usize) -> Self {
+        self.field_dct = v;
+        self
+    }
 }
 
 impl FrameFieldStats {

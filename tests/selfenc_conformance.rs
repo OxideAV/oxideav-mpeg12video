@@ -67,17 +67,17 @@ fn frame_at(width: usize, height: usize, dx: usize, dy: usize, stamp: bool) -> F
 }
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: true,
-    }
+        ChromaFormat::Yuv420,
+        true,
+        0,
+        false,
+        false,
+        false,
+        true,
+    )
 }
 
 fn fixture(name: &str) -> (Vec<u8>, Vec<u8>) {
@@ -230,11 +230,9 @@ fn selfenc_mpeg2_gop_sequence_is_pinned_and_reference_conformant() {
 }
 
 fn mpeg1_seq(width: u16, height: u16) -> Mpeg1SequenceParams {
-    Mpeg1SequenceParams {
-        horizontal_size: width,
-        vertical_size: height,
-        ..Default::default()
-    }
+    Mpeg1SequenceParams::default()
+        .with_horizontal_size(width)
+        .with_vertical_size(height)
 }
 
 #[test]
@@ -289,12 +287,11 @@ fn selfenc_mpeg1_two_gop_ibbp_is_pinned_and_reference_conformant() {
 fn selfenc_mpeg2_cbr_is_pinned_reference_and_vbv_conformant() {
     let (stream, reference) = fixture("selfenc-cbr-64x48.m2v");
     let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 4)).collect();
-    let cbr = CbrConfig {
-        bit_rate_value: 600,
-        vbv_buffer_size_value: 4,
-        frame_rate_code: 3,
-        initial_quantiser_scale_code: 6,
-    };
+    let cbr = CbrConfig::default()
+        .with_bit_rate_value(600)
+        .with_vbv_buffer_size_value(4)
+        .with_frame_rate_code(3)
+        .with_initial_quantiser_scale_code(6);
     let regenerated =
         encode_cbr_gop_sequence(&display, 1, 2, params(64, 48), &cbr, 3, 3).expect("cbr re-encode");
     assert_eq!(
@@ -316,11 +313,9 @@ fn selfenc_mpeg2_cbr_is_pinned_reference_and_vbv_conformant() {
 fn selfenc_mpeg1_cbr_is_pinned_reference_and_vbv_conformant() {
     let (stream, reference) = fixture("selfenc-mpeg1-cbr-64x48.m1v");
     let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 5)).collect();
-    let seq_cbr = Mpeg1SequenceParams {
-        bit_rate_value: 600,
-        vbv_buffer_size_value: 4,
-        ..mpeg1_seq(64, 48)
-    };
+    let seq_cbr = mpeg1_seq(64, 48)
+        .with_bit_rate_value(600)
+        .with_vbv_buffer_size_value(4);
     let regenerated =
         encode_mpeg1_cbr_sequence(&display, 2, 1, &seq_cbr, 6, 3, 3).expect("mpeg1 cbr re-encode");
     assert_eq!(
@@ -360,17 +355,17 @@ fn field_frame_at(t: usize) -> FrameBuffer {
 fn selfenc_field_sequence_is_pinned_and_reference_conformant() {
     let (stream, reference) = fixture("selfenc-fieldseq-48x64.m2v");
     let display: Vec<FrameBuffer> = (0..5).map(field_frame_at).collect();
-    let field_params = IntraPictureParams {
-        width: 48,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let field_params = IntraPictureParams::new(
+        48,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let regenerated = oxideav_mpeg12video::encode_field_display_order_gop_sequence(
         &display,
         1,
@@ -392,17 +387,17 @@ fn selfenc_field_sequence_is_pinned_and_reference_conformant() {
 /// The frame-picture field-based parameters — in lock-step with
 /// `examples/gen_selfenc_corpus.rs` streams 14–15.
 fn ff_params_64() -> IntraPictureParams {
-    IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    }
+    IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    )
 }
 
 /// Stream 14's synthetic content: per-frame opposite-direction field
@@ -539,17 +534,17 @@ fn fieldmodes_frame_at(t: usize) -> FrameBuffer {
 fn selfenc_field_modes_sequence_is_pinned_and_reference_conformant() {
     let (stream, reference) = fixture("selfenc-fieldmodes-64x64.m2v");
     let display: Vec<FrameBuffer> = (0..3).map(fieldmodes_frame_at).collect();
-    let fa_params = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let fa_params = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let (regenerated, stats) =
         oxideav_mpeg12video::encode_field_adaptive_display_order_gop_sequence(
             &display, 0, 2, &fa_params, 6, 3, 3, true,
@@ -629,11 +624,9 @@ fn selfenc_mpeg1_loaded_matrices_is_pinned_and_reference_conformant() {
     for (i, v) in intra.iter_mut().enumerate().skip(1) {
         *v = 12 + (i as u8 % 8);
     }
-    let seq_qmat = Mpeg1SequenceParams {
-        intra_quant_matrix: Some(intra),
-        non_intra_quant_matrix: Some([20u8; 64]),
-        ..mpeg1_seq(48, 32)
-    };
+    let seq_qmat = mpeg1_seq(48, 32)
+        .with_intra_quant_matrix(Some(intra))
+        .with_non_intra_quant_matrix(Some([20u8; 64]));
     let display: Vec<FrameBuffer> = (0..3).map(|k| frame_at(48, 32, 2 * k, k, false)).collect();
     let regenerated = encode_mpeg1_display_order_sequence(&display, 1, 1, &seq_qmat, 6, 3, 3)
         .expect("mpeg1 qmat re-encode");
@@ -670,10 +663,7 @@ fn selfenc_ipb_group_is_pinned_and_reference_conformant() {
 
 /// 4:2:2 params matching `gen_selfenc_corpus`'s `params_422`.
 fn params_422(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
-        chroma_format: ChromaFormat::Yuv422,
-        ..params(width, height)
-    }
+    params(width, height).with_chroma_format(ChromaFormat::Yuv422)
 }
 
 /// Deterministic 4:2:2 frame — must stay in lock-step with
@@ -740,13 +730,11 @@ fn selfenc_422_full_flags_is_pinned_and_reference_conformant() {
     let display: Vec<FrameBuffer> = (0..5)
         .map(|t| frame_422_at(64, 48, 2 * t, t >= 3))
         .collect();
-    let full_params = IntraPictureParams {
-        intra_dc_precision: 2,
-        intra_vlc_format: true,
-        alternate_scan: true,
-        q_scale_type: true,
-        ..params_422(64, 48)
-    };
+    let full_params = params_422(64, 48)
+        .with_intra_dc_precision(2)
+        .with_intra_vlc_format(true)
+        .with_alternate_scan(true)
+        .with_q_scale_type(true);
     let mut intra_zz = [0u8; 64];
     intra_zz[0] = 8;
     for (i, v) in intra_zz.iter_mut().enumerate().skip(1) {
@@ -806,10 +794,7 @@ fn frame_444_at(width: usize, height: usize, dx: usize) -> FrameBuffer {
 fn selfenc_444_ibp_is_pinned_and_reference_conformant() {
     let (stream, reference) = fixture("selfenc-444-ibp-64x48.m2v");
     let display: Vec<FrameBuffer> = (0..3).map(|t| frame_444_at(64, 48, 2 * t)).collect();
-    let p444 = IntraPictureParams {
-        chroma_format: ChromaFormat::Yuv444,
-        ..params(64, 48)
-    };
+    let p444 = params(64, 48).with_chroma_format(ChromaFormat::Yuv444);
     let regenerated = encode_display_order_gop_sequence(&display, 1, 2, p444, 6, 3, 3)
         .expect("4:4:4 gop re-encode");
     assert_eq!(
@@ -855,10 +840,10 @@ fn selfenc_skip_and_concealment_is_pinned_and_reference_conformant() {
         3,
         3,
         &oxideav_mpeg12video::quant_matrix_extension::QuantMatrixExtension::default(),
-        &|_| oxideav_mpeg12video::FrameEncodeOptions {
-            skipped_macroblocks: true,
-            concealment_motion_vectors: true,
-            ..Default::default()
+        &|_| {
+            oxideav_mpeg12video::FrameEncodeOptions::default()
+                .with_skipped_macroblocks(true)
+                .with_concealment_motion_vectors(true)
         },
     )
     .expect("skip/concealment re-encode");
@@ -911,17 +896,17 @@ fn fffull_frame(i: i32) -> FrameBuffer {
 fn selfenc_framefield_full_flags_is_pinned_and_reference_conformant() {
     let (stream, reference) = fixture("selfenc-fffull-64x64.m2v");
     let display: Vec<FrameBuffer> = (0i32..5).map(fffull_frame).collect();
-    let ff_params = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 2,
-        intra_vlc_format: true,
-        alternate_scan: true,
-        q_scale_type: true,
-        progressive_sequence: false,
-    };
+    let ff_params = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        2,
+        true,
+        true,
+        true,
+        false,
+    );
     let (regenerated, stats) =
         encode_ff_display_order_gop_sequence(&display, 1, 2, &ff_params, 6, 3, 3, false)
             .expect("full-flag frame-field re-encode");
@@ -963,17 +948,7 @@ fn interlaced_frame_at(chroma: ChromaFormat, w: usize, h: usize, t: usize) -> Fr
 }
 
 fn interlaced_params(w: usize, h: usize, chroma: ChromaFormat) -> IntraPictureParams {
-    IntraPictureParams {
-        width: w,
-        height: h,
-        chroma_format: chroma,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    }
+    IntraPictureParams::new(w, h, chroma, false, 0, false, false, false, false)
 }
 
 fn ff_chroma_base(chroma: ChromaFormat) -> FrameBuffer {
@@ -1386,10 +1361,9 @@ fn selfenc_spatial_pair_is_pinned_base_reference_conformant_and_loop_exact() {
     let regenerated = oxideav_mpeg12video::encode_spatial_enhancement_layer(
         &base,
         &sources,
-        &oxideav_mpeg12video::SpatialLayerConfig {
-            quantiser_scale_code: 5,
-            f_code: 3,
-        },
+        &oxideav_mpeg12video::SpatialLayerConfig::default()
+            .with_quantiser_scale_code(5)
+            .with_f_code(3),
     )
     .expect("enhancement re-encode");
     assert_eq!(
@@ -1460,12 +1434,11 @@ fn selfenc_mpeg2_multi_slice_rows_are_pinned_and_reference_conformant() {
 fn selfenc_mpeg1_row_spanning_slices_are_pinned_and_reference_conformant() {
     let (stream, reference) = fixture("selfenc-mpeg1-slices5-64x48.m1v");
     let input = frame_at(64, 48, 0, 0, false);
-    let p = oxideav_mpeg12video::Mpeg1PictureParams {
-        width: 64,
-        height: 48,
-        intra_quant: oxideav_mpeg12video::DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
+    let p = oxideav_mpeg12video::Mpeg1PictureParams::default()
+        .with_width(64)
+        .with_height(48)
+        .with_intra_quant(oxideav_mpeg12video::DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
     let seq = mpeg1_seq(64, 48);
     let mut bw = oxideav_core::bits::BitWriter::new();
     oxideav_mpeg12video::write_mpeg1_sequence_header(&mut bw, &seq).unwrap();

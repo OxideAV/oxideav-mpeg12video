@@ -19,17 +19,17 @@ use oxideav_mpeg12video::{
 };
 
 fn params_444(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
-        progressive_sequence: true,
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv444,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-    }
+        ChromaFormat::Yuv444,
+        true,
+        0,
+        false,
+        false,
+        false,
+        true,
+    )
 }
 
 /// Deterministic 4:4:4 content: full-resolution chroma with detail in

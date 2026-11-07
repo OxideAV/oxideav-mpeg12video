@@ -327,12 +327,29 @@ fn effective_class(record: &MacroblockRecord) -> u8 {
 // -------------------------------------------------------------------
 
 /// The result of [`decode_spatial_scalable_sequence`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct SpatialScalableDecoded {
     /// The lower layer's frames in display order.
     pub lower: Vec<DecodedFrame>,
     /// The enhancement layer's frames in display order.
     pub enhancement: Vec<DecodedFrame>,
+}
+
+impl SpatialScalableDecoded {
+    /// Set `lower`.
+    #[must_use]
+    pub fn with_lower(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.lower = v;
+        self
+    }
+
+    /// Set `enhancement`.
+    #[must_use]
+    pub fn with_enhancement(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.enhancement = v;
+        self
+    }
 }
 
 /// Decode a §7.7 spatial-scalable pair — the lower-layer stream `base`
@@ -747,11 +764,28 @@ fn reconstruct_spatial_picture(
 
 /// Configuration of [`encode_spatial_enhancement_layer`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SpatialLayerConfig {
     /// The per-slice `quantiser_scale_code` (`1..=31`).
     pub quantiser_scale_code: u8,
     /// Motion-vector `f_code` for both directions (`1..=9`).
     pub f_code: u8,
+}
+
+impl SpatialLayerConfig {
+    /// Set `quantiser_scale_code`.
+    #[must_use]
+    pub fn with_quantiser_scale_code(mut self, v: u8) -> Self {
+        self.quantiser_scale_code = v;
+        self
+    }
+
+    /// Set `f_code`.
+    #[must_use]
+    pub fn with_f_code(mut self, v: u8) -> Self {
+        self.f_code = v;
+        self
+    }
 }
 
 impl Default for SpatialLayerConfig {
@@ -765,6 +799,7 @@ impl Default for SpatialLayerConfig {
 
 /// Per-macroblock decision counts of [`encode_spatial_enhancement_layer`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SpatialStats {
     /// Intra macroblocks (class 0 in I pictures, intra fallbacks).
     pub intra: usize,
@@ -776,8 +811,39 @@ pub struct SpatialStats {
     pub half_weight: usize,
 }
 
+impl SpatialStats {
+    /// Set `intra`.
+    #[must_use]
+    pub fn with_intra(mut self, v: usize) -> Self {
+        self.intra = v;
+        self
+    }
+
+    /// Set `temporal`.
+    #[must_use]
+    pub fn with_temporal(mut self, v: usize) -> Self {
+        self.temporal = v;
+        self
+    }
+
+    /// Set `spatial_only`.
+    #[must_use]
+    pub fn with_spatial_only(mut self, v: usize) -> Self {
+        self.spatial_only = v;
+        self
+    }
+
+    /// Set `half_weight`.
+    #[must_use]
+    pub fn with_half_weight(mut self, v: usize) -> Self {
+        self.half_weight = v;
+        self
+    }
+}
+
 /// The output of [`encode_spatial_enhancement_layer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct SpatialEncoded {
     /// The enhancement-layer elementary stream.
     pub stream: Vec<u8>,
@@ -788,6 +854,36 @@ pub struct SpatialEncoded {
     pub enhancement: Vec<DecodedFrame>,
     /// Macroblock decision counts.
     pub stats: SpatialStats,
+}
+
+impl SpatialEncoded {
+    /// Set `stream`.
+    #[must_use]
+    pub fn with_stream(mut self, v: Vec<u8>) -> Self {
+        self.stream = v;
+        self
+    }
+
+    /// Set `lower`.
+    #[must_use]
+    pub fn with_lower(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.lower = v;
+        self
+    }
+
+    /// Set `enhancement`.
+    #[must_use]
+    pub fn with_enhancement(mut self, v: Vec<DecodedFrame>) -> Self {
+        self.enhancement = v;
+        self
+    }
+
+    /// Set `stats`.
+    #[must_use]
+    pub fn with_stats(mut self, v: SpatialStats) -> Self {
+        self.stats = v;
+        self
+    }
 }
 
 fn write_sequence_extension_fields(bw: &mut BitWriter, e: &Mpeg2SequenceExtension) {

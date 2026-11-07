@@ -64,17 +64,17 @@ fn frame_at(width: usize, height: usize, dx: usize, dy: usize, stamp: bool) -> F
 }
 
 fn params(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
+    IntraPictureParams::new(
         width,
         height,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: true,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: true,
-    }
+        ChromaFormat::Yuv420,
+        true,
+        0,
+        false,
+        false,
+        false,
+        true,
+    )
 }
 
 fn main() {
@@ -141,10 +141,10 @@ fn main() {
 
     // ---- ISO/IEC 11172-2 (MPEG-1) streams -------------------------
 
-    let mpeg1_seq = |w: u16, h: u16| Mpeg1SequenceParams {
-        horizontal_size: w,
-        vertical_size: h,
-        ..Default::default()
+    let mpeg1_seq = |w: u16, h: u16| {
+        Mpeg1SequenceParams::default()
+            .with_horizontal_size(w)
+            .with_vertical_size(h)
     };
 
     // 7. MPEG-1 all-intra (one closed GOP, one I picture).
@@ -179,11 +179,9 @@ fn main() {
     for (i, v) in intra.iter_mut().enumerate().skip(1) {
         *v = 12 + (i as u8 % 8);
     }
-    let seq_qmat = Mpeg1SequenceParams {
-        intra_quant_matrix: Some(intra),
-        non_intra_quant_matrix: Some([20u8; 64]),
-        ..mpeg1_seq(48, 32)
-    };
+    let seq_qmat = mpeg1_seq(48, 32)
+        .with_intra_quant_matrix(Some(intra))
+        .with_non_intra_quant_matrix(Some([20u8; 64]));
     let display: Vec<FrameBuffer> = (0..3).map(|k| frame_at(48, 32, 2 * k, k, false)).collect();
     let m1_qmat = encode_mpeg1_display_order_sequence(&display, 1, 1, &seq_qmat, 6, 3, 3)
         .expect("mpeg1 qmat encode");
@@ -197,12 +195,11 @@ fn main() {
     //     satisfies the Annex C occupancy bounds (quantiser
     //     adaptation + zero stuffing).
     let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 4)).collect();
-    let cbr = CbrConfig {
-        bit_rate_value: 600, // 240 kbit/s
-        vbv_buffer_size_value: 4,
-        frame_rate_code: 3,
-        initial_quantiser_scale_code: 6,
-    };
+    let cbr = CbrConfig::default()
+        .with_bit_rate_value(600)
+        .with_vbv_buffer_size_value(4)
+        .with_frame_rate_code(3)
+        .with_initial_quantiser_scale_code(6);
     let m2_cbr =
         encode_cbr_gop_sequence(&display, 1, 2, params(64, 48), &cbr, 3, 3).expect("cbr encode");
     write("selfenc-cbr-64x48.m2v", &m2_cbr.stream);
@@ -211,11 +208,9 @@ fn main() {
     //     65 536-bit VBV buffer — real §2.4.3.4 vbv_delay values under
     //     the 11172-2 Annex C model (inside the §2.4.3.2 constrained
     //     bounds, so the flag is set).
-    let seq_cbr = Mpeg1SequenceParams {
-        bit_rate_value: 600,
-        vbv_buffer_size_value: 4,
-        ..mpeg1_seq(64, 48)
-    };
+    let seq_cbr = mpeg1_seq(64, 48)
+        .with_bit_rate_value(600)
+        .with_vbv_buffer_size_value(4);
     let display: Vec<FrameBuffer> = (0..8).map(|k| frame_at(64, 48, 2 * k, k, k == 5)).collect();
     let m1_cbr =
         encode_mpeg1_cbr_sequence(&display, 2, 1, &seq_cbr, 6, 3, 3).expect("mpeg1 cbr encode");
@@ -249,17 +244,17 @@ fn main() {
             f
         })
         .collect();
-    let field_params = IntraPictureParams {
-        width: 48,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let field_params = IntraPictureParams::new(
+        48,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let fieldseq =
         encode_field_display_order_gop_sequence(&field_frames, 1, 2, &field_params, 6, 3, 3)
             .expect("field sequence encode");
@@ -267,17 +262,17 @@ fn main() {
 
     // ---- Frame-picture field-based (frame_pred_frame_dct = 0) ----
 
-    let ff_params = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let ff_params = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
 
     // 14. Interlaced frame-picture sequence I B P B P (64x64): each
     //     frame's two fields translate in opposite directions, so the
@@ -443,17 +438,17 @@ fn main() {
             f
         })
         .collect();
-    let fa_params = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let fa_params = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let (fa_stream, fa_stats) =
         oxideav_mpeg12video::encode_field_adaptive_display_order_gop_sequence(
             &fa_frames, 0, 2, &fa_params, 6, 3, 3, true,
@@ -485,13 +480,11 @@ fn main() {
     //     downloadable matrices: luminance intra/non-intra loads in
     //     the sequence header and chroma intra/non-intra tables in a
     //     quant_matrix_extension() inside the I picture.
-    let full_params = IntraPictureParams {
-        intra_dc_precision: 2,
-        intra_vlc_format: true,
-        alternate_scan: true,
-        q_scale_type: true,
-        ..params_422(64, 48)
-    };
+    let full_params = params_422(64, 48)
+        .with_intra_dc_precision(2)
+        .with_intra_vlc_format(true)
+        .with_alternate_scan(true)
+        .with_q_scale_type(true);
     let mut intra_zz = [0u8; 64];
     intra_zz[0] = 8;
     for (i, v) in intra_zz.iter_mut().enumerate().skip(1) {
@@ -525,10 +518,7 @@ fn main() {
     //     (bits 3..0 driving blocks 8..11 per the printed §6.3.17.4;
     //     non-intra blocks 6/7 stay uncoded — see tests/encode_444.rs).
     let f444: Vec<FrameBuffer> = (0..3).map(|t| frame_444_at(64, 48, 2 * t)).collect();
-    let p444 = IntraPictureParams {
-        chroma_format: ChromaFormat::Yuv444,
-        ..params(64, 48)
-    };
+    let p444 = params(64, 48).with_chroma_format(ChromaFormat::Yuv444);
     let m444 =
         encode_display_order_gop_sequence(&f444, 1, 2, p444, 6, 3, 3).expect("4:4:4 gop encode");
     write("selfenc-444-ibp-64x48.m2v", &m444);
@@ -578,10 +568,10 @@ fn main() {
             3,
             3,
             &QuantMatrixExtension::default(),
-            &|_| oxideav_mpeg12video::FrameEncodeOptions {
-                skipped_macroblocks: true,
-                concealment_motion_vectors: true,
-                ..Default::default()
+            &|_| {
+                oxideav_mpeg12video::FrameEncodeOptions::default()
+                    .with_skipped_macroblocks(true)
+                    .with_concealment_motion_vectors(true)
             },
         )
         .expect("skip/concealment encode");
@@ -634,17 +624,17 @@ fn main() {
             out
         })
         .collect();
-    let ff_params = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv420,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 2,
-        intra_vlc_format: true,
-        alternate_scan: true,
-        q_scale_type: true,
-        progressive_sequence: false,
-    };
+    let ff_params = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv420,
+        false,
+        2,
+        true,
+        true,
+        true,
+        false,
+    );
     let (ff_stream, ff_stats) = oxideav_mpeg12video::encode_ff_display_order_gop_sequence(
         &ff_frames, 1, 2, &ff_params, 6, 3, 3, false,
     )
@@ -662,17 +652,17 @@ fn main() {
     let f422_field: Vec<FrameBuffer> = (0..5)
         .map(|t| interlaced_frame_at(ChromaFormat::Yuv422, 48, 64, t))
         .collect();
-    let p422_field = IntraPictureParams {
-        width: 48,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv422,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let p422_field = IntraPictureParams::new(
+        48,
+        64,
+        ChromaFormat::Yuv422,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let s422_field =
         encode_field_display_order_gop_sequence(&f422_field, 1, 2, &p422_field, 6, 3, 3)
             .expect("4:2:2 field sequence encode");
@@ -686,17 +676,17 @@ fn main() {
     let ff422_frames: Vec<FrameBuffer> = (0i32..5)
         .map(|t| ff_chroma_shift(&ff422_base, 2 * t, -2 * t))
         .collect();
-    let p422_ff = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv422,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let p422_ff = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv422,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let (s422_ff, st422_ff) =
         encode_ff_display_order_gop_sequence(&ff422_frames, 1, 2, &p422_ff, 6, 3, 3, false)
             .expect("4:2:2 frame-field encode");
@@ -710,17 +700,17 @@ fn main() {
     //     with full-height chroma detail — simple field / 16x8 /
     //     dual-prime macroblocks over eight-block macroblocks.
     let fa422_frames: Vec<FrameBuffer> = (0..3).map(fieldmodes_422_frame_at).collect();
-    let p422_fa = IntraPictureParams {
-        width: 64,
-        height: 64,
-        chroma_format: ChromaFormat::Yuv422,
-        frame_pred_frame_dct: false,
-        intra_dc_precision: 0,
-        intra_vlc_format: false,
-        alternate_scan: false,
-        q_scale_type: false,
-        progressive_sequence: false,
-    };
+    let p422_fa = IntraPictureParams::new(
+        64,
+        64,
+        ChromaFormat::Yuv422,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     let (s422_fa, st422_fa) =
         oxideav_mpeg12video::encode_field_adaptive_display_order_gop_sequence(
             &fa422_frames,
@@ -745,10 +735,7 @@ fn main() {
     let ff444_frames: Vec<FrameBuffer> = (0i32..3)
         .map(|t| ff_chroma_shift(&ff444_base, 2 * t, -2 * t))
         .collect();
-    let p444_ff = IntraPictureParams {
-        chroma_format: ChromaFormat::Yuv444,
-        ..p422_ff
-    };
+    let p444_ff = p422_ff.with_chroma_format(ChromaFormat::Yuv444);
     let (s444_ff, st444_ff) =
         encode_ff_display_order_gop_sequence(&ff444_frames, 1, 1, &p444_ff, 6, 3, 3, false)
             .expect("4:4:4 frame-field encode");
@@ -811,10 +798,9 @@ fn main() {
     let sp_enh = oxideav_mpeg12video::encode_spatial_enhancement_layer(
         &sp_base,
         &sp_sources,
-        &oxideav_mpeg12video::SpatialLayerConfig {
-            quantiser_scale_code: 5,
-            f_code: 3,
-        },
+        &oxideav_mpeg12video::SpatialLayerConfig::default()
+            .with_quantiser_scale_code(5)
+            .with_f_code(3),
     )
     .expect("spatial enhancement layer");
     eprintln!("spatial enhancement stats: {:?}", sp_enh.stats);
@@ -836,17 +822,14 @@ fn main() {
     //     of 5 / 5 / 2 macroblocks spanning macroblock rows and starting
     //     mid-row (ISO/IEC 11172-2 §2.4.1 "slices may start and finish
     //     anywhere").
-    let m1p = oxideav_mpeg12video::Mpeg1PictureParams {
-        width: 64,
-        height: 48,
-        intra_quant: oxideav_mpeg12video::DEFAULT_INTRA_QUANT,
-        non_intra_quant: [[16u8; 8]; 8],
-    };
-    let m1seq = Mpeg1SequenceParams {
-        horizontal_size: 64,
-        vertical_size: 48,
-        ..Default::default()
-    };
+    let m1p = oxideav_mpeg12video::Mpeg1PictureParams::default()
+        .with_width(64)
+        .with_height(48)
+        .with_intra_quant(oxideav_mpeg12video::DEFAULT_INTRA_QUANT)
+        .with_non_intra_quant([[16u8; 8]; 8]);
+    let m1seq = Mpeg1SequenceParams::default()
+        .with_horizontal_size(64)
+        .with_vertical_size(48);
     let mut bw = oxideav_core::bits::BitWriter::new();
     oxideav_mpeg12video::write_mpeg1_sequence_header(&mut bw, &m1seq).expect("mpeg1 header");
     oxideav_mpeg12video::write_gop_header(
@@ -1101,10 +1084,7 @@ fn frame_444_at(width: usize, height: usize, dx: usize) -> FrameBuffer {
 
 /// 4:2:2 params: progressive frame pictures, Figure 6-11 macroblocks.
 fn params_422(width: usize, height: usize) -> IntraPictureParams {
-    IntraPictureParams {
-        chroma_format: ChromaFormat::Yuv422,
-        ..params(width, height)
-    }
+    params(width, height).with_chroma_format(ChromaFormat::Yuv422)
 }
 
 /// Deterministic 4:2:2 frame: diagonal luma gradient + checker shifted
