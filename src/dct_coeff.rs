@@ -1337,7 +1337,9 @@ mod tests {
             );
         };
         for position in [CoefficientPosition::First, CoefficientPosition::Next] {
-            for prefix in 0..=u16::MAX {
+            // Under miri a strided sweep keeps the run short.
+            let step = if cfg!(miri) { 251 } else { 1 };
+            for prefix in (0..=u16::MAX).step_by(step) {
                 let [hi, lo] = prefix.to_be_bytes();
                 for tail in [
                     [0x00, 0x00, 0x00],

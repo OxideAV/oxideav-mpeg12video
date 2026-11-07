@@ -2132,7 +2132,9 @@ mod tests {
             );
         };
         for (table, position) in contexts {
-            for prefix in 0..=u16::MAX {
+            // Under miri a strided sweep keeps the run short.
+            let step = if cfg!(miri) { 251 } else { 1 };
+            for prefix in (0..=u16::MAX).step_by(step) {
                 let [hi, lo] = prefix.to_be_bytes();
                 for tail in [[0x00, 0x00, 0x00], [0xFF, 0xFF, 0xFF], [0x80, 0x01, 0x5A]] {
                     agree(&[hi, lo, tail[0], tail[1], tail[2]], table, position);
