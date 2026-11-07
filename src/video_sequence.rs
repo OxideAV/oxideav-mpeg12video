@@ -372,6 +372,41 @@ impl SequenceDecoder {
         self.skipped
     }
 
+    /// Whether a `sequence_header()` has established the sequence layer
+    /// (§6.2.2), so pictures can be decoded.
+    pub fn has_sequence(&self) -> bool {
+        self.state.is_some()
+    }
+
+    /// Prepare for a seek: forget the buffered bytes, the §7.6 anchors,
+    /// the §6.1.1.11 held-back anchor, any pending first field and the
+    /// frames not yet returned, and withdraw [`finish`](Self::finish) and
+    /// [`end_access_unit`](Self::end_access_unit). The sequence layer
+    /// (the last `sequence_header()` and the §6.3.11 matrices in force)
+    /// stays, so bytes pushed from the new position decode without
+    /// waiting for a sequence header; the first picture there should be
+    /// an I-picture (or use [`with_concealment`](Self::with_concealment),
+    /// which drops unreferenced B-pictures). Stream offsets keep counting
+    /// the bytes pushed in total.
+    pub fn reset(&mut self) {
+        self.consumed += self.buf.len() as u64;
+        self.buf.clear();
+        self.offset = 0;
+        self.searched = None;
+        self.finished = false;
+        self.ready.clear();
+        self.drained = false;
+        self.skip_next_field = false;
+        self.unit_end = None;
+        if let Some(state) = self.state.as_mut() {
+            state.reorder = ReorderBuffer::new();
+            state.forward_anchor = None;
+            state.backward_anchor = None;
+            state.pending_field = None;
+            state.first_field_offset = None;
+        }
+    }
+
     /// Append the next piece of the elementary stream.
     pub fn push(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);

@@ -8,6 +8,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SequenceDecoder::reset()` (a seek: drops the buffered bytes, the §7.6 anchors, the held-back anchor and any pending field, keeps the sequence layer so a later GOP decodes without its sequence header) and `SequenceDecoder::has_sequence()`.
 - `Default` on the stats, report and layer-output records that lacked it; full-field `FieldSearchResult::new`, `IntraPictureParams::new`, `TemporalScalableDecoded::new` and `VbvParams::new`; `with_<field>` setters on every newly `#[non_exhaustive]` record. Tests, examples and fuzz targets build records through them.
 
 ### Changed
