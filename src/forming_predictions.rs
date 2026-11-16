@@ -393,6 +393,12 @@ impl BlockSize {
 /// fully-reconstructed `vector'[r][s][1:0]` from §7.6.3.1 (i.e.
 /// after PMV reconstruction). Internally the vector is split with
 /// [`split_vector`] and each sample is filled by [`predict_sample`].
+///
+/// A block whose reference area (one extra column and row for the
+/// half-sample averages) lies inside the plane is formed a row slice
+/// at a time, loops the compiler vectorizes into byte averages; one
+/// that reaches past an edge goes sample by sample through the
+/// clamped reader. Both give the same samples.
 pub fn predict_block(
     reference: ReferencePlane<'_>,
     top_left_x: i32,
@@ -402,6 +408,60 @@ pub fn predict_block(
     vertical: i32,
 ) -> Vec<u8> {
     let split = split_vector(horizontal, vertical);
+    predict_block_inside(reference, top_left_x, top_left_y, size, split)
+        .unwrap_or_else(|| predict_block_by_sample(reference, top_left_x, top_left_y, size, split))
+}
+
+/// [`predict_block`] by whole rows when the block's reference area,
+/// with the extra column and row half-sample averaging reads, lies
+/// inside the plane; `None` otherwise.
+fn predict_block_inside(
+    reference: ReferencePlane<'_>,
+    top_left_x: i32,
+    top_left_y: i32,
+    size: BlockSize,
+    split: SplitVector,
+) -> Option<Vec<u8>> {
+    let (w, h) = (size.width, size.height);
+    let x = usize::try_from(top_left_x + split.horizontal.int_vec).ok()?;
+    let y = usize::try_from(top_left_y + split.vertical.int_vec).ok()?;
+    if x + w + 1 > reference.width || y + h + 1 > reference.height {
+        return None;
+    }
+    let stride = reference.width;
+    let row = |r: usize| &reference.data[(y + r) * stride + x..][..w + 1];
+    let mut out = Vec::with_capacity(w * h);
+    for r in 0..h {
+        let (a, b) = (row(r), row(r + 1));
+        match split.pattern() {
+            HalfPattern::Integer => out.extend_from_slice(&a[..w]),
+            HalfPattern::HalfHorizontal => {
+                out.extend(a[..w].iter().zip(&a[1..]).map(|(&p, &q)| avg2(p, q)));
+            }
+            HalfPattern::HalfVertical => {
+                out.extend(a[..w].iter().zip(&b[..w]).map(|(&p, &q)| avg2(p, q)));
+            }
+            HalfPattern::HalfBoth => out.extend(
+                a[..w]
+                    .iter()
+                    .zip(&a[1..])
+                    .zip(b[..w].iter().zip(&b[1..]))
+                    .map(|((&p, &q), (&s, &t))| avg4(p, q, s, t)),
+            ),
+        }
+    }
+    Some(out)
+}
+
+/// [`predict_block`] one clamped sample at a time: the reference form,
+/// used at the plane's edges.
+fn predict_block_by_sample(
+    reference: ReferencePlane<'_>,
+    top_left_x: i32,
+    top_left_y: i32,
+    size: BlockSize,
+    split: SplitVector,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(size.width * size.height);
     for row in 0..size.height as i32 {
         for col in 0..size.width as i32 {
@@ -853,6 +913,40 @@ mod tests {
         assert_eq!(split.pattern(), HalfPattern::HalfHorizontal);
         assert_eq!(split.horizontal.int_vec, -2);
         assert_eq!(predict_sample(r, 2, 1, split), 4);
+    }
+
+    // ---- predict_block: row fast path against the per-sample path ----
+
+    /// The row-slice fast path forms exactly the block the per-sample
+    /// path forms, over seeded random planes, block sizes, positions
+    /// (inside, touching and outside every edge) and half-pel vectors
+    /// of all four patterns.
+    #[test]
+    fn predict_block_matches_the_per_sample_path() {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move |bound: u32| -> i32 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % u64::from(bound)) as i32
+        };
+        for &(width, height) in &[(17usize, 9usize), (48, 32), (64, 48), (90, 72)] {
+            let data: Vec<u8> = (0..width * height).map(|_| next(256) as u8).collect();
+            let reference = ReferencePlane::new(&data, width, height).unwrap();
+            for _ in 0..4000 {
+                let size = [(16, 16), (16, 8), (8, 8), (8, 16), (8, 4)][next(5) as usize];
+                let size = BlockSize::new(size.0, size.1).unwrap();
+                let x = next(width as u32 + 24) - 12;
+                let y = next(height as u32 + 24) - 12;
+                let (horizontal, vertical) = (next(81) - 40, next(81) - 40);
+                let split = split_vector(horizontal, vertical);
+                assert_eq!(
+                    predict_block(reference, x, y, size, horizontal, vertical),
+                    predict_block_by_sample(reference, x, y, size, split),
+                    "{width}x{height} at ({x}, {y}) {size:?} vector ({horizontal}, {vertical})"
+                );
+            }
+        }
     }
 
     // ---- predict_block: full geometry ----

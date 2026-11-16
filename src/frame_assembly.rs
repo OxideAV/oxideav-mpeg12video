@@ -133,6 +133,19 @@ impl Plane {
     pub fn put_sample(&mut self, x: usize, y: usize, value: u8) {
         self.put(x, y, value);
     }
+
+    /// The up to `len` samples of row `y` starting at column `x`, clipped
+    /// to the plane the way [`Plane::put_sample`] drops out-of-bounds
+    /// writes (empty when `(x, y)` lies outside), so a block writer can
+    /// fill a whole row at once.
+    pub fn row_span_mut(&mut self, x: usize, y: usize, len: usize) -> &mut [u8] {
+        if x >= self.width || y >= self.height {
+            return &mut [];
+        }
+        let start = y * self.width + x;
+        let end = start + len.min(self.width - x);
+        &mut self.samples[start..end]
+    }
 }
 
 /// A reconstructed picture: the three colour-component planes.
@@ -1006,6 +1019,27 @@ fn interleave_plane(dst: &mut Plane, top: &Plane, bottom: &Plane) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every start, row and length on and around a small plane: a row
+    /// span covers exactly the samples `put_sample` would write, never
+    /// running on into the next row.
+    #[test]
+    fn row_spans_clip_exactly_as_sample_writes_do() {
+        let (w, h) = (5, 3);
+        for y in 0..h + 2 {
+            for x in 0..w + 3 {
+                for len in 0..w + 4 {
+                    let mut spans = Plane::new(w, h);
+                    let mut samples = Plane::new(w, h);
+                    spans.row_span_mut(x, y, len).fill(9);
+                    for c in 0..len {
+                        samples.put_sample(x + c, y, 9);
+                    }
+                    assert_eq!(spans.samples(), samples.samples(), "({x}, {y}) × {len}");
+                }
+            }
+        }
+    }
 
     fn ramp_block(base: i16) -> [[i16; 8]; 8] {
         let mut b = [[0i16; 8]; 8];
