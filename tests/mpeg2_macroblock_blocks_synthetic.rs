@@ -107,9 +107,9 @@ fn integration_intra_macroblock_420_walks_six_blocks_in_figure_6_10_order() {
         assert_eq!(db.decoded.qfs[0], 128);
         // f[y][x] is constant across the block.
         let expected = db.decoded.f_pel[0][0];
-        for v in 0..8 {
-            for u in 0..8 {
-                assert_eq!(db.decoded.f_pel[v][u], expected, "{v},{u}");
+        for (v, row) in db.decoded.f_pel.iter().enumerate() {
+            for (u, &pel) in row.iter().enumerate() {
+                assert_eq!(pel, expected, "{v},{u}");
             }
         }
     }

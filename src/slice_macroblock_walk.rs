@@ -2917,8 +2917,8 @@ mod tests {
         assert_eq!(blocks[5].component, CC::Cr);
         // Every QFS slot above [0] is zero (DC-only block).
         for b in blocks {
-            for i in 1..b.decoded.qfs.len() {
-                assert_eq!(b.decoded.qfs[i], 0);
+            for &qf in &b.decoded.qfs[1..] {
+                assert_eq!(qf, 0);
             }
         }
         // The cursor advanced past the §6.2.6 wire bits: increment
