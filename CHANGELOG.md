@@ -19,6 +19,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 - `write_inter_block` copies each prediction row once and fills the destination row through `Plane::row_span_mut` (a slice clipped exactly as `put_sample` drops out-of-bounds writes), so the add-and-saturate vectorizes instead of going through a bounds-checked read and write per sample. Output is unchanged; a differential test checks 20,000 seeded cases against the per-sample form.
 - `dct_coeff` decode (MPEG-1 Tables B.5c–B.5f, MPEG-2 Tables B-14 / B-15 / B-16) is one lookup on the next 16 bits in a prefix-code table built once from the transcribed rows, instead of a walk over every codeword; the walk still decides near the end of the buffer, so results and errors are unchanged (about 2.6–3× faster decode on 720×576 MPEG-2).
+- `predict_block` forms a block whose reference area (with the extra column and row the half-sample averages read) lies inside the plane one row slice at a time, in loops the compiler vectorizes into byte averages; blocks reaching past an edge still go sample by sample (`predict_block_by_sample`). Results are unchanged; a seeded differential test compares the two over 16,000 blocks.
 
 ## [0.0.14](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.13...v0.0.14) - 2026-10-24
 
