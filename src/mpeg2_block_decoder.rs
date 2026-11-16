@@ -481,9 +481,9 @@ mod tests {
         // clamp. Exact value depends on the IDCT scaling but it must
         // be a constant plane.
         let constant = out.f_pel[0][0];
-        for v in 0..8 {
-            for u in 0..8 {
-                assert_eq!(out.f_pel[v][u], constant, "{v},{u}");
+        for (v, row) in out.f_pel.iter().enumerate() {
+            for (u, &pel) in row.iter().enumerate() {
+                assert_eq!(pel, constant, "{v},{u}");
             }
         }
         // §7.2.1: predictor was updated to QFS[0].
