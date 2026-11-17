@@ -6,6 +6,37 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.15](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.14...v0.0.15) - 2026-11-17
+
+### Added
+
+- VideoSequenceDecoder — the §6.2.2 video_sequence() walker as a streaming decoder
+
+### Fixed
+
+- fixup for #14: stream_decoder tests on SequenceDecoder
+- fixup for #14: SequenceDecoder::reset() and has_sequence()
+- fixup for #15: CHANGELOG Performance entry; strided prefix sweep under miri
+
+### Other
+
+- Merge master into perf-integer-idct (CHANGELOG: keep all entries)
+- Merge pull request #18 from pmarreck/mc-whole-row-prediction
+- Merge branch 'master' into perf-integer-idct
+- Merge branch 'master' into mc-whole-row-prediction
+- Merge branch 'master' into inter-block-row-write
+- iterate block rows and coefficients directly (clippy needless_range_loop)
+- Write reconstructed inter blocks a row at a time
+- integer IDCT by partial butterfly, transposed, branch-free rounding
+- integer IDCT meeting IEEE 1180 on its integer output
+- form whole-row motion-compensated predictions inside the plane
+- Merge #14: SequenceDecoder reset() and has_sequence() (salvaged from the VideoSequenceDecoder PR)
+- Merge origin/master into #14
+- Merge remote-tracking branch 'origin/master' into pr-15
+- restore the field comments the builder migration dropped
+- API hygiene: non_exhaustive options/errors/records + builders
+- table-driven dct_coeff decode for MPEG-1 and MPEG-2
+
 ### Added
 
 - `SequenceDecoder::reset()` (a seek: drops the buffered bytes, the §7.6 anchors, the held-back anchor and any pending field, keeps the sequence layer so a later GOP decodes without its sequence header) and `SequenceDecoder::has_sequence()`.
