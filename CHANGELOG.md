@@ -6,6 +6,45 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.15](https://github.com/OxideAV/oxideav-mpeg12video/compare/v0.0.14...v0.0.15) - 2026-11-21
+
+### Added
+
+- VideoSequenceDecoder — the §6.2.2 video_sequence() walker as a streaming decoder
+
+### Fixed
+
+- fixup for #14: stream_decoder tests on SequenceDecoder
+- fixup for #14: SequenceDecoder::reset() and has_sequence()
+- fixup for #15: CHANGELOG Performance entry; strided prefix sweep under miri
+
+### Other
+
+- runtime adapter limits and the repeat-picture check
+- Skipped macroblocks under CBR; the matrix test names its binary once
+- ISO/IEC 11172-2 skipped macroblocks; repeat pictures checked against the black box
+- Thread budgets for encode and decode; runtime decoder decodes on demand
+- Frame-picture motion search rejects candidates by a lower bound
+- Runtime encoder: one packet per coded frame, a GOP at a time
+- Live black-box matrix, the CBR / option bugs it found, runtime decoder stream parameters
+- Motion search scores candidates straight from the reference plane
+- Merge master into perf-integer-idct (CHANGELOG: keep all entries)
+- Merge pull request #18 from pmarreck/mc-whole-row-prediction
+- Merge branch 'master' into perf-integer-idct
+- Merge branch 'master' into mc-whole-row-prediction
+- Merge branch 'master' into inter-block-row-write
+- iterate block rows and coefficients directly (clippy needless_range_loop)
+- Write reconstructed inter blocks a row at a time
+- integer IDCT by partial butterfly, transposed, branch-free rounding
+- integer IDCT meeting IEEE 1180 on its integer output
+- form whole-row motion-compensated predictions inside the plane
+- Merge #14: SequenceDecoder reset() and has_sequence() (salvaged from the VideoSequenceDecoder PR)
+- Merge origin/master into #14
+- Merge remote-tracking branch 'origin/master' into pr-15
+- restore the field comments the builder migration dropped
+- API hygiene: non_exhaustive options/errors/records + builders
+- table-driven dct_coeff decode for MPEG-1 and MPEG-2
+
 ### Added
 
 - `tests/blackbox_matrix.rs`: a live interoperability matrix against a black-box encoder and decoder (skipped when the binary is absent) — 279 foreign streams decoded by this crate, 345 streams of this crate's encoders decoded by the black box, five mid-stream sequence changes; all within the IEEE 1180 bound the test documents.
