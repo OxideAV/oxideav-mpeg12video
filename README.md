@@ -299,7 +299,8 @@ for the whole matrix):
   concealment vectors, pulldown flags, every `f_code`, CBR from
   300 kbit/s to 15 Mbit/s, sizes 2×2 … 1920×1080 and 4094 wide /
   tall — decoded by the black box without a diagnostic and equal to
-  this crate's own decode within the bound.
+  this crate's own decode within the bound. Plus the repeat pictures
+  of the CBR fallback, in both syntaxes.
 
 **The bound.** Annex A of both standards specifies the inverse DCT
 only to IEEE Std 1180-1990 accuracy, so two conforming decoders are
@@ -864,10 +865,12 @@ too; the interlaced structures do not yet.
   spec allows them under SNR / spatial scalability), field pictures in
   the SNR loop, temporal layers with `picture_mux_enable = 0` (the
   alignment is a systems-layer matter, §7.9.2).
-- **Runtime adapter** — `FrameEncodeOptions` ride the constant-quantiser
-  frame-picture assembler only (the CBR controllers drive the baseline
-  encoders), and the scalable encoders are reached through the direct
-  APIs (the registry contract emits one elementary stream).
+- **Runtime adapter** — concealment vectors and the cadence flags ride
+  the constant-quantiser frame-picture assembler only (of the
+  `FrameEncodeOptions`, the CBR controllers take skipped macroblocks);
+  CBR and data partitioning code the whole sequence at `flush()`; the
+  scalable encoders are reached through the direct APIs (the registry
+  contract emits one elementary stream).
 
 - **Encoder limits** — ISO/IEC 11172-2 pictures taller than 2800
   lines (175 slice rows; the encoder starts a slice per row), CBR
