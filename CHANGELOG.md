@@ -12,6 +12,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 - `examples/encode_yuv`: raw planar YCbCr to an elementary stream through the runtime encoder and its options.
 - Runtime decoder: `output_params()` (size, pixel format, frame rate), a `Frame::StreamParams` event plus `output_params_generation()` when a sequence header changes the shape mid-stream, frames stamped with the presentation time of the packet that carried their picture start code, and `Mpeg12DecoderOptions` (`strict`). `SequenceDecoder::frame_rate()`.
 - ISO/IEC 11172-2 skipped macroblocks (§2.4.4.4): `encode_mpeg1_p_picture_with_skips`, `encode_mpeg1_b_picture_with_skips`, `encode_mpeg1_display_order_sequence_with_skips`; the runtime `mpeg1video` encoder uses them by default (mean BD-rate against the black-box encoder over three clips +4.9 % → −0.7 %).
+- Skipped macroblocks under CBR: `CbrConfig::skipped_macroblocks` (frame pictures) and `encode_mpeg1_cbr_sequence_with_skips`; the runtime encoder's `skipped_macroblocks` option reaches both.
 - `FrameEncodeOptions::quantiser_scale_code` (a per-picture quantiser override) and the runtime option `b_quantiser_scale_code` (a separate quantiser for B-pictures).
 - `encode_repeat_p_picture` / `encode_repeat_b_picture` and the ISO/IEC 11172-2 `encode_mpeg1_repeat_p_picture` / `encode_mpeg1_repeat_b_picture`: a picture that repeats its forward reference, the smallest the syntax allows.
 
@@ -25,7 +26,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - The runtime encoder returns one packet per coded frame (coded order, `pts` / `dts` / keyframe flags, the input frames' presentation times) and codes a closed GOP as soon as the next one starts, instead of one packet holding the whole stream at `flush()`; every GOP starts with a sequence header and carries the running GOP time code. CBR and data partitioning still code the whole sequence at `flush()`.
-- The runtime encoder emits skipped macroblocks by default (`skipped_macroblocks = true`; constant-quantiser frame pictures): against the black-box encoder the mean BD-rate over three clips moves from +5.8 % to +0.4 %. The option is no longer rejected where it has no effect (field structures, CBR).
+- The runtime encoder emits skipped macroblocks by default (`skipped_macroblocks = true`; constant-quantiser frame pictures): against the black-box encoder the mean BD-rate over three clips moves from +5.8 % to +0.4 %. The option is no longer rejected where it has no effect (the field structures).
 - The runtime decoder decodes on demand: `send_packet` only queues the bytes and each `receive_frame` reconstructs up to the next frame, so a packet holding many pictures is never decoded (or held as frames) ahead of the caller, and bitstream errors are reported by `receive_frame`.
 - The runtime decoder conceals damaged pictures and drops B-pictures without a forward reference by default (`strict = true` restores the fail-fast behaviour), and `reset()` keeps the sequence layer.
 

@@ -542,7 +542,7 @@ pub use p_picture_encoder::{
 pub use picture_header::PictureCodingType;
 pub use rate_control::{
     CbrConfig, CbrEncoded, encode_cbr_gop_sequence, encode_field_cbr_gop_sequence,
-    encode_mpeg1_cbr_sequence,
+    encode_mpeg1_cbr_sequence, encode_mpeg1_cbr_sequence_with_skips,
 };
 pub use sequence_extension::ChromaFormat;
 pub use snr_scalability::{SnrEncoded, decode_snr_scalable_sequence, encode_snr_enhancement_layer};

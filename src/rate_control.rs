@@ -68,6 +68,9 @@ pub struct CbrConfig {
     /// The `quantiser_scale_code` every picture type starts from
     /// (`1..=31`); the controller adapts from here.
     pub initial_quantiser_scale_code: u8,
+    /// Emit §7.6.6 skipped macroblocks in the P- and B-pictures
+    /// ([`encode_cbr_gop_sequence`]; off by default).
+    pub skipped_macroblocks: bool,
 }
 
 impl CbrConfig {
@@ -98,6 +101,13 @@ impl CbrConfig {
         self.initial_quantiser_scale_code = v;
         self
     }
+
+    /// Set `skipped_macroblocks`.
+    #[must_use]
+    pub fn with_skipped_macroblocks(mut self, v: bool) -> Self {
+        self.skipped_macroblocks = v;
+        self
+    }
 }
 
 impl Default for CbrConfig {
@@ -107,6 +117,7 @@ impl Default for CbrConfig {
             vbv_buffer_size_value: 20,
             frame_rate_code: 3, // 25 frames/s
             initial_quantiser_scale_code: 6,
+            skipped_macroblocks: false,
         }
     }
 }
@@ -443,6 +454,11 @@ pub fn encode_cbr_gop_sequence(
 
     let step = b_between + 1;
     let target_bits = type_target_bits(bit_rate, frame_rate, b_between, anchors_per_gop);
+    // The default §6.3.11 matrices (none are downloaded) and the
+    // per-picture options of the P / B encoders.
+    let matrix_state = crate::quant_matrix_extension::QuantiserMatrixState::default();
+    let picture_options = crate::encode_options::FrameEncodeOptions::default()
+        .with_skipped_macroblocks(cbr.skipped_macroblocks);
 
     let sequence_params = SequenceHeaderParams {
         horizontal_size: params.width as u16,
@@ -548,7 +564,7 @@ pub fn encode_cbr_gop_sequence(
                     is_last,
                     |q| {
                         let mut bw = BitWriter::new();
-                        let recon = crate::p_picture_encoder::encode_p_picture(
+                        let recon = crate::p_picture_encoder::encode_p_picture_with_options(
                             &mut bw,
                             p_frame,
                             &fwd,
@@ -556,6 +572,8 @@ pub fn encode_cbr_gop_sequence(
                             (next_anchor - gop_start) as u16,
                             q,
                             forward_f_code,
+                            &matrix_state,
+                            picture_options,
                         )?;
                         Ok((bw.finish(), Some(recon)))
                     },
@@ -587,7 +605,7 @@ pub fn encode_cbr_gop_sequence(
                     is_last,
                     |q| {
                         let mut bw = BitWriter::new();
-                        crate::b_picture_encoder::encode_b_picture(
+                        crate::b_picture_encoder::encode_b_picture_with_options(
                             &mut bw,
                             b_frame,
                             fwd,
@@ -597,6 +615,8 @@ pub fn encode_cbr_gop_sequence(
                             q,
                             forward_f_code,
                             backward_f_code,
+                            &matrix_state,
+                            picture_options,
                         )?;
                         Ok((bw.finish(), None))
                     },
@@ -655,8 +675,37 @@ pub fn encode_mpeg1_cbr_sequence(
     forward_f_code: u8,
     backward_f_code: u8,
 ) -> Result<CbrEncoded> {
+    encode_mpeg1_cbr_sequence_with_skips(
+        frames,
+        b_between,
+        anchors_per_gop,
+        seq,
+        initial_quantizer_scale_code,
+        forward_f_code,
+        backward_f_code,
+        false,
+    )
+}
+
+/// [`encode_mpeg1_cbr_sequence`] whose P- and B-pictures emit
+/// §2.4.4.4 skipped macroblocks when `skipped_macroblocks` is set.
+///
+/// # Errors
+/// As [`encode_mpeg1_cbr_sequence`].
+#[allow(clippy::too_many_arguments)]
+pub fn encode_mpeg1_cbr_sequence_with_skips(
+    frames: &[FrameBuffer],
+    b_between: usize,
+    anchors_per_gop: usize,
+    seq: &Mpeg1SequenceParams,
+    initial_quantizer_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    skipped_macroblocks: bool,
+) -> Result<CbrEncoded> {
     use crate::mpeg1_encoder::{
-        encode_mpeg1_b_picture, encode_mpeg1_intra_picture, encode_mpeg1_p_picture, picture_params,
+        encode_mpeg1_b_picture_with_skips, encode_mpeg1_intra_picture,
+        encode_mpeg1_p_picture_with_skips, picture_params,
     };
     use crate::mpeg1_stream_writer::{
         constrained_parameters_admissible, write_mpeg1_sequence_header,
@@ -803,7 +852,7 @@ pub fn encode_mpeg1_cbr_sequence(
                     is_last,
                     |q| {
                         let mut bw = BitWriter::new();
-                        let recon = encode_mpeg1_p_picture(
+                        let recon = encode_mpeg1_p_picture_with_skips(
                             &mut bw,
                             p_frame,
                             &fwd,
@@ -812,6 +861,7 @@ pub fn encode_mpeg1_cbr_sequence(
                             q,
                             forward_f_code,
                             false,
+                            skipped_macroblocks,
                         )?;
                         Ok((bw.finish(), Some(recon)))
                     },
@@ -843,7 +893,7 @@ pub fn encode_mpeg1_cbr_sequence(
                     is_last,
                     |q| {
                         let mut bw = BitWriter::new();
-                        encode_mpeg1_b_picture(
+                        encode_mpeg1_b_picture_with_skips(
                             &mut bw,
                             b_frame,
                             fwd,
@@ -855,6 +905,7 @@ pub fn encode_mpeg1_cbr_sequence(
                             backward_f_code,
                             false,
                             false,
+                            skipped_macroblocks,
                         )?;
                         Ok((bw.finish(), None))
                     },

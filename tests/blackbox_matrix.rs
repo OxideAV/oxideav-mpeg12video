@@ -1,6 +1,6 @@
 //! Live black-box interoperability matrix.
 //!
-//! Two sweeps against the `ffmpeg` binary, both generated in a
+//! Two sweeps against a black-box encoder / decoder binary, both generated in a
 //! temporary directory at run time (nothing is committed) and both
 //! **skipped when the binary is absent**:
 //!
@@ -47,9 +47,12 @@ use oxideav_core::{
 };
 use oxideav_mpeg12video::{decode_video_sequence, make_encoder};
 
+/// Executable name of the black-box encoder / decoder.
+const BLACK_BOX: &str = "ffmpeg";
+
 /// Whether the black-box binary runs here.
-fn have_ffmpeg() -> bool {
-    Command::new("ffmpeg")
+fn have_black_box() -> bool {
+    Command::new(BLACK_BOX)
         .arg("-version")
         .output()
         .map(|o| o.status.success())
@@ -81,9 +84,9 @@ impl Drop for Scratch {
     }
 }
 
-/// Run `ffmpeg` with `args`; `Ok(diagnostics)` on success.
-fn ffmpeg(args: &[String]) -> Result<String, String> {
-    let out = Command::new("ffmpeg")
+/// Run the black-box binary with `args`; `Ok(diagnostics)` on success.
+fn black_box(args: &[String]) -> Result<String, String> {
+    let out = Command::new(BLACK_BOX)
         .args(["-hide_banner", "-nostdin", "-y", "-loglevel", "warning"])
         .args(args)
         .output()
@@ -138,7 +141,7 @@ fn decode_ours(stream: &[u8]) -> Result<(usize, Vec<u8>), String> {
 /// Decode `stream_path` with the black-box decoder to raw planar
 /// frames; returns the bytes and the decoder's stream diagnostics.
 fn decode_reference(stream_path: &Path, raw_path: &Path) -> Result<(Vec<u8>, Vec<String>), String> {
-    let stderr = ffmpeg(&[
+    let stderr = black_box(&[
         s("-i"),
         path_arg(stream_path),
         s("-fps_mode"),
@@ -832,7 +835,7 @@ fn encode_foreign(case: &Foreign, stream_path: &Path) -> Result<(), String> {
         }),
         path_arg(stream_path),
     ]);
-    ffmpeg(&args).map_err(|e| format!("black-box encoder: {e}"))?;
+    black_box(&args).map_err(|e| format!("black-box encoder: {e}"))?;
     Ok(())
 }
 
@@ -852,8 +855,8 @@ fn check_foreign(scratch: &Scratch, case: &Foreign) -> Result<(), String> {
 
 #[test]
 fn foreign_streams_decode_within_the_idct_bound() {
-    if !have_ffmpeg() {
-        eprintln!("skipping: ffmpeg not found");
+    if !have_black_box() {
+        eprintln!("skipping: black-box binary `{BLACK_BOX}` not found");
         return;
     }
     let full = !cfg!(debug_assertions);
@@ -879,8 +882,8 @@ fn foreign_streams_decode_within_the_idct_bound() {
 /// size, chroma format and the coding standard itself.
 #[test]
 fn foreign_sequence_changes_decode() {
-    if !have_ffmpeg() {
-        eprintln!("skipping: ffmpeg not found");
+    if !have_black_box() {
+        eprintln!("skipping: black-box binary `{BLACK_BOX}` not found");
         return;
     }
     let scratch = Scratch::new("concat");
@@ -1393,7 +1396,7 @@ fn check_ours(scratch: &Scratch, case: &Ours) -> Result<(), String> {
     let (even_size, crop) = even_source(case.width as u32, case.height as u32);
     filters.extend(crop);
     filters.push(format!("format=yuv{}p", case.chroma));
-    ffmpeg(&[
+    black_box(&[
         s("-f"),
         s("lavfi"),
         s("-i"),
@@ -1445,8 +1448,8 @@ fn check_ours(scratch: &Scratch, case: &Ours) -> Result<(), String> {
 
 #[test]
 fn our_streams_decode_in_the_black_box_decoder() {
-    if !have_ffmpeg() {
-        eprintln!("skipping: ffmpeg not found");
+    if !have_black_box() {
+        eprintln!("skipping: black-box binary `{BLACK_BOX}` not found");
         return;
     }
     let full = !cfg!(debug_assertions);
@@ -1477,8 +1480,8 @@ fn repeat_pictures_decode_in_the_black_box_decoder() {
         FrameBuffer, IntraPictureParams, Mpeg1PictureParams, Mpeg1SequenceParams,
     };
 
-    if !have_ffmpeg() {
-        eprintln!("skipping: ffmpeg not found");
+    if !have_black_box() {
+        eprintln!("skipping: black-box binary `{BLACK_BOX}` not found");
         return;
     }
     let (w, h) = (80usize, 48usize);

@@ -346,3 +346,61 @@ fn repeat_pictures_decode_to_the_reference() {
         assert_eq!(d.frame.cr.samples(), decoded[0].frame.cr.samples());
     }
 }
+
+/// The CBR controllers can emit skipped macroblocks: the streams stay
+/// Annex C conformant, decode to the right frame count, and a static
+/// scene spends the bits it saves on a finer quantiser.
+#[test]
+fn cbr_with_skipped_macroblocks_verifies_and_decodes() {
+    let (w, h) = (96usize, 64usize);
+    // A static, detailed scene.
+    let frames: Vec<FrameBuffer> = (0..13).map(|_| busy_frame(w, h, 0)).collect();
+    let base = CbrConfig::default()
+        .with_bit_rate_value(250) // 100 kbit/s
+        .with_vbv_buffer_size_value(4)
+        .with_frame_rate_code(3)
+        .with_initial_quantiser_scale_code(10);
+    let plain = encode_cbr_gop_sequence(&frames, 2, 4, params(w, h), &base, 3, 3).expect("CBR");
+    let skips = encode_cbr_gop_sequence(
+        &frames,
+        2,
+        4,
+        params(w, h),
+        &base.with_skipped_macroblocks(true),
+        3,
+        3,
+    )
+    .expect("CBR with skips");
+    for enc in [&plain, &skips] {
+        let report = verify_cbr_stream(&enc.stream, VbvStandard::Mpeg2).expect("VBV conformant");
+        assert_eq!(report.pictures.len(), 13);
+        assert_eq!(
+            decode_video_sequence(&enc.stream).expect("decode").len(),
+            13
+        );
+    }
+    let mean = |qs: &[u8]| qs.iter().map(|&q| u32::from(q)).sum::<u32>() as f64 / qs.len() as f64;
+    assert!(
+        mean(&skips.quantiser_scale_codes) <= mean(&plain.quantiser_scale_codes),
+        "skips {:?} plain {:?}",
+        skips.quantiser_scale_codes,
+        plain.quantiser_scale_codes
+    );
+
+    let seq = oxideav_mpeg12video::Mpeg1SequenceParams::default()
+        .with_horizontal_size(w as u16)
+        .with_vertical_size(h as u16)
+        .with_picture_rate_code(3)
+        .with_bit_rate_value(250)
+        .with_vbv_buffer_size_value(4);
+    let enc = oxideav_mpeg12video::encode_mpeg1_cbr_sequence_with_skips(
+        &frames, 2, 4, &seq, 10, 3, 3, true,
+    )
+    .expect("MPEG-1 CBR with skips");
+    let report = verify_cbr_stream(&enc.stream, VbvStandard::Mpeg1).expect("VBV conformant");
+    assert_eq!(report.pictures.len(), 13);
+    assert_eq!(
+        decode_video_sequence(&enc.stream).expect("decode").len(),
+        13
+    );
+}

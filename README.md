@@ -277,8 +277,8 @@ black-box reference decoder in reach accepts type-4 pictures).
 ## Black-box interoperability matrix
 
 `tests/blackbox_matrix.rs` runs the crate against a black-box
-MPEG-1 / MPEG-2 encoder and decoder (the `ffmpeg` binary; the test
-skips when it is absent, generates everything in a temporary
+MPEG-1 / MPEG-2 encoder and decoder binary (the test skips when the
+binary is absent, generates everything in a temporary
 directory, and runs a reduced set in debug builds — use `--release`
 for the whole matrix):
 
@@ -848,9 +848,9 @@ BD-rate over all-plane PSNR; negative = this crate needs fewer bits):
 The gain is skipped macroblocks (§7.6.6 / §2.4.4.4), now emitted by
 default. A coarser B-picture quantiser (`b_quantiser_scale_code`)
 helps the first two clips (−10.3 % / −0.9 % at `1.25 q + 1.25`) and
-hurts the grain clip (+12.5 %), so it stays an option. The interlaced
-structures and the CBR controllers do not emit skipped macroblocks
-yet.
+hurts the grain clip (+12.5 %), so it stays an option. The CBR
+controllers for frame pictures and MPEG-1 emit skipped macroblocks
+too; the interlaced structures do not yet.
 
 ## Not yet supported
 

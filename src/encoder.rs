@@ -73,7 +73,7 @@
 //! | `alternate_scan` | bool | `false` | §7.3 alternate scan (MPEG-2) |
 //! | `q_scale_type` | bool | `false` | Table 7-6 non-linear quantiser scale (MPEG-2) |
 //! | `intra_dc_precision` | u32 `0..=3` | `0` | 8..=11-bit intra DC (MPEG-2) |
-//! | `skipped_macroblocks` | bool | `true` | §7.6.6 / §2.4.4.4 skipped-macroblock emission (constant-quantiser `frame` pictures of `mpeg2video`, and `mpeg1video`; no effect elsewhere) |
+//! | `skipped_macroblocks` | bool | `true` | §7.6.6 / §2.4.4.4 skipped-macroblock emission (`frame` pictures of `mpeg2video`, and `mpeg1video`; no effect on the other picture structures) |
 //! | `concealment_motion_vectors` | bool | `false` | §7.6.3.9 concealment vectors on intra macroblocks (`frame` pictures) |
 //! | `top_field_first` | bool | `false` | §6.3.10 `top_field_first` on every frame picture |
 //! | `repeat_first_field` | bool | `false` | §6.3.10 `repeat_first_field` on every frame picture |
@@ -491,7 +491,7 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
             name: "skipped_macroblocks",
             kind: OptionKind::Bool,
             default: OptionValue::Bool(true),
-            help: "emit skipped macroblocks (constant-quantiser frame pictures, mpeg1video)",
+            help: "emit skipped macroblocks (frame pictures, mpeg1video)",
         },
         OptionField {
             name: "concealment_motion_vectors",
@@ -847,6 +847,7 @@ impl EncoderConfig {
             },
             frame_rate_code,
             initial_quantiser_scale_code: o.quantiser_scale_code as u8,
+            skipped_macroblocks: o.skipped_macroblocks,
         };
 
         Ok(Self {
@@ -966,8 +967,15 @@ impl EncoderConfig {
             let stream = if o.mpeg1_d_pictures {
                 crate::mpeg1_encoder::encode_mpeg1_d_sequence(frames, &seq, q, anchors)
             } else if o.rate_control == RateControlOption::Cbr {
-                crate::rate_control::encode_mpeg1_cbr_sequence(
-                    frames, b_between, anchors, &seq, q, fwd, bwd,
+                crate::rate_control::encode_mpeg1_cbr_sequence_with_skips(
+                    frames,
+                    b_between,
+                    anchors,
+                    &seq,
+                    q,
+                    fwd,
+                    bwd,
+                    o.skipped_macroblocks,
                 )
                 .map(|e| e.stream)
             } else {
