@@ -801,12 +801,18 @@ are pinned in the corpus, and each loop has a fuzz target.
 `mpeg1video` and `mpeg2video` codec ids beside the decoders (the
 direct `encoder::make_encoder` factory is exported too). The
 `encoder::Mpeg12Encoder` adapter drives the display-order assemblers
-behind the frame-to-packet `Encoder` contract, mirroring the runtime
-decoder's whole-elementary-stream framing: display-order frames
-buffered via `send_frame` are assembled at `flush()` into one
-keyframe-flagged packet carrying the finished elementary stream
-(`NeedMore` before the flush, `Eof` after the drain; two partition
-packets under data partitioning).
+behind the frame-to-packet `Encoder` contract: frames go in display
+order, and **one packet per coded frame** (a field pair is one
+packet) comes out in coded order — `pts` the frame's presentation
+time (the input frame's, or its display index), `dts` the decode
+time, the keyframe flag on I-pictures. The assemblers code closed
+GOPs, so the adapter runs them a GOP at a time: a GOP's packets are
+available when the next GOP's first frame arrives (or at `flush()`),
+each GOP's first packet starts with a sequence header and a GOP
+header carrying the running time code, and the encoder holds at most
+one GOP of input. `rate_control = cbr` (the Annex C buffer model runs
+across GOPs) and `data_partitioning` (two partition packets) still
+code the whole sequence at `flush()`.
 
 The **whole assembler surface** is reachable through the typed option
 schema `Mpeg12EncoderOptions` (`oxideav_core::CodecOptionsStruct`,

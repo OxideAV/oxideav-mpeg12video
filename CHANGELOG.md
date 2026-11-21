@@ -23,6 +23,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The runtime encoder returns one packet per coded frame (coded order, `pts` / `dts` / keyframe flags, the input frames' presentation times) and codes a closed GOP as soon as the next one starts, instead of one packet holding the whole stream at `flush()`; every GOP starts with a sequence header and carries the running GOP time code. CBR and data partitioning still code the whole sequence at `flush()`.
 - The runtime encoder emits skipped macroblocks by default (`skipped_macroblocks = true`; constant-quantiser frame pictures): against the black-box encoder the mean BD-rate over three clips moves from +5.8 % to +0.4 %. The option is no longer rejected where it has no effect (MPEG-1, field structures, CBR).
 - The runtime decoder conceals damaged pictures and drops B-pictures without a forward reference by default (`strict = true` restores the fail-fast behaviour), and `reset()` keeps the sequence layer.
 

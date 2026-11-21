@@ -87,13 +87,17 @@ fn encode_packets(
     n: usize,
     format: PixelFormat,
 ) -> Vec<Packet> {
+    let mut out = Vec::new();
     for t in 0..n {
         enc.send_frame(&Frame::Video(video_frame(width, height, t, format)))
             .expect("send_frame");
+        // A finished GOP's packets are available before the flush.
+        while let Ok(packet) = enc.receive_packet() {
+            out.push(packet);
+        }
     }
     assert!(matches!(enc.receive_packet(), Err(Error::NeedMore)));
     enc.flush().expect("flush");
-    let mut out = Vec::new();
     loop {
         match enc.receive_packet() {
             Ok(p) => out.push(p),
@@ -109,10 +113,10 @@ fn encode_one(p: &CodecParameters, n: usize) -> Vec<u8> {
     let (w, h) = (p.width.unwrap() as usize, p.height.unwrap() as usize);
     let mut enc = make_encoder(p).expect("make_encoder");
     let packets = encode_packets(enc.as_mut(), w, h, n, format);
-    assert_eq!(packets.len(), 1, "one whole-stream packet");
+    assert_eq!(packets.len(), n, "one packet per coded frame");
     assert!(packets[0].flags.keyframe);
-    assert_eq!(packets[0].duration, Some(n as i64));
-    packets.into_iter().next().unwrap().data
+    assert!(packets.iter().all(|p| p.duration == Some(1)));
+    packets.into_iter().flat_map(|p| p.data).collect()
 }
 
 /// The first picture's header + coding extension.
@@ -413,7 +417,8 @@ fn cbr_rate_control_holds_the_vbv_on_frame_field_and_mpeg1() {
     let mut enc = make_encoder(&p).expect("make_encoder");
     assert_eq!(enc.output_params().bit_rate, Some(240_000));
     let packets = encode_packets(enc.as_mut(), 64, 48, 5, PixelFormat::Yuv420P);
-    let stream = &packets[0].data;
+    let stream: Vec<u8> = packets.iter().flat_map(|p| p.data.clone()).collect();
+    let stream = &stream;
     assert_eq!(
         packets[0].time_base,
         oxideav_core::TimeBase::new(1001, 30_000)
@@ -563,7 +568,8 @@ fn registry_path_honours_the_options() {
     let mut enc = ctx.codecs.first_encoder(&p).expect("registry encoder");
     assert_eq!(enc.output_params().pixel_format, Some(PixelFormat::Yuv422P));
     let packets = encode_packets(enc.as_mut(), 48, 64, 3, PixelFormat::Yuv422P);
-    let stream = &packets[0].data;
+    let stream: Vec<u8> = packets.iter().flat_map(|p| p.data.clone()).collect();
+    let stream = &stream;
     let (_, ext) = first_picture(stream);
     assert_eq!(ext.picture_structure, PictureStructure::TopField);
     assert!(ext.intra_vlc_format);
@@ -636,4 +642,125 @@ fn mpeg1_pictures_taller_than_175_slice_rows_are_refused() {
     assert!(enc.flush().is_err());
     let p = params(MPEG1_CODEC_ID_STR, 16, 2800, PixelFormat::Yuv420P);
     assert_eq!(decode_video_sequence(&encode_one(&p, 1)).unwrap().len(), 1);
+}
+
+/// The encoder releases a closed GOP as soon as the next one starts:
+/// one packet per frame in coded order, keyframes at the GOP starts
+/// (each with its own sequence header and a running GOP time code),
+/// the input frames' presentation times on the packets — and the
+/// concatenation decodes to what one whole-sequence encode gives.
+#[test]
+fn gops_are_released_while_frames_arrive() {
+    let (w, h, n) = (48usize, 32usize, 20usize);
+    let p = with(
+        &params(MPEG2_CODEC_ID_STR, w as u32, h as u32, PixelFormat::Yuv420P),
+        &[("b_between", "2"), ("anchors_per_gop", "2")],
+    );
+    let gop = 7usize; // I + 2 × (B B P)
+    let mut enc = make_encoder(&p).expect("make_encoder");
+    let mut packets: Vec<Packet> = Vec::new();
+    let mut released_before_flush = 0;
+    for t in 0..n {
+        let mut frame = video_frame(w, h, t, PixelFormat::Yuv420P);
+        frame.pts = Some(1000 + 40 * t as i64);
+        enc.send_frame(&Frame::Video(frame)).expect("send_frame");
+        while let Ok(packet) = enc.receive_packet() {
+            packets.push(packet);
+        }
+        // GOP k is complete when frame (k + 1) * gop has arrived.
+        assert_eq!(packets.len(), (t / gop) * gop, "after frame {t}");
+        released_before_flush = packets.len();
+    }
+    assert_eq!(released_before_flush, 14);
+    enc.flush().expect("flush");
+    while let Ok(packet) = enc.receive_packet() {
+        packets.push(packet);
+    }
+    assert_eq!(packets.len(), n);
+
+    let keyframes: Vec<usize> = (0..n).filter(|&i| packets[i].flags.keyframe).collect();
+    assert_eq!(keyframes, vec![0, 7, 14]);
+    for &k in &keyframes {
+        assert_eq!(packets[k].data[..4], [0, 0, 1, 0xB3], "sequence header");
+    }
+    // Coded order I P B B P B B: presentation times are the frames'.
+    let pts: Vec<i64> = packets.iter().map(|p| p.pts.unwrap()).collect();
+    let display = [0, 3, 1, 2, 6, 4, 5];
+    for (i, &t) in pts.iter().enumerate().take(14) {
+        let frame = (i / gop) * gop + display[i % gop];
+        assert_eq!(t, 1000 + 40 * frame as i64, "packet {i}");
+    }
+    let dts: Vec<i64> = packets.iter().map(|p| p.dts.unwrap()).collect();
+    assert!(dts.windows(2).all(|w| w[0] < w[1]));
+    assert!(dts.iter().zip(&pts).all(|(d, p)| d <= p));
+
+    let stream: Vec<u8> = packets.iter().flat_map(|p| p.data.clone()).collect();
+    assert_eq!(stream[stream.len() - 4..], [0, 0, 1, 0xB7]);
+    assert_eq!(
+        stream.windows(4).filter(|w| *w == [0, 0, 1, 0xB7]).count(),
+        1,
+        "one sequence_end_code"
+    );
+    // GOP time codes count display frames (25 frames/s: 0, 7, 14).
+    let time_codes: Vec<u32> = stream
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == [0, 0, 1, 0xB8])
+        .map(|(i, _)| {
+            let gop = oxideav_mpeg12video::gop_header::Mpeg2Gop::parse(&stream[i..]).unwrap();
+            assert!(gop.closed_gop && !gop.broken_link);
+            u32::from(gop.time_code.seconds) * 25 + u32::from(gop.time_code.pictures)
+        })
+        .collect();
+    assert_eq!(time_codes, vec![0, 7, 14]);
+
+    // The same frames through the whole-sequence assembler.
+    let frames: Vec<oxideav_mpeg12video::FrameBuffer> = (0..n)
+        .map(|t| {
+            let v = video_frame(w, h, t, PixelFormat::Yuv420P);
+            let mut f = oxideav_mpeg12video::FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+            for y in 0..h {
+                for x in 0..w {
+                    f.y.put_sample(x, y, v.planes[0].data[y * w + x]);
+                }
+            }
+            for y in 0..h / 2 {
+                for x in 0..w / 2 {
+                    f.cb.put_sample(x, y, v.planes[1].data[y * (w / 2) + x]);
+                    f.cr.put_sample(x, y, v.planes[2].data[y * (w / 2) + x]);
+                }
+            }
+            f
+        })
+        .collect();
+    let (whole, _) = oxideav_mpeg12video::encode_display_order_gop_sequence_with_options(
+        &frames,
+        2,
+        2,
+        oxideav_mpeg12video::IntraPictureParams::new(
+            w,
+            h,
+            ChromaFormat::Yuv420,
+            true,
+            0,
+            false,
+            false,
+            false,
+            true,
+        ),
+        6,
+        3,
+        3,
+        &oxideav_mpeg12video::quant_matrix_extension::QuantMatrixExtension::default(),
+        &|_| oxideav_mpeg12video::FrameEncodeOptions::default().with_skipped_macroblocks(true),
+    )
+    .expect("whole-sequence encode");
+    let a = decode_video_sequence(&stream).expect("decode packets");
+    let b = decode_video_sequence(&whole).expect("decode whole");
+    assert_eq!(a.len(), n);
+    for (x, y) in a.iter().zip(&b) {
+        assert_eq!(x.frame.y.samples(), y.frame.y.samples());
+        assert_eq!(x.frame.cb.samples(), y.frame.cb.samples());
+        assert_eq!(x.frame.cr.samples(), y.frame.cr.samples());
+    }
 }

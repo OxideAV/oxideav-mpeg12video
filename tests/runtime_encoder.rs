@@ -57,8 +57,8 @@ fn encoder_params(id: &str, width: u32, height: u32) -> CodecParameters {
     p
 }
 
-/// Feed `n` frames, flush, and return the single emitted elementary
-/// stream packet payload.
+/// Feed `n` frames, flush, and return the elementary stream: one
+/// packet per coded frame, the first a keyframe, concatenated.
 fn encode_n(enc: &mut dyn Encoder, width: usize, height: usize, n: usize) -> Vec<u8> {
     for t in 0..n {
         enc.send_frame(&Frame::Video(video_frame(width, height, t)))
@@ -66,20 +66,35 @@ fn encode_n(enc: &mut dyn Encoder, width: usize, height: usize, n: usize) -> Vec
     }
     assert!(
         matches!(enc.receive_packet(), Err(Error::NeedMore)),
-        "no packet before flush (whole-stream framing)"
+        "a GOP is released once the next one starts, or at flush"
     );
     enc.flush().expect("flush");
-    let packet = enc.receive_packet().expect("stream packet");
-    assert!(
-        packet.flags.keyframe,
-        "stream packet starts at an I picture"
-    );
-    assert_eq!(packet.duration, Some(n as i64));
-    assert!(
-        matches!(enc.receive_packet(), Err(Error::Eof)),
-        "drained after the single stream packet"
-    );
-    packet.data
+    let mut stream = Vec::new();
+    let mut presentation = Vec::new();
+    let mut decode = Vec::new();
+    loop {
+        match enc.receive_packet() {
+            Ok(packet) => {
+                assert_eq!(
+                    packet.flags.keyframe,
+                    presentation.is_empty(),
+                    "one GOP: only its first packet is a keyframe"
+                );
+                assert_eq!(packet.duration, Some(1));
+                presentation.push(packet.pts.expect("pts"));
+                decode.push(packet.dts.expect("dts"));
+                stream.extend_from_slice(&packet.data);
+            }
+            Err(Error::Eof) => break,
+            Err(e) => panic!("receive_packet: {e:?}"),
+        }
+    }
+    assert_eq!(presentation.len(), n, "one packet per frame");
+    assert!(decode.windows(2).all(|w| w[0] < w[1]), "dts increases");
+    assert!(decode.iter().zip(&presentation).all(|(d, p)| d <= p));
+    presentation.sort_unstable();
+    assert_eq!(presentation, (0..n as i64).collect::<Vec<_>>());
+    stream
 }
 
 #[test]

@@ -22,18 +22,25 @@
 //!
 //! # Framing model
 //!
-//! The §6.1.1.11 display-order reorder is defined over the whole coded
-//! sequence — a display-order frame list cannot be emitted
-//! incrementally without fixing the GOP structure around a lookahead
-//! window. This adapter mirrors the runtime **decoder**'s
-//! whole-elementary-stream framing ([`crate::decoder`]): it buffers
-//! every [`Frame`] fed through [`Encoder::send_frame`] (display
-//! order), runs the assembler once at [`Encoder::flush`], and emits
-//! the finished elementary stream as **one keyframe-flagged
-//! [`Packet`]** (two packets — partition 0 then partition 1 — under
-//! `data_partitioning`). Before the flush, [`Encoder::receive_packet`]
-//! returns [`Error::NeedMore`]; after the drain it returns
-//! [`Error::Eof`].
+//! Frames arrive in display order through [`Encoder::send_frame`] and
+//! leave as **one [`Packet`] per coded frame** (a field pair is one
+//! packet), in coded order: `pts` is the frame's presentation time
+//! (the input frame's own `pts`, or its display index when it has
+//! none), `dts` the decode time (one frame earlier than the display
+//! order whenever B-pictures are in use), `duration` one frame period
+//! of the Table 6-4 rate, and the keyframe flag marks I-pictures. The
+//! first packet of every GOP starts with a `sequence_header()` and the
+//! GOP header, so a stream can be entered at any keyframe; the last
+//! packet ends with the `sequence_end_code`. The packets concatenated
+//! are the elementary stream.
+//!
+//! The assemblers code **closed GOPs**, so the adapter runs them one
+//! GOP at a time: a GOP's packets become available when the first
+//! frame of the next GOP arrives (or at [`Encoder::flush`]), and the
+//! encoder holds at most one GOP of input. Two modes still code the
+//! whole sequence at flush: `rate_control = cbr` (the Annex C buffer
+//! model runs across GOPs; its packets are per frame too) and
+//! `data_partitioning` (two packets — partition 0, then partition 1).
 //!
 //! # Options
 //!
@@ -879,13 +886,15 @@ impl EncoderConfig {
 
     /// The per-display-frame [`FrameEncodeOptions`].
     ///
-    /// `total` is the number of frames in the sequence: its last frame
-    /// is always an anchor.
-    fn frame_options(&self, display_index: usize, total: usize) -> FrameEncodeOptions {
+    /// `index` counts from the first of the `total` frames handed to
+    /// the assembler (the last of them is always an anchor); that
+    /// first frame has display index `base`.
+    fn frame_options(&self, index: usize, total: usize, base: u64) -> FrameEncodeOptions {
         let o = &self.options;
         let step = o.b_between as usize + 1;
-        let in_gop = display_index % (1 + o.anchors_per_gop as usize * step);
-        let is_b = !in_gop.is_multiple_of(step) && display_index + 1 != total;
+        let in_gop = index % (1 + o.anchors_per_gop as usize * step);
+        let is_b = !in_gop.is_multiple_of(step) && index + 1 != total;
+        let display_index = (base + index as u64) as usize;
         let quantiser_scale_code =
             (is_b && o.b_quantiser_scale_code != 0).then_some(o.b_quantiser_scale_code as u8);
         let options = match o.pulldown {
@@ -987,6 +996,10 @@ pub fn make_encoder(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
         is_mpeg1,
         config,
         frames: Vec::new(),
+        display_base: 0,
+        times: VecDeque::new(),
+        times_base: 0,
+        coded: 0,
         ready: VecDeque::new(),
         flushed: false,
     }))
@@ -994,8 +1007,8 @@ pub fn make_encoder(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
 
 /// A frame-to-packet MPEG-1 / MPEG-2 video encoder.
 ///
-/// See the [module docs](self) for the whole-stream framing model and
-/// the option schema.
+/// See the [module docs](self) for the framing model and the option
+/// schema.
 #[derive(Debug)]
 pub struct Mpeg12Encoder {
     codec_id: CodecId,
@@ -1004,9 +1017,17 @@ pub struct Mpeg12Encoder {
     height: usize,
     is_mpeg1: bool,
     config: EncoderConfig,
-    /// Buffered display-order input frames.
+    /// Display-order input frames not yet coded.
     frames: Vec<FrameBuffer>,
-    /// The finished elementary stream, ready to drain.
+    /// Display index of `frames[0]`.
+    display_base: u64,
+    /// Presentation times of the display-order frames from
+    /// `times_base` on.
+    times: VecDeque<i64>,
+    times_base: u64,
+    /// Frames emitted so far (coded order).
+    coded: u64,
+    /// Packets ready to drain.
     ready: VecDeque<Packet>,
     flushed: bool,
 }
@@ -1047,11 +1068,27 @@ fn video_frame_to_frame_buffer(
 }
 
 impl Mpeg12Encoder {
-    /// The elementary stream for the buffered frames.
-    fn assemble(&self) -> Result<Vec<u8>> {
+    /// Frames per closed GOP — the unit coded at a time — or `None`
+    /// when the whole sequence is coded at flush (see the
+    /// [module docs](self)).
+    fn gop_frames(&self) -> Option<usize> {
+        let o = &self.config.options;
+        if o.rate_control == RateControlOption::Cbr || o.data_partitioning != 0 {
+            return None;
+        }
+        let anchors = o.anchors_per_gop as usize;
+        Some(if o.mpeg1_d_pictures {
+            anchors
+        } else {
+            1 + anchors * (o.b_between as usize + 1)
+        })
+    }
+
+    /// The elementary stream (sequence header … `sequence_end_code`)
+    /// for `frames`, whose first frame has display index `base`.
+    fn assemble(&self, frames: &[FrameBuffer], base: u64) -> Result<Vec<u8>> {
         let c = &self.config;
         let o = &c.options;
-        let frames = &self.frames;
         let b_between = o.b_between as usize;
         let anchors = o.anchors_per_gop as usize;
         let q = o.quantiser_scale_code as u8;
@@ -1087,7 +1124,7 @@ impl Mpeg12Encoder {
                     fwd,
                     bwd,
                     &QuantMatrixExtension::default(),
-                    &|display_index| c.frame_options(display_index, frames.len()),
+                    &|index| c.frame_options(index, frames.len(), base),
                 )
                 .map(|(stream, _stats)| stream)
             }
@@ -1138,43 +1175,178 @@ impl Mpeg12Encoder {
         stream.map_err(map_err)
     }
 
-    /// Run the display-order assembler over the buffered frames and
-    /// queue the finished elementary stream as one keyframe packet
-    /// (two under data partitioning).
-    fn encode_buffered(&mut self) -> Result<()> {
-        if self.flushed {
-            return Ok(());
-        }
-        self.flushed = true;
-        if self.frames.is_empty() {
-            return Ok(());
-        }
-        let stream = self.assemble()?;
-        let frame_count = self.frames.len() as i64;
-        self.frames.clear();
+    /// Presentation time of the display-order frame `index`.
+    fn time_of(&self, index: u64) -> i64 {
+        index
+            .checked_sub(self.times_base)
+            .and_then(|i| self.times.get(i as usize).copied())
+            .unwrap_or(index as i64)
+    }
+
+    /// Code the first `count` buffered frames and queue their packets.
+    /// `last` keeps the `sequence_end_code` on the final packet.
+    fn encode_frames(&mut self, count: usize, last: bool) -> Result<()> {
+        let base = self.display_base;
+        let frames: Vec<FrameBuffer> = self.frames.drain(..count).collect();
+        let mut stream = self.assemble(&frames, base)?;
+        self.display_base += count as u64;
+        drop(frames);
 
         let (n, d) = crate::vbv::frame_rate_value(self.config.frame_rate_code).map_err(map_err)?;
         let time_base = TimeBase::new(i64::from(d), i64::from(n));
 
         let breakpoint = self.config.options.data_partitioning;
-        let payloads = if breakpoint != 0 {
+        if breakpoint != 0 {
             let (p0, p1) =
                 crate::data_partitioning::split_data_partitions(&stream, breakpoint as u8)
                     .map_err(map_err)?;
-            vec![p0, p1]
-        } else {
-            vec![stream]
-        };
-        for payload in payloads {
-            let mut packet = Packet::new(0, time_base, payload);
-            packet.pts = Some(0);
-            packet.dts = Some(0);
-            packet.duration = Some(frame_count);
-            packet.flags.keyframe = true;
+            for payload in [p0, p1] {
+                let mut packet = Packet::new(0, time_base, payload);
+                packet.pts = Some(self.time_of(base));
+                packet.dts = packet.pts;
+                packet.duration = Some(count as i64);
+                packet.flags.keyframe = true;
+                self.ready.push_back(packet);
+            }
+            return Ok(());
+        }
+
+        if !last && stream.ends_with(&crate::stream_writer::SEQUENCE_END_CODE.to_be_bytes()) {
+            stream.truncate(stream.len() - 4);
+        }
+        let fields = matches!(
+            self.config.options.picture_structure,
+            PictureStructureOption::Field | PictureStructureOption::FieldAdaptive
+        ) && !self.is_mpeg1;
+        let units = split_coded_frames(
+            &mut stream,
+            base,
+            if fields { 2 } else { 1 },
+            self.config.frame_rate_code,
+        )?;
+        let o = &self.config.options;
+        let reorder = u64::from(o.b_between > 0 && !o.mpeg1_d_pictures);
+        for unit in units {
+            let mut packet = Packet::new(0, time_base, stream[unit.range].to_vec());
+            packet.pts = Some(self.time_of(unit.display_index));
+            packet.dts = Some(match self.coded.checked_sub(reorder) {
+                Some(index) => self.time_of(index),
+                None => self.time_of(0) - (reorder - self.coded) as i64,
+            });
+            packet.duration = Some(1);
+            packet.flags.keyframe = unit.intra;
+            self.coded += 1;
             self.ready.push_back(packet);
+        }
+        // Times older than the next decode time are no longer needed.
+        while self.times_base + reorder < self.coded && self.times.pop_front().is_some() {
+            self.times_base += 1;
         }
         Ok(())
     }
+}
+
+/// One coded frame (a picture, or a field pair) inside an elementary
+/// stream.
+struct CodedFrame {
+    /// Its bytes, including the sequence / GOP headers that precede
+    /// its first picture.
+    range: std::ops::Range<usize>,
+    /// Display index (GOP start + `temporal_reference`).
+    display_index: u64,
+    /// I- or D-picture.
+    intra: bool,
+}
+
+/// Split `stream` into its coded frames (`pictures_per_frame`
+/// pictures each), and rewrite each GOP header's time code for a
+/// sequence whose first frame has display index `base` (§6.3.8: the
+/// time code of the GOP's first displayed picture).
+fn split_coded_frames(
+    stream: &mut [u8],
+    base: u64,
+    pictures_per_frame: usize,
+    frame_rate_code: u8,
+) -> Result<Vec<CodedFrame>> {
+    use crate::gop_header::{Mpeg2Gop, TimeCode, write_gop_header};
+    const SEQUENCE_HEADER: u8 = 0xB3;
+    const GROUP: u8 = 0xB8;
+    const PICTURE: u8 = 0x00;
+    const SEQUENCE_END: u8 = 0xB7;
+
+    let mut frames: Vec<CodedFrame> = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut pictures = 0usize;
+    let mut gop_first = base;
+    let mut current = (0u64, false);
+    let mut at = 0usize;
+    while at + 4 <= stream.len() {
+        if stream[at..at + 3] != [0, 0, 1] {
+            at += 1;
+            continue;
+        }
+        let code = stream[at + 3];
+        if matches!(code, SEQUENCE_HEADER | GROUP | PICTURE | SEQUENCE_END)
+            && pictures == pictures_per_frame
+        {
+            let begin = start.take().expect("a frame has a start");
+            frames.push(CodedFrame {
+                range: begin..at,
+                display_index: current.0,
+                intra: current.1,
+            });
+            pictures = 0;
+        }
+        match code {
+            SEQUENCE_HEADER => {
+                start.get_or_insert(at);
+            }
+            GROUP => {
+                start.get_or_insert(at);
+                gop_first = base + frames.len() as u64;
+                if at + 8 <= stream.len() {
+                    let mut bw = oxideav_core::bits::BitWriter::new();
+                    write_gop_header(
+                        &mut bw,
+                        &Mpeg2Gop {
+                            time_code: TimeCode::from_display_index(gop_first, frame_rate_code)
+                                .map_err(map_err)?,
+                            closed_gop: false,
+                            broken_link: false,
+                        },
+                    );
+                    let header = bw.finish();
+                    // 25 time-code bits follow the start code; the
+                    // closed_gop / broken_link flags after them stay.
+                    stream[at + 4..at + 7].copy_from_slice(&header[4..7]);
+                    stream[at + 7] = (header[7] & 0x80) | (stream[at + 7] & 0x7F);
+                }
+            }
+            PICTURE => {
+                start.get_or_insert(at);
+                if pictures == 0 && at + 6 <= stream.len() {
+                    let temporal_reference =
+                        (u64::from(stream[at + 4]) << 2) | u64::from(stream[at + 5] >> 6);
+                    let coding_type = (stream[at + 5] >> 3) & 7;
+                    current = (gop_first + temporal_reference, matches!(coding_type, 1 | 4));
+                }
+                pictures += 1;
+            }
+            _ => {}
+        }
+        at += 4;
+    }
+    if let Some(begin) = start {
+        frames.push(CodedFrame {
+            range: begin..stream.len(),
+            display_index: current.0,
+            intra: current.1,
+        });
+    } else if let Some(last) = frames.last_mut() {
+        // The sequence_end_code belongs to the last frame's packet.
+        last.range.end = stream.len();
+    }
+    Ok(frames)
 }
 
 impl Encoder for Mpeg12Encoder {
@@ -1195,7 +1367,16 @@ impl Encoder for Mpeg12Encoder {
         };
         let fb =
             video_frame_to_frame_buffer(v, self.width, self.height, self.config.chroma_format)?;
+        let index = self.display_base + self.frames.len() as u64;
         self.frames.push(fb);
+        self.times.push_back(v.pts.unwrap_or(index as i64));
+        // A closed GOP is complete once the next GOP's first frame is
+        // here: code it and keep that frame.
+        if let Some(gop) = self.gop_frames()
+            && self.frames.len() > gop
+        {
+            self.encode_frames(gop, false)?;
+        }
         Ok(())
     }
 
@@ -1210,6 +1391,13 @@ impl Encoder for Mpeg12Encoder {
     }
 
     fn flush(&mut self) -> Result<()> {
-        self.encode_buffered()
+        if self.flushed {
+            return Ok(());
+        }
+        self.flushed = true;
+        if self.frames.is_empty() {
+            return Ok(());
+        }
+        self.encode_frames(self.frames.len(), true)
     }
 }
