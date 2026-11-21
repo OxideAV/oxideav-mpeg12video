@@ -439,3 +439,72 @@ fn full_pel_vectors_roundtrip_sample_exact() {
     assert!(luma_mae(&f_p, &frames[2].frame) < 6.0, "P fidelity");
     assert!(luma_mae(&f_b, &frames[1].frame) < 6.0, "B fidelity");
 }
+
+/// §2.4.4.4 skipped macroblocks: on a mostly static scene the P- and
+/// B-pictures skip unchanged macroblocks (a skip saves the six bits
+/// of an uncoded zero-vector macroblock), and the decode still equals
+/// the encoder's reconstruction exactly.
+#[test]
+fn skipped_macroblocks_shrink_static_scenes_and_stay_exact() {
+    use oxideav_core::bits::BitWriter;
+    use oxideav_mpeg12video::gop_header::write_gop_header;
+    use oxideav_mpeg12video::{
+        encode_mpeg1_b_picture_with_skips, encode_mpeg1_p_picture_with_skips,
+        write_mpeg1_sequence_header,
+    };
+
+    let (w, h) = (96usize, 64usize);
+    let p = params(w, h);
+    // Only the stamp region differs between the pictures.
+    let f_i = frame_at(w, h, 0, 0, false);
+    let f_b = frame_at(w, h, 0, 0, true);
+    let f_p = frame_at(w, h, 0, 0, true);
+
+    let encode = |skips: bool| {
+        let mut bw = BitWriter::new();
+        write_mpeg1_sequence_header(&mut bw, &seq(w as u16, h as u16)).expect("write header");
+        write_gop_header(
+            &mut bw,
+            &Mpeg2Gop {
+                time_code: TimeCode::from_display_index(0, 3).unwrap(),
+                closed_gop: true,
+                broken_link: false,
+            },
+        );
+        let r_i = encode_mpeg1_intra_picture(&mut bw, &f_i, &p, 0, 6).expect("I");
+        let before_p = bw.bit_position();
+        let r_p = encode_mpeg1_p_picture_with_skips(&mut bw, &f_p, &r_i, &p, 2, 6, 3, false, skips)
+            .expect("P");
+        let before_b = bw.bit_position();
+        encode_mpeg1_b_picture_with_skips(
+            &mut bw, &f_b, &r_i, &r_p, &p, 1, 6, 3, 3, false, false, skips,
+        )
+        .expect("B");
+        let sizes = (before_b - before_p, bw.bit_position() - before_b);
+        let mut stream = bw.finish();
+        stream.extend_from_slice(&[0x00, 0x00, 0x01, 0xB7]);
+        (stream, r_i, r_p, sizes)
+    };
+    let (plain, _, _, plain_bits) = encode(false);
+    let (stream, r_i, r_p, bits) = encode(true);
+    assert!(
+        bits.0 < plain_bits.0,
+        "P-picture: {} bits with skips, {} without",
+        bits.0,
+        plain_bits.0
+    );
+    assert!(
+        bits.1 < plain_bits.1,
+        "B-picture: {} bits with skips, {} without",
+        bits.1,
+        plain_bits.1
+    );
+
+    let frames = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(frames.len(), 3);
+    assert_frames_equal(&frames[0].frame, &r_i, "I");
+    assert_frames_equal(&frames[2].frame, &r_p, "P");
+    assert!(luma_mae(&f_b, &frames[1].frame) < 6.0, "B fidelity");
+    // The plain stream still decodes (the default is unchanged).
+    assert_eq!(decode_video_sequence(&plain).expect("decode").len(), 3);
+}

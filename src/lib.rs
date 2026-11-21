@@ -523,10 +523,12 @@ pub use intra_encoder::{
     encode_intra_picture_with_slice_length,
 };
 pub use mpeg1_encoder::{
-    encode_mpeg1_b_picture, encode_mpeg1_d_picture, encode_mpeg1_d_sequence,
-    encode_mpeg1_display_order_sequence, encode_mpeg1_intra_picture,
+    encode_mpeg1_b_picture, encode_mpeg1_b_picture_with_skips, encode_mpeg1_d_picture,
+    encode_mpeg1_d_sequence, encode_mpeg1_display_order_sequence,
+    encode_mpeg1_display_order_sequence_with_skips, encode_mpeg1_intra_picture,
     encode_mpeg1_intra_picture_with_slice_length, encode_mpeg1_intra_stream,
-    encode_mpeg1_p_picture, encode_mpeg1_repeat_b_picture, encode_mpeg1_repeat_p_picture,
+    encode_mpeg1_p_picture, encode_mpeg1_p_picture_with_skips, encode_mpeg1_repeat_b_picture,
+    encode_mpeg1_repeat_p_picture,
 };
 pub use mpeg1_picture::Mpeg1PictureParams;
 pub use mpeg1_stream_writer::{

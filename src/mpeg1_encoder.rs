@@ -691,6 +691,39 @@ pub fn encode_mpeg1_p_picture(
     forward_f_code: u8,
     full_pel_forward: bool,
 ) -> Result<FrameBuffer> {
+    encode_mpeg1_p_picture_with_skips(
+        bw,
+        current,
+        reference,
+        params,
+        temporal_reference,
+        quantizer_scale_code,
+        forward_f_code,
+        full_pel_forward,
+        false,
+    )
+}
+
+/// [`encode_mpeg1_p_picture`] that, with `skipped_macroblocks`, skips
+/// every macroblock whose zero-vector prediction leaves no quantised
+/// residual (§2.4.4.4: a skipped P macroblock is that copy, and resets
+/// the motion-vector predictor). The first and last macroblock of a
+/// slice are never skipped.
+///
+/// # Errors
+/// As [`encode_mpeg1_p_picture`].
+#[allow(clippy::too_many_arguments)]
+pub fn encode_mpeg1_p_picture_with_skips(
+    bw: &mut BitWriter,
+    current: &FrameBuffer,
+    reference: &FrameBuffer,
+    params: &Mpeg1PictureParams,
+    temporal_reference: u16,
+    quantizer_scale_code: u8,
+    forward_f_code: u8,
+    full_pel_forward: bool,
+    skipped_macroblocks: bool,
+) -> Result<FrameBuffer> {
     check_slice_rows(params)?;
     check_quantizer_scale(quantizer_scale_code)?;
     check_f_code(forward_f_code)?;
@@ -716,9 +749,40 @@ pub fn encode_mpeg1_p_picture(
         // at slice start; §2.4.4.1: the DC chain resets too.
         let mut pmv = (0i32, 0i32);
         let mut predictors = IntraDcPredictors::at_slice_start();
+        // §2.4.4.4 skip run folded into the next coded macroblock's
+        // macroblock_address_increment.
+        let mut pending_skips = 0u32;
 
         for mb_col in 0..mb_w {
             let address = (mb_row * mb_w + mb_col) as i32;
+            if skipped_macroblocks && mb_col != 0 && mb_col + 1 != mb_w {
+                let (luma_pred, cb_pred, cr_pred) = predict_frame_macroblock_planes(
+                    &recon,
+                    ReferenceFrames::forward_only(reference),
+                    mb_col,
+                    mb_row,
+                    FrameMotion::forward(crate::inter_reconstruction::MotionVectorPel::new(0, 0)),
+                )
+                .map_err(Error::from)?;
+                let (blocks, cbp) = quantise_macroblock_residuals(
+                    current,
+                    &luma_pred,
+                    &cb_pred,
+                    &cr_pred,
+                    mb_col,
+                    mb_row,
+                    quantizer_scale_code,
+                    &params.non_intra_quant,
+                )?;
+                if cbp == 0 {
+                    pending_skips += 1;
+                    pmv = (0, 0);
+                    reconstruct_inter_mb(
+                        &mut recon, mb_col, mb_row, &luma_pred, &cb_pred, &cr_pred, &blocks,
+                    );
+                    continue;
+                }
+            }
             let search = crate::motion_estimation::estimate_forward_mv_with_sums(
                 current,
                 reference,
@@ -743,7 +807,8 @@ pub fn encode_mpeg1_p_picture(
             // than the macroblock's own activity.
             let intra_cost = intra_activity(current, mb_col, mb_row);
             if search.sad > intra_cost.saturating_mul(2).saturating_add(512) {
-                bw.write_bit(true); // increment 1
+                crate::mb_address_increment::encode_mb_address_increment(bw, pending_skips + 1);
+                pending_skips = 0;
                 bw.write_u32(0b0001_1, 5); // Table B.2b intra
                 encode_intra_macroblock(
                     bw,
@@ -782,8 +847,9 @@ pub fn encode_mpeg1_p_picture(
                 &params.non_intra_quant,
             )?;
 
-            // macroblock_address_increment = 1.
-            bw.write_bit(true);
+            // macroblock_address_increment (the skip run folded in).
+            crate::mb_address_increment::encode_mb_address_increment(bw, pending_skips + 1);
+            pending_skips = 0;
             if cbp != 0 {
                 // Table B.2b `MC, Coded` (`1`).
                 bw.write_bit(true);
@@ -959,6 +1025,47 @@ pub fn encode_mpeg1_b_picture(
     full_pel_forward: bool,
     full_pel_backward: bool,
 ) -> Result<()> {
+    encode_mpeg1_b_picture_with_skips(
+        bw,
+        current,
+        forward,
+        backward,
+        params,
+        temporal_reference,
+        quantizer_scale_code,
+        forward_f_code,
+        backward_f_code,
+        full_pel_forward,
+        full_pel_backward,
+        false,
+    )
+}
+
+/// [`encode_mpeg1_b_picture`] that, with `skipped_macroblocks`, skips
+/// every macroblock that the previous macroblock's prediction
+/// directions and vectors predict without a quantised residual
+/// (§2.4.4.4: a skipped B macroblock repeats the prior macroblock's
+/// motion). The first and last macroblock of a slice are never
+/// skipped, and a vector that would read outside the picture at the
+/// new position is not reused.
+///
+/// # Errors
+/// As [`encode_mpeg1_b_picture`].
+#[allow(clippy::too_many_arguments)]
+pub fn encode_mpeg1_b_picture_with_skips(
+    bw: &mut BitWriter,
+    current: &FrameBuffer,
+    forward: &FrameBuffer,
+    backward: &FrameBuffer,
+    params: &Mpeg1PictureParams,
+    temporal_reference: u16,
+    quantizer_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    full_pel_forward: bool,
+    full_pel_backward: bool,
+    skipped_macroblocks: bool,
+) -> Result<()> {
     check_slice_rows(params)?;
     check_quantizer_scale(quantizer_scale_code)?;
     check_f_code(forward_f_code)?;
@@ -988,8 +1095,78 @@ pub fn encode_mpeg1_b_picture(
         // §2.4.4.3: both predictor pairs reset at slice start.
         let mut pmv_fwd = (0i32, 0i32);
         let mut pmv_bwd = (0i32, 0i32);
+        // §2.4.4.4: the previous macroblock's directions (a skipped
+        // macroblock repeats them) and the pending skip run.
+        let mut prior: Option<BDirection> = None;
+        let mut pending_skips = 0u32;
 
         for mb_col in 0..mb_w {
+            if skipped_macroblocks
+                && mb_col != 0
+                && mb_col + 1 != mb_w
+                && let Some(dir) = prior
+            {
+                // The vectors a skipped macroblock gets: the
+                // predictors (zero differentials), `<< 1` under
+                // full_pel.
+                let scale = |pmv: (i32, i32), full_pel: bool| {
+                    let s = if full_pel { 2 } else { 1 };
+                    crate::inter_reconstruction::MotionVectorPel::new(pmv.0 * s, pmv.1 * s)
+                };
+                let fwd = scale(pmv_fwd, full_pel_forward);
+                let bwd = scale(pmv_bwd, full_pel_backward);
+                let legal = |v: crate::inter_reconstruction::MotionVectorPel,
+                             reference: &FrameBuffer| {
+                    crate::motion_estimation::frame_vector_legal(
+                        reference.y.width(),
+                        reference.y.height(),
+                        mb_col,
+                        mb_row,
+                        v.horizontal,
+                        v.vertical,
+                    )
+                };
+                let (uses_fwd, uses_bwd) = (
+                    matches!(dir, BDirection::Forward | BDirection::Interpolated),
+                    matches!(dir, BDirection::Backward | BDirection::Interpolated),
+                );
+                if (!uses_fwd || legal(fwd, forward)) && (!uses_bwd || legal(bwd, backward)) {
+                    let (references, motion) = match dir {
+                        BDirection::Forward => (
+                            ReferenceFrames::forward_only(forward),
+                            FrameMotion::forward(fwd),
+                        ),
+                        BDirection::Backward => (
+                            ReferenceFrames {
+                                forward: None,
+                                backward: Some(backward),
+                            },
+                            FrameMotion::backward(bwd),
+                        ),
+                        BDirection::Interpolated => (
+                            ReferenceFrames::bidirectional(forward, backward),
+                            FrameMotion::bidirectional(fwd, bwd),
+                        ),
+                    };
+                    let pred =
+                        predict_frame_macroblock_planes(&geom, references, mb_col, mb_row, motion)
+                            .map_err(Error::from)?;
+                    let (_, cbp) = quantise_macroblock_residuals(
+                        current,
+                        &pred.0,
+                        &pred.1,
+                        &pred.2,
+                        mb_col,
+                        mb_row,
+                        quantizer_scale_code,
+                        &params.non_intra_quant,
+                    )?;
+                    if cbp == 0 {
+                        pending_skips += 1;
+                        continue;
+                    }
+                }
+            }
             let full_pel_confine = |v: crate::inter_reconstruction::MotionVectorPel,
                                     full_pel: bool| {
                 if full_pel {
@@ -1086,7 +1263,9 @@ pub fn encode_mpeg1_b_picture(
                 &params.non_intra_quant,
             )?;
 
-            bw.write_bit(true); // increment 1
+            crate::mb_address_increment::encode_mb_address_increment(bw, pending_skips + 1);
+            pending_skips = 0;
+            prior = Some(dir);
             let coded = cbp != 0;
             write_b_macroblock_type(bw, dir, coded);
 
@@ -1204,6 +1383,36 @@ pub fn encode_mpeg1_display_order_sequence(
     forward_f_code: u8,
     backward_f_code: u8,
 ) -> Result<Vec<u8>> {
+    encode_mpeg1_display_order_sequence_with_skips(
+        frames,
+        b_between,
+        anchors_per_gop,
+        seq,
+        quantizer_scale_code,
+        forward_f_code,
+        backward_f_code,
+        false,
+    )
+}
+
+/// [`encode_mpeg1_display_order_sequence`] whose P- and B-pictures
+/// emit §2.4.4.4 skipped macroblocks when `skipped_macroblocks` is set
+/// ([`encode_mpeg1_p_picture_with_skips`] /
+/// [`encode_mpeg1_b_picture_with_skips`]).
+///
+/// # Errors
+/// As [`encode_mpeg1_display_order_sequence`].
+#[allow(clippy::too_many_arguments)]
+pub fn encode_mpeg1_display_order_sequence_with_skips(
+    frames: &[FrameBuffer],
+    b_between: usize,
+    anchors_per_gop: usize,
+    seq: &Mpeg1SequenceParams,
+    quantizer_scale_code: u8,
+    forward_f_code: u8,
+    backward_f_code: u8,
+    skipped_macroblocks: bool,
+) -> Result<Vec<u8>> {
     if frames.is_empty() {
         return Err(Error::InvalidBitstream(
             "encode_mpeg1_display_order_sequence: no frames to encode",
@@ -1279,7 +1488,7 @@ pub fn encode_mpeg1_display_order_sequence(
         let mut prev_anchor = gop_start;
         while prev_anchor < gop_end {
             let next_anchor = (prev_anchor + step).min(gop_end);
-            let backward_ref = encode_mpeg1_p_picture(
+            let backward_ref = encode_mpeg1_p_picture_with_skips(
                 &mut bw,
                 &frames[next_anchor],
                 &forward_ref,
@@ -1288,9 +1497,10 @@ pub fn encode_mpeg1_display_order_sequence(
                 quantizer_scale_code,
                 forward_f_code,
                 false,
+                skipped_macroblocks,
             )?;
             for b in (prev_anchor + 1)..next_anchor {
-                encode_mpeg1_b_picture(
+                encode_mpeg1_b_picture_with_skips(
                     &mut bw,
                     &frames[b],
                     &forward_ref,
@@ -1302,6 +1512,7 @@ pub fn encode_mpeg1_display_order_sequence(
                     backward_f_code,
                     false,
                     false,
+                    skipped_macroblocks,
                 )?;
             }
             forward_ref = backward_ref;

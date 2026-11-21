@@ -1464,3 +1464,89 @@ fn our_streams_decode_in_the_black_box_decoder() {
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The repeat pictures the CBR controllers fall back to (every
+/// macroblock a zero-vector copy, all but the row ends skipped) are
+/// accepted by the black-box decoder and decode there to the reference
+/// picture, in both syntaxes.
+#[test]
+fn repeat_pictures_decode_in_the_black_box_decoder() {
+    use oxideav_core::bits::BitWriter;
+    use oxideav_mpeg12video::sequence_extension::ChromaFormat;
+    use oxideav_mpeg12video::{
+        FrameBuffer, IntraPictureParams, Mpeg1PictureParams, Mpeg1SequenceParams,
+    };
+
+    if !have_ffmpeg() {
+        eprintln!("skipping: ffmpeg not found");
+        return;
+    }
+    let (w, h) = (80usize, 48usize);
+    let mut frame = FrameBuffer::new(w, h, ChromaFormat::Yuv420);
+    for y in 0..h {
+        for x in 0..w {
+            frame.y.put_sample(x, y, (20 + (x * 7 + y * 5) % 200) as u8);
+        }
+    }
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            frame.cb.put_sample(x, y, (100 + x) as u8);
+            frame.cr.put_sample(x, y, (160 - y) as u8);
+        }
+    }
+    // Coded order I P B: display I B P, all three the same picture.
+    let params = IntraPictureParams::new(
+        w,
+        h,
+        ChromaFormat::Yuv420,
+        true,
+        0,
+        false,
+        false,
+        false,
+        true,
+    );
+    let mut mpeg2 = oxideav_mpeg12video::encode_intra_picture(&frame, params, 0, 4).unwrap();
+    mpeg2.truncate(mpeg2.len() - 4);
+    let mut bw = BitWriter::new();
+    oxideav_mpeg12video::encode_repeat_p_picture(&mut bw, params, 2, 3).unwrap();
+    oxideav_mpeg12video::encode_repeat_b_picture(&mut bw, params, 1, 3, 3).unwrap();
+    mpeg2.extend_from_slice(&bw.finish());
+    mpeg2.extend_from_slice(&[0, 0, 1, 0xB7]);
+
+    let sequence = Mpeg1SequenceParams::default()
+        .with_horizontal_size(w as u16)
+        .with_vertical_size(h as u16);
+    let mut mpeg1 = oxideav_mpeg12video::encode_mpeg1_intra_stream(&frame, &sequence, 4).unwrap();
+    mpeg1.truncate(mpeg1.len() - 4);
+    let picture = Mpeg1PictureParams::default().with_width(w).with_height(h);
+    let mut bw = BitWriter::new();
+    oxideav_mpeg12video::encode_mpeg1_repeat_p_picture(&mut bw, &picture, 2, 3).unwrap();
+    oxideav_mpeg12video::encode_mpeg1_repeat_b_picture(&mut bw, &picture, 1, 3, 3).unwrap();
+    mpeg1.extend_from_slice(&bw.finish());
+    mpeg1.extend_from_slice(&[0, 0, 1, 0xB7]);
+
+    let scratch = Scratch::new("repeat");
+    for (name, stream) in [("mpeg2", mpeg2), ("mpeg1", mpeg1)] {
+        let (count, ours) = decode_ours(&stream).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(count, 3, "{name}");
+        let frame_bytes = ours.len() / 3;
+        assert_eq!(
+            ours[..frame_bytes],
+            ours[frame_bytes..2 * frame_bytes],
+            "{name}"
+        );
+        assert_eq!(ours[..frame_bytes], ours[2 * frame_bytes..], "{name}");
+        let path = scratch.path(&format!("{name}.es"));
+        std::fs::write(&path, &stream).unwrap();
+        let (reference, diagnostics) =
+            decode_reference(&path, &scratch.path(&format!("{name}.yuv"))).unwrap();
+        assert!(diagnostics.is_empty(), "{name}: {diagnostics:?}");
+        compare(&ours, &reference, INTRA_BOUND).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            reference[..frame_bytes],
+            reference[2 * frame_bytes..],
+            "{name}: the black box repeats the picture too"
+        );
+    }
+}

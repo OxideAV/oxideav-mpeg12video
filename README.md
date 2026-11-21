@@ -837,12 +837,18 @@ factory and the registry.
 **Compression against the black-box encoder** (its defaults, same GOP
 structure `I B B P`, 13-picture GOPs, eight constant quantisers 2–24,
 BD-rate over all-plane PSNR; negative = this crate needs fewer bits):
-`testsrc2` 352×288 **−4.3 %**, `mandelbrot` zoom 352×288 **+2.4 %**,
-a panning 720×480 clip with temporal grain **+3.0 %** — mean
-**+0.4 %**, from +5.8 % before skipped macroblocks became the default.
-A coarser B-picture quantiser (`b_quantiser_scale_code`) helps the
-first two clips (−10.3 % / −0.9 % at `1.25 q + 1.25`) and hurts the
-grain clip (+12.5 %), so it stays an option. MPEG-1, the interlaced
+
+| clip | MPEG-2 | MPEG-1 |
+|---|---|---|
+| `testsrc2` 352×288 | −4.3 % | −5.3 % |
+| `mandelbrot` zoom 352×288 | +2.4 % | +1.3 % |
+| panning 720×480 with temporal grain | +3.0 % | +2.0 % |
+| mean | **+0.4 %** (was +5.8 %) | **−0.7 %** (was +4.9 %) |
+
+The gain is skipped macroblocks (§7.6.6 / §2.4.4.4), now emitted by
+default. A coarser B-picture quantiser (`b_quantiser_scale_code`)
+helps the first two clips (−10.3 % / −0.9 % at `1.25 q + 1.25`) and
+hurts the grain clip (+12.5 %), so it stays an option. The interlaced
 structures and the CBR controllers do not emit skipped macroblocks
 yet.
 
