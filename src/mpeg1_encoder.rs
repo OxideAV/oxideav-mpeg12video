@@ -495,6 +495,18 @@ fn luma_sad(current: &FrameBuffer, mb_col: usize, mb_row: usize, pred: &[u8]) ->
     sad
 }
 
+/// §2.4.3.5: `slice_vertical_position` takes the values 1..=175, and
+/// the picture encoders start one slice per macroblock row, so a
+/// picture may hold at most 175 rows (2800 lines).
+fn check_slice_rows(params: &Mpeg1PictureParams) -> Result<()> {
+    if mb_height(params) > 175 {
+        return Err(Error::InvalidBitstream(
+            "ISO/IEC 11172-2 encoder: pictures taller than 2800 lines exceed the 175 slice_vertical_position values (§2.4.3.5)",
+        ));
+    }
+    Ok(())
+}
+
 /// Frame rows of macroblocks (`Ceil(height / 16)` — MPEG-1 pictures
 /// are always frame pictures).
 fn mb_height(params: &Mpeg1PictureParams) -> usize {
@@ -529,6 +541,7 @@ pub fn encode_mpeg1_intra_picture(
             "encode_mpeg1_intra_picture: frame dimensions do not match params",
         ));
     }
+    check_slice_rows(params)?;
     check_quantizer_scale(quantizer_scale_code)?;
 
     // I-pictures carry no f_code fields; the writer's P/B-gated
@@ -678,6 +691,7 @@ pub fn encode_mpeg1_p_picture(
     forward_f_code: u8,
     full_pel_forward: bool,
 ) -> Result<FrameBuffer> {
+    check_slice_rows(params)?;
     check_quantizer_scale(quantizer_scale_code)?;
     check_f_code(forward_f_code)?;
     let search_range = max_search_range(forward_f_code).min(16);
@@ -823,6 +837,94 @@ fn write_b_macroblock_type(bw: &mut BitWriter, dir: BDirection, coded: bool) {
     bw.write_u32(code, bits);
 }
 
+/// Write the slices of an ISO/IEC 11172-2 picture that repeats its
+/// forward reference: the first and last macroblock of every row are
+/// forward-predicted with a zero vector and no residual, the ones
+/// between them skipped (§2.4.4.4).
+fn write_mpeg1_repeat_slices(
+    bw: &mut BitWriter,
+    params: &Mpeg1PictureParams,
+    type_bits: u32,
+    type_len: u32,
+    forward_f_code: u8,
+) {
+    let mb_w = params.mb_width();
+    for mb_row in 0..mb_height(params) {
+        write_slice_header(bw, mb_row as u32, 1);
+        let coded = |bw: &mut BitWriter, increment: u32| {
+            crate::mb_address_increment::encode_mb_address_increment(bw, increment);
+            bw.write_u32(type_bits, type_len);
+            encode_motion_component(bw, 0, forward_f_code);
+            encode_motion_component(bw, 0, forward_f_code);
+        };
+        coded(bw, 1);
+        if mb_w > 1 {
+            coded(bw, (mb_w - 1) as u32);
+        }
+        bw.align_to_byte_zero();
+    }
+}
+
+/// Encode an ISO/IEC 11172-2 P-picture that repeats its forward
+/// reference (every macroblock a zero-vector copy without a residual)
+/// — the smallest picture the syntax allows, the fallback of a rate
+/// controller when no quantiser fits the picture into its buffer. The
+/// reconstruction is the reference itself.
+///
+/// # Errors
+/// [`Error::InvalidBitstream`] for an out-of-range `forward_f_code` or
+/// a picture taller than the 175 slice rows of §2.4.3.5.
+pub fn encode_mpeg1_repeat_p_picture(
+    bw: &mut BitWriter,
+    params: &Mpeg1PictureParams,
+    temporal_reference: u16,
+    forward_f_code: u8,
+) -> Result<()> {
+    check_f_code(forward_f_code)?;
+    check_slice_rows(params)?;
+    write_mpeg1_picture_header(
+        bw,
+        temporal_reference,
+        PictureCodingType::Predictive,
+        false,
+        forward_f_code,
+        false,
+        7,
+    )?;
+    // Table B.2b `001`: forward motion, no pattern.
+    write_mpeg1_repeat_slices(bw, params, 0b001, 3, forward_f_code);
+    Ok(())
+}
+
+/// Encode an ISO/IEC 11172-2 B-picture that repeats its forward
+/// reference (see [`encode_mpeg1_repeat_p_picture`]).
+///
+/// # Errors
+/// As [`encode_mpeg1_repeat_p_picture`].
+pub fn encode_mpeg1_repeat_b_picture(
+    bw: &mut BitWriter,
+    params: &Mpeg1PictureParams,
+    temporal_reference: u16,
+    forward_f_code: u8,
+    backward_f_code: u8,
+) -> Result<()> {
+    check_f_code(forward_f_code)?;
+    check_f_code(backward_f_code)?;
+    check_slice_rows(params)?;
+    write_mpeg1_picture_header(
+        bw,
+        temporal_reference,
+        PictureCodingType::Bidirectional,
+        false,
+        forward_f_code,
+        false,
+        backward_f_code,
+    )?;
+    // Table B.2c `0010`: forward motion, no pattern.
+    write_mpeg1_repeat_slices(bw, params, 0b0010, 4, forward_f_code);
+    Ok(())
+}
+
 /// Encode one MPEG-1 **B** picture from `current`, predicting from
 /// the reconstructed `forward` (past) and `backward` (future)
 /// anchors. Per macroblock the forward / backward / interpolated
@@ -848,6 +950,7 @@ pub fn encode_mpeg1_b_picture(
     full_pel_forward: bool,
     full_pel_backward: bool,
 ) -> Result<()> {
+    check_slice_rows(params)?;
     check_quantizer_scale(quantizer_scale_code)?;
     check_f_code(forward_f_code)?;
     check_f_code(backward_f_code)?;
@@ -1230,6 +1333,7 @@ pub fn encode_mpeg1_d_picture(
             "encode_mpeg1_d_picture: frame dimensions do not match params",
         ));
     }
+    check_slice_rows(params)?;
     check_quantizer_scale(quantizer_scale_code)?;
 
     // D-pictures carry no f_code fields; the writer's P/B-gated

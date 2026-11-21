@@ -32,35 +32,48 @@
 //! # Codec-id coverage
 //!
 //! Both `"mpeg1video"` and `"mpeg2video"` are registered and route
-//! through the same [`SequenceDecoder`] driver. That driver
-//! resolves the picture geometry and `f_code`s from the MPEG-2 extension
-//! family (`sequence_extension()` / `picture_coding_extension()`), so it
-//! decodes the MPEG-2 bitstream (and the MPEG-1-compatible subset a
-//! §13818-2 encoder emits) end-to-end. A *pure* ISO/IEC 11172-2 (MPEG-1)
-//! elementary stream, which carries no extension start codes, is not yet
-//! driven at the whole-stream level — the MPEG-1 macroblock-layer
-//! machinery exists per-stage but the picture driver is a later
-//! milestone — so such a stream currently surfaces a clean parse error
-//! rather than frames. The registration reserves the `mpeg1video` id for
-//! that path.
+//! through the same [`SequenceDecoder`] driver, which classifies each
+//! sequence by its syntax (a `sequence_extension()` makes it ISO/IEC
+//! 13818-2, its absence ISO/IEC 11172-2) — not by the codec id — so a
+//! stream may even switch between the two at a sequence boundary.
 //!
-//! Each reconstructed [`crate::frame_assembly::FrameBuffer`] is converted
-//! to a planar Y/Cb/Cr [`VideoFrame`] (three [`VideoPlane`]s, each
-//! tightly packed at `stride == plane width`); the stream's pixel format
-//! (4:2:0 / 4:2:2 / 4:4:4) lives on the caller's
-//! [`oxideav_core::CodecParameters`], not per-frame. Frames are stamped
-//! with a monotonically increasing display-order presentation index so a
-//! caller that muxes the output keeps the display ordering the driver
-//! already resolved.
+//! # Output shape, timing and damage
+//!
+//! Each reconstructed [`crate::frame_assembly::FrameBuffer`] is
+//! converted to a planar Y/Cb/Cr [`VideoFrame`] (three
+//! [`VideoPlane`]s, each tightly packed at `stride == plane width`).
+//! The picture size, pixel format (4:2:0 / 4:2:2 / 4:4:4) and frame
+//! rate are stream parameters, not per-frame fields: once the first
+//! frame has been reconstructed [`Decoder::output_params`] states
+//! them, and when a later `sequence_header()` changes the shape the
+//! decoder returns a [`Frame::StreamParams`] event just before the
+//! first frame of the new shape and advances
+//! [`Decoder::output_params_generation`].
+//!
+//! A frame carries the presentation time of the packet that held its
+//! `picture_start_code` (the first field's for a field pair), so the
+//! container's times survive the §6.1.1.11 reorder; when no packet
+//! carries a time (a raw elementary stream fed in arbitrary pieces),
+//! frames are numbered in display order instead.
+//!
+//! By default the decoder conceals damage the way a player needs: a
+//! picture that fails to decode is replaced by a copy of its nearest
+//! reference, and B-pictures without a forward reference (the leading
+//! pictures of an open GOP when decoding starts mid-stream) are
+//! dropped. The option `strict = true`
+//! ([`Mpeg12DecoderOptions::strict`]) makes every such picture an
+//! error instead.
 
 use std::collections::VecDeque;
 
 use oxideav_core::{
-    CodecId, CodecParameters, Decoder, Error, Frame, Packet, Result, VideoFrame, VideoPlane,
+    CodecId, CodecOptionsStruct, CodecParameters, Decoder, Error, Frame, OptionField, OptionKind,
+    OptionValue, Packet, PixelFormat, Rational, Result, VideoFrame, VideoPlane, parse_options,
 };
 
 use crate::Error as Mpeg12Error;
 use crate::frame_assembly::FrameBuffer;
+use crate::sequence_extension::ChromaFormat;
 use crate::video_sequence::SequenceDecoder;
 
 /// Fold a crate-local [`Mpeg12Error`] into the framework
@@ -89,21 +102,85 @@ pub const MPEG1_CODEC_ID_STR: &str = "mpeg1video";
 /// Codec id string for MPEG-2 video (ITU-T H.262 / ISO/IEC 13818-2).
 pub const MPEG2_CODEC_ID_STR: &str = "mpeg2video";
 
+/// Options of the runtime decoder, parsed from
+/// [`CodecParameters::options`] by [`make_decoder`].
+///
+/// | key | kind | default | meaning |
+/// |-----|------|---------|---------|
+/// | `strict` | bool | `false` | fail on a damaged or unreferenced picture instead of concealing it |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct Mpeg12DecoderOptions {
+    /// Return an error for a picture that cannot be decoded instead of
+    /// concealing it (see the [module docs](self)).
+    pub strict: bool,
+}
+
+impl Mpeg12DecoderOptions {
+    /// Set `strict`.
+    #[must_use]
+    pub fn with_strict(mut self, v: bool) -> Self {
+        self.strict = v;
+        self
+    }
+}
+
+impl CodecOptionsStruct for Mpeg12DecoderOptions {
+    const SCHEMA: &'static [OptionField] = &[OptionField {
+        name: "strict",
+        kind: OptionKind::Bool,
+        default: OptionValue::Bool(false),
+        help: "fail on a damaged or unreferenced picture instead of concealing it",
+    }];
+
+    fn apply(&mut self, key: &str, value: &OptionValue) -> Result<()> {
+        match key {
+            "strict" => self.strict = value.as_bool()?,
+            other => {
+                return Err(Error::invalid(format!(
+                    "mpeg12video decoder: unknown option '{other}'"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Build a boxed [`Decoder`] for the codec id named by `params`.
 ///
 /// Registered under both `"mpeg1video"` and `"mpeg2video"`; the same
-/// driver decodes either — MPEG-1 is the subset the §2 syntax picks out
-/// of the shared bitstream, and the per-picture reconstruction dispatch
-/// keys off the parsed sequence layer, not off the codec id. The codec
-/// id is preserved so [`Decoder::codec_id`] reports it back verbatim.
+/// driver decodes either, keyed off the parsed sequence layer rather
+/// than the codec id, which is preserved so [`Decoder::codec_id`]
+/// reports it back verbatim. `params.options` is parsed against
+/// [`Mpeg12DecoderOptions::SCHEMA`].
 ///
 /// # Errors
 ///
-/// Never fails at construction — the decoder validates the bitstream
-/// lazily at [`Decoder::flush`] time.
+/// [`Error::invalid`] for a malformed value of one of this decoder's
+/// options (other keys are ignored); the bitstream itself is
+/// validated as packets arrive.
 pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
-    Ok(Box::new(Mpeg12Decoder::new(params.codec_id.clone())))
+    // The parameter set of a stream often carries its encoder's
+    // options too: only this decoder's own keys are read.
+    let mut own = oxideav_core::CodecOptions::default();
+    for (key, value) in params.options.iter() {
+        if Mpeg12DecoderOptions::SCHEMA.iter().any(|f| f.name == key) {
+            own.insert(key, value);
+        }
+    }
+    let options: Mpeg12DecoderOptions = parse_options(&own)?;
+    Ok(Box::new(Mpeg12Decoder::with_options(
+        params.codec_id.clone(),
+        options,
+    )))
 }
+
+/// The output shape the stream parameters describe.
+type Shape = (usize, usize, ChromaFormat);
+
+/// How many packet times are remembered for frames still inside the
+/// decoder (a GOP's reorder depth is a handful of pictures).
+const PACKET_TIME_HISTORY: usize = 512;
 
 /// A packet-to-frame MPEG-1 / MPEG-2 video decoder.
 ///
@@ -116,38 +193,123 @@ pub struct Mpeg12Decoder {
     /// Whether any elementary-stream bytes have arrived; an empty stream
     /// flushes to [`Error::Eof`] rather than a missing-header error.
     received: bool,
-    /// Reconstructed frames in §6.1.1.11 display order, ready to drain.
-    ready: VecDeque<VideoFrame>,
+    /// Frames in §6.1.1.11 display order (and the stream-parameter
+    /// events between them), ready to drain.
+    ready: VecDeque<Frame>,
     /// Set by [`Decoder::flush`]: no more input will arrive.
     flushed: bool,
-    /// Monotonic display-order presentation index stamped onto frames.
+    /// Display-order index stamped onto frames when no packet carries
+    /// a presentation time.
     next_pts: i64,
+    /// Elementary-stream bytes pushed so far (the stream offset of the
+    /// next packet's first byte).
+    pushed: u64,
+    /// `(stream offset of the packet's first byte, its presentation
+    /// time, already given to a frame)`, oldest first.
+    packet_times: VecDeque<(u64, i64, bool)>,
+    /// Whether any packet carried a presentation time.
+    timed: bool,
+    /// Shape of the frames returned so far.
+    shape: Option<Shape>,
+    /// The parameters [`Decoder::output_params`] reports.
+    params: Option<CodecParameters>,
+    generation: u64,
 }
 
 impl Mpeg12Decoder {
-    /// Create an empty decoder that reports `codec_id`.
+    /// Create an empty decoder that reports `codec_id`, with the
+    /// default options.
     pub fn new(codec_id: CodecId) -> Self {
+        Self::with_options(codec_id, Mpeg12DecoderOptions::default())
+    }
+
+    /// Create an empty decoder that reports `codec_id`.
+    pub fn with_options(codec_id: CodecId, options: Mpeg12DecoderOptions) -> Self {
         Self {
             codec_id,
-            sequence: SequenceDecoder::new(),
+            sequence: Self::driver(options),
             received: false,
             ready: VecDeque::new(),
             flushed: false,
             next_pts: 0,
+            pushed: 0,
+            packet_times: VecDeque::new(),
+            timed: false,
+            shape: None,
+            params: None,
+            generation: 0,
         }
     }
 
-    /// Move every frame the driver can commit so far into `ready`,
-    /// stamping display-order presentation indices.
+    fn driver(options: Mpeg12DecoderOptions) -> SequenceDecoder {
+        if options.strict {
+            SequenceDecoder::new()
+        } else {
+            SequenceDecoder::with_concealment()
+        }
+    }
+
+    /// The presentation time for a frame whose picture start code sits
+    /// at `offset`: that of the packet holding it, given out once.
+    fn time_for(&mut self, offset: Option<u64>) -> Option<i64> {
+        if !self.timed {
+            let pts = self.next_pts;
+            self.next_pts += 1;
+            return Some(pts);
+        }
+        let offset = offset?;
+        let after = self
+            .packet_times
+            .partition_point(|&(start, _, _)| start <= offset);
+        let entry = self.packet_times.get_mut(after.checked_sub(1)?)?;
+        if entry.2 {
+            return None;
+        }
+        entry.2 = true;
+        Some(entry.1)
+    }
+
+    /// The stream parameters for frames of `shape`.
+    fn params_for(&self, shape: Shape) -> CodecParameters {
+        let mut params = CodecParameters::video(self.codec_id.clone());
+        params.width = Some(shape.0 as u32);
+        params.height = Some(shape.1 as u32);
+        params.pixel_format = Some(match shape.2 {
+            ChromaFormat::Yuv420 => PixelFormat::Yuv420P,
+            ChromaFormat::Yuv422 => PixelFormat::Yuv422P,
+            ChromaFormat::Yuv444 => PixelFormat::Yuv444P,
+        });
+        params.frame_rate = self
+            .sequence
+            .frame_rate()
+            .map(|(n, d)| Rational::new(i64::from(n), i64::from(d)));
+        params
+    }
+
+    /// Move every frame the driver can commit so far into `ready`.
     fn drain_sequence(&mut self) -> Result<()> {
         if !self.received {
             return Ok(());
         }
         while let Some(decoded) = self.sequence.next_frame().map_err(map_err)? {
+            let shape = (
+                decoded.frame.width,
+                decoded.frame.height,
+                decoded.frame.chroma_format,
+            );
+            if self.shape != Some(shape) {
+                let params = self.params_for(shape);
+                if self.shape.is_some() {
+                    self.generation += 1;
+                    self.ready
+                        .push_back(Frame::StreamParams(Box::new(params.clone())));
+                }
+                self.shape = Some(shape);
+                self.params = Some(params);
+            }
             let mut vf = frame_buffer_to_video_frame(&decoded.frame);
-            vf.pts = Some(self.next_pts);
-            self.next_pts += 1;
-            self.ready.push_back(vf);
+            vf.pts = self.time_for(decoded.stream_offset);
+            self.ready.push_back(Frame::Video(vf));
         }
         Ok(())
     }
@@ -160,13 +322,21 @@ impl Decoder for Mpeg12Decoder {
 
     fn send_packet(&mut self, packet: &Packet) -> Result<()> {
         self.received |= !packet.data.is_empty();
+        if let Some(pts) = packet.pts {
+            self.timed = true;
+            if self.packet_times.len() == PACKET_TIME_HISTORY {
+                self.packet_times.pop_front();
+            }
+            self.packet_times.push_back((self.pushed, pts, false));
+        }
+        self.pushed += packet.data.len() as u64;
         self.sequence.push(&packet.data);
         self.drain_sequence()
     }
 
     fn receive_frame(&mut self) -> Result<Frame> {
         match self.ready.pop_front() {
-            Some(vf) => Ok(Frame::Video(vf)),
+            Some(frame) => Ok(frame),
             None if self.flushed => Err(Error::Eof),
             None => Err(Error::NeedMore),
         }
@@ -182,8 +352,28 @@ impl Decoder for Mpeg12Decoder {
     }
 
     fn reset(&mut self) -> Result<()> {
-        *self = Self::new(self.codec_id.clone());
+        // A seek: forget the buffered bytes, the reference pictures
+        // and the pending output, keep the sequence layer (the stream
+        // may resume at a GOP without repeating its sequence header)
+        // and the stream parameters already reported.
+        self.sequence.reset();
+        self.ready.clear();
+        self.packet_times.clear();
+        self.flushed = false;
+        self.next_pts = 0;
         Ok(())
+    }
+
+    fn output_pixel_format(&self) -> Option<PixelFormat> {
+        self.params.as_ref().and_then(|p| p.pixel_format)
+    }
+
+    fn output_params(&self) -> Option<CodecParameters> {
+        self.params.clone()
+    }
+
+    fn output_params_generation(&self) -> u64 {
+        self.generation
     }
 }
 

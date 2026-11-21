@@ -274,30 +274,104 @@ sequences) — pinned by the hand-built `mpeg1-dpics-48x32.m1v` fixture
 decoded sample-exactly against closed-form §2.4.4.1 arithmetic (no
 black-box reference decoder in reach accepts type-4 pictures).
 
+## Black-box interoperability matrix
+
+`tests/blackbox_matrix.rs` runs the crate against a black-box
+MPEG-1 / MPEG-2 encoder and decoder (the `ffmpeg` binary; the test
+skips when it is absent, generates everything in a temporary
+directory, and runs a reduced set in debug builds — use `--release`
+for the whole matrix):
+
+- **foreign → ours, 279 streams, 279 pass**: black-box encodes over
+  B-picture counts 0–6, quantiser scales 1–31, sizes 2×2 … 4112×2304
+  (odd, non-multiple-of-16, `horizontal_size_extension` /
+  `vertical_size_extension`), bit rates 20 kbit/s – 40 Mbit/s
+  (escape coding, saturation), open and closed GOPs, slice
+  structures, every Table 6-4 frame rate, 4:2:0 and 4:2:2, intra DC
+  precision 8–11, alternate scan, intra VLC format, non-linear
+  quantiser, downloaded matrices, sequence display / user data /
+  drop-frame time codes, and interlaced frame pictures (field DCT,
+  field prediction, both field orders). Plus five mid-stream
+  sequence changes (size, chroma format, MPEG-1 ↔ MPEG-2).
+- **ours → foreign, 345 streams, 345 pass**: every option of the
+  runtime encoder (below) over 4:2:0 / 4:2:2 / 4:4:4 — the four
+  picture structures, dual prime, 16×8, skipped macroblocks,
+  concealment vectors, pulldown flags, every `f_code`, CBR from
+  300 kbit/s to 15 Mbit/s, sizes 2×2 … 1920×1080 and 4094 wide /
+  tall — decoded by the black box without a diagnostic and equal to
+  this crate's own decode within the bound.
+
+**The bound.** Annex A of both standards specifies the inverse DCT
+only to IEEE Std 1180-1990 accuracy, so two conforming decoders are
+not bit-exact with each other: intra-only streams are held to
+`|Δ| ≤ 2` (observed 1), GOPs of up to 15 pictures to `|Δ| ≤ 3`, and
+the long-GOP rows (120–150 predicted pictures with no intra refresh)
+to `|Δ| ≤ 8` (observed 4–6). The difference does grow along a chain
+of predicted pictures — that is the accumulation Annex A bounds by
+requiring an intra refresh every 132 predicted pictures — and the
+black-box decoder's own selectable transforms differ from each other
+by 8–16 levels on the same long-GOP streams.
+
+What the matrix found and this round fixed: the CBR controller
+failing at low rates (it spent the buffer before the next I-picture)
+and at high rates (a default buffer smaller than one picture period),
+`repeat_first_field` rejected in interlaced sequences, and MPEG-1
+pictures taller than 2800 lines written as streams no decoder
+accepts. The decoder had no failures.
+
+**Never verified against an outside stream** (no black-box encoder
+produces them; they are covered by this crate's own encoder, whose
+output the black-box *decoder* accepts where it supports the
+feature): field pictures, dual-prime and 16×8 prediction,
+concealment motion vectors, 4:4:4, `repeat_first_field`, slices
+starting mid-row. **Verified by nothing outside this crate**:
+D-pictures (the black-box decoder emits no frames for them) and the
+scalable layers / data partitioning.
+
+Two behaviours of the black-box reader to know about: with its
+bitstream-checking mode on it reports the stream-terminating
+`sequence_end_code` (§6.2.1) as trailing slice data and flags the
+last picture, and with its abort-on-error mode on it refuses a lone
+field picture per packet. Both are packetisation matters of that
+reader — the default mode decodes every stream above cleanly — so
+the matrix runs it in its default mode and requires an empty
+diagnostic log.
+
 ## Runtime decoder
 
 `register` / `register_codecs` install `oxideav_core::Decoder`
 factories under both the `mpeg1video` and `mpeg2video` codec ids
 (claiming the `mp1v` / `mpg1` / `mp2v` / `mpg2` / `hdv2` / `m2v1`
 FourCC and `V_MPEG1` / `V_MPEG2` Matroska tags the container crates map
-onto them). The `decoder::Mpeg12Decoder` adapter bridges the
-whole-elementary-stream driver `decode_video_sequence` to the
-packet-oriented `Decoder` contract: it concatenates every packet's
-payload into one contiguous elementary-stream buffer (the §6.1.1.11
-display reorder spans the whole sequence, so a B-picture cannot commit
-until its trailing coded-order anchor has been decoded), runs the driver
-on `flush()`, and drains the reconstructed frames in display order —
-returning `NeedMore` before the flush and `Eof` once drained. Each
-reconstructed `FrameBuffer` converts to a tightly-packed planar Y/Cb/Cr
-`VideoFrame` (`frame_buffer_to_video_frame`, `stride == plane width`)
-stamped with a monotonic display-order presentation index, and `reset()`
-returns the decoder to a fresh state. The direct
-`decoder::make_decoder` factory and the `oxideav_core::register!`
-registry path both reach it. `tests/runtime_decoder.rs` proves the
-trait output is **sample-exact** with `decode_video_sequence` on the
-real 352×240 4:2:0 fixture (and under a split-packet feed), that both
-codec ids resolve through a `RuntimeContext`, and that `reset` makes the
-decoder reusable.
+onto them). The `decoder::Mpeg12Decoder` adapter feeds every packet's
+payload to the incremental `SequenceDecoder` (packet boundaries are
+free: the packets are one contiguous elementary stream) and returns
+each frame as soon as the §6.1.1.11 display reorder commits it —
+`NeedMore` until then, `Eof` once drained after `flush()`. Memory
+stays bounded by one coded picture plus the reference anchors.
+
+- **Stream parameters**: picture size, pixel format (4:2:0 / 4:2:2 /
+  4:4:4) and frame rate are reported through `output_params()` once
+  the first frame exists; when a later sequence header changes the
+  shape, a `Frame::StreamParams` event precedes the first frame of the
+  new shape and `output_params_generation()` advances.
+- **Timing**: a frame carries the presentation time of the packet that
+  held its picture start code, so container times survive the reorder;
+  with untimed packets frames are numbered in display order.
+- **Damage**: by default a picture that fails to decode is replaced by
+  a copy of its nearest reference and B-pictures without a forward
+  reference (an open GOP entered mid-stream) are dropped; the option
+  `strict = true` (`Mpeg12DecoderOptions`) makes them errors.
+- `reset()` is a seek: buffered bytes, references and pending frames
+  are dropped, the sequence layer is kept.
+
+Each reconstructed `FrameBuffer` converts to a tightly-packed planar
+Y/Cb/Cr `VideoFrame` (`frame_buffer_to_video_frame`, `stride == plane
+width`). `tests/runtime_decoder.rs` proves the trait output is
+**sample-exact** with `decode_video_sequence` on the real 352×240
+4:2:0 fixture (and under a split-packet feed), that both codec ids
+resolve through a `RuntimeContext`, and the parameter, timing and
+concealment behaviour above.
 
 ## Encoder
 
@@ -746,11 +820,25 @@ flags (`intra_vlc_format`, `alternate_scan`, `q_scale_type`,
 (`bit_rate_value` / `vbv_buffer_size_value`, with `bit_rate` and the
 Table 6-4 `frame_rate` taken from `CodecParameters`), §7.10
 `data_partitioning` (a `priority_breakpoint`) and `mpeg1_d_pictures`,
-plus the GOP knobs `quantiser_scale_code` / `b_between` /
-`anchors_per_gop` / `f_code` / `backward_f_code`. The pixel format
+plus the GOP knobs `quantiser_scale_code` / `b_quantiser_scale_code`
+(a separate quantiser for B-pictures) / `b_between` /
+`anchors_per_gop` / `f_code` / `backward_f_code`. Skipped macroblocks
+are on by default. The pixel format
 selects 4:2:0 / 4:2:2 / 4:4:4. `tests/runtime_encoder_options.rs`
 round-trips every option through the direct `encoder::make_encoder`
 factory and the registry.
+
+**Compression against the black-box encoder** (its defaults, same GOP
+structure `I B B P`, 13-picture GOPs, eight constant quantisers 2–24,
+BD-rate over all-plane PSNR; negative = this crate needs fewer bits):
+`testsrc2` 352×288 **−4.3 %**, `mandelbrot` zoom 352×288 **+2.4 %**,
+a panning 720×480 clip with temporal grain **+3.0 %** — mean
+**+0.4 %**, from +5.8 % before skipped macroblocks became the default.
+A coarser B-picture quantiser (`b_quantiser_scale_code`) helps the
+first two clips (−10.3 % / −0.9 % at `1.25 q + 1.25`) and hurts the
+grain clip (+12.5 %), so it stays an option. MPEG-1, the interlaced
+structures and the CBR controllers do not emit skipped macroblocks
+yet.
 
 ## Not yet supported
 
@@ -769,13 +857,36 @@ factory and the registry.
   encoders), and the scalable encoders are reached through the direct
   APIs (the registry contract emits one elementary stream).
 
+- **Encoder limits** — ISO/IEC 11172-2 pictures taller than 2800
+  lines (175 slice rows; the encoder starts a slice per row), CBR
+  content whose I-pictures exceed the buffer at the coarsest quantiser
+  (reported as an error; predicted pictures fall back to a picture
+  that repeats its reference, frame pictures and MPEG-1 only), motion
+  search beyond ±16 samples.
+
+## Performance
+
+Single thread, release build, Apple M-series, medians of three runs on
+`testsrc2` with light temporal noise (`examples/encode_yuv`,
+`examples/decode_to_yuv`, file I/O included):
+
+| | 720×480 | 1920×1080 |
+|---|---|---|
+| MPEG-2 decode (4 / 12 Mbit/s, I B B P) | 310–380 fps | 63–85 fps |
+| MPEG-2 encode, frame pictures, default options | 16.9 fps (was 1.37) | 2.83 fps (was 0.18) |
+
+The encode gain is the motion search reading its candidates straight
+from the reference plane (`motion_estimation::block_sad`) instead of
+forming a prediction block per candidate; the vectors chosen, and so
+every stream, are unchanged.
+
 ## Clean-room provenance
 
 Every line in `src/` traces to the ISO/IEC 13818-2:1995 (ITU-T H.262)
 and ISO/IEC 11172-2:1993 specification PDFs staged under `docs/video/`,
 plus `oxideav-core`'s `BitReader` API. An external CLI binary is used
-**only** as an opaque encoder to produce integration-test fixtures; its
-source code was not consulted. No external library source was read,
+**only** as an opaque encoder and decoder (integration-test fixtures
+and the live matrix above); its source code was not consulted. No external library source was read,
 quoted, or paraphrased.
 
 ## License

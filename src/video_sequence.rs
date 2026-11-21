@@ -299,6 +299,8 @@ pub struct SequenceDecoder {
     /// Stream offset at which the caller declared an access unit to end
     /// (see [`end_access_unit`](Self::end_access_unit)).
     unit_end: Option<u64>,
+    /// Frame rate of the most recent sequence header.
+    frame_rate: Option<(u32, u32)>,
 }
 
 /// The running decode state of the §6.2.2 `video_sequence()` walk.
@@ -360,6 +362,15 @@ impl SequenceDecoder {
     pub fn coded_order(mut self) -> Self {
         self.coded_order = true;
         self
+    }
+
+    /// The frame rate `(numerator, denominator)` the most recent
+    /// sequence header declares — Table 6-4 `frame_rate_code`, scaled
+    /// by the `sequence_extension()`'s `frame_rate_extension_n` /
+    /// `_d` (§6.3.3; §2.4.3.2 `picture_rate` for ISO/IEC 11172-2).
+    /// `None` before the first header, or for a reserved code.
+    pub fn frame_rate(&self) -> Option<(u32, u32)> {
+        self.frame_rate
     }
 
     /// Pictures replaced by a concealment copy so far.
@@ -480,6 +491,7 @@ impl SequenceDecoder {
             return Ok(false);
         }
         let geometry = sequence_geometry_at(&self.buf[at..])?;
+        self.frame_rate = sequence_frame_rate_at(&self.buf[at..]);
         self.state = Some(SequenceState {
             geometry,
             matrices: geometry.initial_matrices(),
@@ -527,6 +539,7 @@ impl SequenceDecoder {
                 self.offset = code_start;
                 return Ok(false);
             }
+            self.frame_rate = sequence_frame_rate_at(&self.buf[code_start..]);
             let state = self.state.as_mut().expect("sequence started");
             state.geometry = sequence_geometry_at(&self.buf[code_start..])?;
             // §6.3.11: "When a sequence_header_code is decoded all
@@ -1131,6 +1144,20 @@ impl SequenceGeometry {
 /// followed by sequence_extension()"*); its absence makes it an
 /// ISO/IEC 11172-2 sequence, whose geometry and quantiser matrices
 /// come from the header alone (§2.4.2.3).
+/// The frame rate declared by the sequence header at the start of
+/// `buf` (see [`SequenceDecoder::frame_rate`]).
+fn sequence_frame_rate_at(buf: &[u8]) -> Option<(u32, u32)> {
+    let header = crate::sequence_header::Mpeg2SequenceHeader::parse(buf).ok()?;
+    let (n, d) = crate::vbv::frame_rate_value(header.frame_rate_code).ok()?;
+    match Mpeg2Sequence::from_buf(buf) {
+        Ok(seq) => Some((
+            n * (u32::from(seq.extension.frame_rate_extension_n) + 1),
+            d * (u32::from(seq.extension.frame_rate_extension_d) + 1),
+        )),
+        Err(_) => Some((n, d)),
+    }
+}
+
 fn sequence_geometry_at(buf: &[u8]) -> Result<SequenceGeometry> {
     match Mpeg2Sequence::from_buf(buf) {
         Ok(seq) => {

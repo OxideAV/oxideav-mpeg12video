@@ -299,6 +299,8 @@ pub fn encode_intra_picture_with_options(
     forward_f_code: u8,
     concealment_reference: Option<&FrameBuffer>,
 ) -> Result<Vec<u8>> {
+    // A per-picture quantiser override (see FrameEncodeOptions).
+    let quantiser_scale_code = options.quantiser_scale_code.unwrap_or(quantiser_scale_code);
     if options.concealment_motion_vectors && !(1..=9).contains(&forward_f_code) {
         return Err(Error::InvalidBitstream(
             "encode_intra_picture: concealment motion vectors need f_code[0][*] in 1..=9",

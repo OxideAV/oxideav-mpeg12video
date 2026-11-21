@@ -136,6 +136,12 @@ pub struct FrameEncodeOptions {
     /// `progressive_frame` override; `None` inherits
     /// `progressive_sequence` (the baseline behaviour).
     pub progressive_frame: Option<bool>,
+    /// `quantiser_scale_code` (1..=31) for this picture, replacing the
+    /// one the encoder call passes; `None` keeps that one. Lets a
+    /// sequence assembler quantise picture types differently (a
+    /// B-picture is never a reference, so coarser quantisation there
+    /// costs no later picture anything).
+    pub quantiser_scale_code: Option<u8>,
 }
 
 impl FrameEncodeOptions {
@@ -164,6 +170,13 @@ impl FrameEncodeOptions {
     #[must_use]
     pub fn with_repeat_first_field(mut self, v: bool) -> Self {
         self.repeat_first_field = v;
+        self
+    }
+
+    /// Set `quantiser_scale_code`.
+    #[must_use]
+    pub fn with_quantiser_scale_code(mut self, v: Option<u8>) -> Self {
+        self.quantiser_scale_code = v;
         self
     }
 

@@ -8,6 +8,24 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `tests/blackbox_matrix.rs`: a live interoperability matrix against a black-box encoder and decoder (skipped when the binary is absent) — 279 foreign streams decoded by this crate, 345 streams of this crate's encoders decoded by the black box, five mid-stream sequence changes; all within the IEEE 1180 bound the test documents.
+- `examples/encode_yuv`: raw planar YCbCr to an elementary stream through the runtime encoder and its options.
+- Runtime decoder: `output_params()` (size, pixel format, frame rate), a `Frame::StreamParams` event plus `output_params_generation()` when a sequence header changes the shape mid-stream, frames stamped with the presentation time of the packet that carried their picture start code, and `Mpeg12DecoderOptions` (`strict`). `SequenceDecoder::frame_rate()`.
+- `FrameEncodeOptions::quantiser_scale_code` (a per-picture quantiser override) and the runtime option `b_quantiser_scale_code` (a separate quantiser for B-pictures).
+- `encode_repeat_p_picture` / `encode_repeat_b_picture` and the ISO/IEC 11172-2 `encode_mpeg1_repeat_p_picture` / `encode_mpeg1_repeat_b_picture`: a picture that repeats its forward reference, the smallest the syntax allows.
+
+### Fixed
+
+- CBR at low bit rates: predicted pictures leave a reserve in the VBV buffer for the next I-picture (the controller used to spend it and then fail the C.6 bound at every quantiser), and a predicted picture that fits at no quantiser is replaced by a repeat picture instead of failing the encode (frame pictures and ISO/IEC 11172-2).
+- Runtime encoder: the default `vbv_buffer_size_value` holds at least four picture periods of the bit rate (at 15 Mbit/s the fixed default was smaller than one picture, which no stream can satisfy).
+- Runtime encoder: `repeat_first_field` in an interlaced sequence sets `progressive_frame = 1` as §6.3.10 requires, instead of being rejected.
+- ISO/IEC 11172-2 encoders refuse pictures taller than 2800 lines (175 slice rows, §2.4.3.5) instead of writing slice start codes outside the slice range.
+
+### Changed
+
+- The runtime encoder emits skipped macroblocks by default (`skipped_macroblocks = true`; constant-quantiser frame pictures): against the black-box encoder the mean BD-rate over three clips moves from +5.8 % to +0.4 %. The option is no longer rejected where it has no effect (MPEG-1, field structures, CBR).
+- The runtime decoder conceals damaged pictures and drops B-pictures without a forward reference by default (`strict = true` restores the fail-fast behaviour), and `reset()` keeps the sequence layer.
+
 - `SequenceDecoder::reset()` (a seek: drops the buffered bytes, the §7.6 anchors, the held-back anchor and any pending field, keeps the sequence layer so a later GOP decodes without its sequence header) and `SequenceDecoder::has_sequence()`.
 - `Default` on the stats, report and layer-output records that lacked it; full-field `FieldSearchResult::new`, `IntraPictureParams::new`, `TemporalScalableDecoded::new` and `VbvParams::new`; `with_<field>` setters on every newly `#[non_exhaustive]` record. Tests, examples and fuzz targets build records through them.
 
@@ -18,6 +36,7 @@ to [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Performance
 
+- The motion searches (frame, field-picture, field-in-frame and 16×8) compute each candidate's SAD straight from the reference plane (`motion_estimation::block_sad`) instead of forming a prediction block per candidate: 720×480 frame-picture encode 1.37 → 16.9 fps, 1920×1080 0.18 → 2.83 fps, with the same vectors and byte-identical streams.
 - The integer IDCT groups each 8-point sum by the cosine table's symmetry (22 multiplies a pass instead of 64) and stores the row pass transposed, so the column pass reads whole columns; output is bit-identical to the plain matrix product, which a test checks over every single coefficient at its extremes and 50,000 seeded blocks.
 - `write_inter_block` copies each prediction row once and fills the destination row through `Plane::row_span_mut` (a slice clipped exactly as `put_sample` drops out-of-bounds writes), so the add-and-saturate vectorizes instead of going through a bounds-checked read and write per sample. Output is unchanged; a differential test checks 20,000 seeded cases against the per-sample form.
 - `dct_coeff` decode (MPEG-1 Tables B.5c–B.5f, MPEG-2 Tables B-14 / B-15 / B-16) is one lookup on the next 16 bits in a prefix-code table built once from the transcribed rows, instead of a walk over every codeword; the walk still decides near the end of the buffer, so results and errors are unchanged (about 2.6–3× faster decode on 720×576 MPEG-2).

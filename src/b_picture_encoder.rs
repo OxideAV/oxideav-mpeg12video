@@ -214,6 +214,8 @@ pub fn encode_b_picture_with_stats(
     matrix_state: &crate::quant_matrix_extension::QuantiserMatrixState,
     options: FrameEncodeOptions,
 ) -> Result<FrameEncodeStats> {
+    // A per-picture quantiser override (see FrameEncodeOptions).
+    let quantiser_scale_code = options.quantiser_scale_code.unwrap_or(quantiser_scale_code);
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let fwd_range = max_search_range(forward_f_code).min(16);
     let bwd_range = max_search_range(backward_f_code).min(16);

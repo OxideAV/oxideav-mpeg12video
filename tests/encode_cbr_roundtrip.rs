@@ -254,3 +254,95 @@ fn cbr_field_coded_sequence_verifies_and_decodes() {
         assert_eq!((d.frame.width, d.frame.height), (w, h));
     }
 }
+
+/// Pseudo-random content no prediction can track: predicted pictures
+/// stay large at every quantiser.
+fn noise_frame(width: usize, height: usize, t: usize) -> FrameBuffer {
+    let mut f = FrameBuffer::new(width, height, ChromaFormat::Yuv420);
+    let mut state = 0x1234_5678u32 ^ (t as u32).wrapping_mul(0x9E37_79B9);
+    let mut next = || {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (state >> 24) as u8
+    };
+    for y in 0..height {
+        for x in 0..width {
+            f.y.put_sample(x, y, 64 + next() / 2);
+        }
+    }
+    for y in 0..height.div_ceil(2) {
+        for x in 0..width.div_ceil(2) {
+            f.cb.put_sample(x, y, 128);
+            f.cr.put_sample(x, y, 128);
+        }
+    }
+    f
+}
+
+/// Found by the black-box matrix: at a low rate the controller spent
+/// the buffer on a GOP's predicted pictures and the next I-picture
+/// then failed the C.6 bound at every quantiser. Predicted pictures
+/// now leave a reserve, and one that fits at no quantiser is replaced
+/// by a picture repeating its reference instead of failing the encode.
+#[test]
+fn cbr_low_rate_survives_content_that_fits_at_no_quantiser() {
+    let (w, h) = (64usize, 48usize);
+    let frames: Vec<FrameBuffer> = (0..26).map(|t| noise_frame(w, h, t)).collect();
+    let cbr = CbrConfig::default()
+        .with_bit_rate_value(75) // 30 kbit/s
+        .with_vbv_buffer_size_value(1)
+        .with_frame_rate_code(3)
+        .with_initial_quantiser_scale_code(6);
+    let enc = encode_cbr_gop_sequence(&frames, 2, 4, params(w, h), &cbr, 3, 3).expect("CBR encode");
+    let report = verify_cbr_stream(&enc.stream, VbvStandard::Mpeg2).expect("VBV conformant");
+    assert_eq!(report.pictures.len(), 26);
+    assert!(report.min_occupancy_after_bits >= 0);
+    // Some predicted picture was replaced by a repeat picture (a few
+    // bytes per macroblock row).
+    let smallest = report.pictures.iter().map(|p| p.data_bits).min().unwrap();
+    assert!(
+        smallest < 600,
+        "no repeat picture: smallest {smallest} bits"
+    );
+    assert_eq!(
+        decode_video_sequence(&enc.stream).expect("decode").len(),
+        26
+    );
+
+    let seq = oxideav_mpeg12video::Mpeg1SequenceParams::default()
+        .with_horizontal_size(w as u16)
+        .with_vertical_size(h as u16)
+        .with_picture_rate_code(3)
+        .with_bit_rate_value(150)
+        .with_vbv_buffer_size_value(2);
+    let enc = oxideav_mpeg12video::encode_mpeg1_cbr_sequence(&frames, 2, 4, &seq, 6, 3, 3)
+        .expect("MPEG-1 CBR encode");
+    let report = verify_cbr_stream(&enc.stream, VbvStandard::Mpeg1).expect("VBV conformant");
+    assert_eq!(report.pictures.len(), 26);
+    assert_eq!(
+        decode_video_sequence(&enc.stream).expect("decode").len(),
+        26
+    );
+}
+
+/// A repeat picture decodes to a copy of its forward reference.
+#[test]
+fn repeat_pictures_decode_to_the_reference() {
+    use oxideav_core::bits::BitWriter;
+    let (w, h) = (48usize, 32usize);
+    let p = params(w, h);
+    let intra = oxideav_mpeg12video::encode_intra_picture(&busy_frame(w, h, 0), p, 0, 4).unwrap();
+    let mut stream = intra[..intra.len() - 4].to_vec();
+    // Coded order I P B: display I B P.
+    let mut bw = BitWriter::new();
+    oxideav_mpeg12video::encode_repeat_p_picture(&mut bw, p, 2, 3).unwrap();
+    oxideav_mpeg12video::encode_repeat_b_picture(&mut bw, p, 1, 3, 3).unwrap();
+    stream.extend_from_slice(&bw.finish());
+    stream.extend_from_slice(&[0, 0, 1, 0xB7]);
+    let decoded = decode_video_sequence(&stream).expect("decode");
+    assert_eq!(decoded.len(), 3);
+    for d in &decoded[1..] {
+        assert_eq!(d.frame.y.samples(), decoded[0].frame.y.samples());
+        assert_eq!(d.frame.cb.samples(), decoded[0].frame.cb.samples());
+        assert_eq!(d.frame.cr.samples(), decoded[0].frame.cr.samples());
+    }
+}

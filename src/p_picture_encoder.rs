@@ -582,6 +582,8 @@ pub fn encode_p_picture_with_stats(
     matrix_state: &QuantiserMatrixState,
     options: FrameEncodeOptions,
 ) -> Result<(FrameBuffer, FrameEncodeStats)> {
+    // A per-picture quantiser override (see FrameEncodeOptions).
+    let quantiser_scale_code = options.quantiser_scale_code.unwrap_or(quantiser_scale_code);
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let f_horiz = forward_f_code;
     let f_vert = forward_f_code;
@@ -851,6 +853,100 @@ pub fn encode_p_picture_with_stats(
     }
 
     Ok((recon, stats))
+}
+
+/// Write the slices of a frame picture that repeats its forward
+/// reference: in every row the first and the last macroblock are
+/// coded as forward-predicted with a zero vector and no residual
+/// (`macroblock_type`, given by `type_bits` / `type_len`), and every
+/// macroblock between them is skipped (§7.6.6 — a P-picture skip is a
+/// zero-vector forward copy, a B-picture skip repeats the previous
+/// macroblock's direction and vectors).
+fn write_repeat_slices(
+    bw: &mut BitWriter,
+    params: &IntraPictureParams,
+    type_bits: u32,
+    type_len: u32,
+    forward_f_code: u8,
+) {
+    let mb_width = params.mb_width();
+    for mb_row in 0..params.mb_height() {
+        write_slice_header_in(bw, mb_row as u32, 1, params.height as u32);
+        let coded = |bw: &mut BitWriter, increment: u32| {
+            encode_mb_address_increment(bw, increment);
+            bw.write_u32(type_bits, type_len);
+            if !params.frame_pred_frame_dct {
+                // §6.3.17.1 Table 6-17: frame_motion_type = Frame-based.
+                bw.write_u32(0b10, 2);
+            }
+            encode_motion_component(bw, 0, forward_f_code);
+            encode_motion_component(bw, 0, forward_f_code);
+        };
+        coded(bw, 1);
+        if mb_width > 1 {
+            coded(bw, (mb_width - 1) as u32);
+        }
+        bw.align_to_byte_zero();
+    }
+}
+
+/// Encode a P frame picture that repeats its forward reference (every
+/// macroblock a zero-vector copy without a residual) — the smallest
+/// picture the syntax allows, which a rate controller falls back to
+/// when no quantiser fits the picture into its buffer. The
+/// reconstruction is the reference itself.
+///
+/// # Errors
+/// [`crate::Error::InvalidBitstream`] on a §6.3.10 flag violation.
+pub fn encode_repeat_p_picture(
+    bw: &mut BitWriter,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    forward_f_code: u8,
+) -> Result<()> {
+    write_picture_header(
+        bw,
+        temporal_reference,
+        PictureCodingType::Predictive,
+        0b111,
+        0b111,
+    );
+    let pce =
+        FrameEncodeOptions::default().picture_coding_extension(&params, forward_f_code, 15)?;
+    write_picture_coding_extension(bw, &pce);
+    // Table B-3 `001`: MC, Not Coded.
+    write_repeat_slices(bw, &params, 0b001, 3, forward_f_code);
+    Ok(())
+}
+
+/// Encode a B frame picture that repeats its forward reference (see
+/// [`encode_repeat_p_picture`]).
+///
+/// # Errors
+/// [`crate::Error::InvalidBitstream`] on a §6.3.10 flag violation.
+pub fn encode_repeat_b_picture(
+    bw: &mut BitWriter,
+    params: IntraPictureParams,
+    temporal_reference: u16,
+    forward_f_code: u8,
+    backward_f_code: u8,
+) -> Result<()> {
+    write_picture_header(
+        bw,
+        temporal_reference,
+        PictureCodingType::Bidirectional,
+        0b111,
+        0b111,
+    );
+    let pce = FrameEncodeOptions::default().picture_coding_extension(
+        &params,
+        forward_f_code,
+        backward_f_code,
+    )?;
+    write_picture_coding_extension(bw, &pce);
+    // Table B-4 `0010`: forward prediction, not coded.
+    write_repeat_slices(bw, &params, 0b0010, 4, forward_f_code);
+    Ok(())
 }
 
 /// The §7.6.3.9 concealment motion vector for the intra macroblock at

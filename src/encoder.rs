@@ -52,6 +52,7 @@
 //! | key | kind | default | meaning |
 //! |-----|------|---------|---------|
 //! | `quantiser_scale_code` | u32 `1..=31` | `6` | the per-slice §6.3.16 / §2.4.3.6 quantiser scale code (the starting value under `cbr`) |
+//! | `b_quantiser_scale_code` | u32 `0..=31` | `0` | `quantiser_scale_code` of B-pictures (`frame` pictures, constant quantiser); `0` = the same as the other pictures |
 //! | `b_between` | u32 | `2` | B-pictures between anchors (display order) |
 //! | `anchors_per_gop` | u32 `>= 1` | `4` | predictive periods per GOP |
 //! | `f_code` | u32 `1..=7` (MPEG-2: `1..=9`) | `3` | forward motion-vector `f_code` |
@@ -62,7 +63,7 @@
 //! | `alternate_scan` | bool | `false` | §7.3 alternate scan (MPEG-2) |
 //! | `q_scale_type` | bool | `false` | Table 7-6 non-linear quantiser scale (MPEG-2) |
 //! | `intra_dc_precision` | u32 `0..=3` | `0` | 8..=11-bit intra DC (MPEG-2) |
-//! | `skipped_macroblocks` | bool | `false` | §7.6.6 skipped-macroblock emission (`frame` pictures) |
+//! | `skipped_macroblocks` | bool | `true` | §7.6.6 skipped-macroblock emission (constant-quantiser `frame` pictures of `mpeg2video`; no effect elsewhere) |
 //! | `concealment_motion_vectors` | bool | `false` | §7.6.3.9 concealment vectors on intra macroblocks (`frame` pictures) |
 //! | `top_field_first` | bool | `false` | §6.3.10 `top_field_first` on every frame picture |
 //! | `repeat_first_field` | bool | `false` | §6.3.10 `repeat_first_field` on every frame picture |
@@ -70,7 +71,7 @@
 //! | `dual_prime` | bool | `false` | allow §7.6.3.6 dual-prime macroblocks (`frame_field` / `field_adaptive`, needs `b_between = 0`) |
 //! | `rate_control` | `constant_quantiser` / `cbr` | `constant_quantiser` | Annex C VBV-regulated constant bit rate (`frame` / `field` structures and MPEG-1) |
 //! | `bit_rate_value` | u32 `1..=0x3FFFE` | `0` | §6.2.2.1 `bit_rate_value` (units of 400 bit/s) under `cbr`; `0` = from [`CodecParameters::bit_rate`], else 1 Mbit/s |
-//! | `vbv_buffer_size_value` | u32 `1..=0x3FF` | `0` | §6.2.2.1 `vbv_buffer_size_value` (units of 16 kbit) under `cbr`; `0` = 20, shrunk at low rates so a full buffer's `vbv_delay` fits 16 bits |
+//! | `vbv_buffer_size_value` | u32 `1..=0x3FF` | `0` | §6.2.2.1 `vbv_buffer_size_value` (units of 16 kbit) under `cbr`; `0` = 20, or four picture periods of the bit rate when that is more, shrunk at low rates so a full buffer's `vbv_delay` fits 16 bits |
 //! | `data_partitioning` | u32 `0`, `1..=3`, `64..=127` | `0` | §7.10 `priority_breakpoint`: split the MPEG-2 stream into two partition packets |
 //! | `mpeg1_d_pictures` | bool | `false` | ISO/IEC 11172-2 §2.4.3.4 D-only sequence (`mpeg1video`) |
 //!
@@ -78,7 +79,7 @@
 //! (`intra_vlc_format` and friends on `mpeg1video`, `mpeg1_d_pictures`
 //! on `mpeg2video`), as are structure / option combinations no
 //! assembler implements (`cbr` with `frame_field` / `field_adaptive`,
-//! `skipped_macroblocks` / `concealment_motion_vectors` / `pulldown`
+//! `concealment_motion_vectors` / `pulldown`
 //! outside `frame` pictures, `dual_prime` with `frame` / `field`).
 
 use std::collections::VecDeque;
@@ -159,6 +160,8 @@ pub enum PulldownOption {
 pub struct Mpeg12EncoderOptions {
     /// `quantiser_scale_code` (`1..=31`).
     pub quantiser_scale_code: u32,
+    /// `b_quantiser_scale_code` (`0..=31`; `0` = `quantiser_scale_code`).
+    pub b_quantiser_scale_code: u32,
     /// `b_between`.
     pub b_between: u32,
     /// `anchors_per_gop` (`>= 1`).
@@ -208,6 +211,13 @@ impl Mpeg12EncoderOptions {
     #[must_use]
     pub fn with_quantiser_scale_code(mut self, v: u32) -> Self {
         self.quantiser_scale_code = v;
+        self
+    }
+
+    /// Set `b_quantiser_scale_code`.
+    #[must_use]
+    pub fn with_b_quantiser_scale_code(mut self, v: u32) -> Self {
+        self.b_quantiser_scale_code = v;
         self
     }
 
@@ -363,6 +373,7 @@ impl Default for Mpeg12EncoderOptions {
     fn default() -> Self {
         Self {
             quantiser_scale_code: 6,
+            b_quantiser_scale_code: 0,
             b_between: 2,
             anchors_per_gop: 4,
             f_code: 3,
@@ -373,7 +384,7 @@ impl Default for Mpeg12EncoderOptions {
             alternate_scan: false,
             q_scale_type: false,
             intra_dc_precision: 0,
-            skipped_macroblocks: false,
+            skipped_macroblocks: true,
             concealment_motion_vectors: false,
             top_field_first: false,
             repeat_first_field: false,
@@ -399,6 +410,12 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
             kind: OptionKind::U32,
             default: OptionValue::U32(6),
             help: "per-slice quantiser_scale_code (1..=31); the starting value under cbr",
+        },
+        OptionField {
+            name: "b_quantiser_scale_code",
+            kind: OptionKind::U32,
+            default: OptionValue::U32(0),
+            help: "quantiser_scale_code of B-pictures (frame pictures, constant quantiser); 0 = same",
         },
         OptionField {
             name: "b_between",
@@ -463,8 +480,8 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
         OptionField {
             name: "skipped_macroblocks",
             kind: OptionKind::Bool,
-            default: OptionValue::Bool(false),
-            help: "emit skipped macroblocks (frame pictures)",
+            default: OptionValue::Bool(true),
+            help: "emit skipped macroblocks (constant-quantiser frame pictures of mpeg2video)",
         },
         OptionField {
             name: "concealment_motion_vectors",
@@ -531,6 +548,7 @@ impl CodecOptionsStruct for Mpeg12EncoderOptions {
     fn apply(&mut self, key: &str, value: &OptionValue) -> Result<()> {
         match key {
             "quantiser_scale_code" => self.quantiser_scale_code = value.as_u32()?,
+            "b_quantiser_scale_code" => self.b_quantiser_scale_code = value.as_u32()?,
             "b_between" => self.b_between = value.as_u32()?,
             "anchors_per_gop" => self.anchors_per_gop = value.as_u32()?,
             "f_code" => self.f_code = value.as_u32()?,
@@ -643,6 +661,18 @@ impl EncoderConfig {
         if !(1..=31).contains(&o.quantiser_scale_code) {
             return Err(invalid("quantiser_scale_code outside 1..=31"));
         }
+        if o.b_quantiser_scale_code > 31 {
+            return Err(invalid("b_quantiser_scale_code outside 0..=31"));
+        }
+        if o.b_quantiser_scale_code != 0
+            && (is_mpeg1
+                || o.picture_structure != PictureStructureOption::Frame
+                || o.rate_control != RateControlOption::ConstantQuantiser)
+        {
+            return Err(unsupported(
+                "b_quantiser_scale_code applies to constant-quantiser frame pictures of mpeg2video",
+            ));
+        }
         if o.anchors_per_gop == 0 {
             return Err(invalid("anchors_per_gop must be >= 1"));
         }
@@ -701,15 +731,14 @@ impl EncoderConfig {
                     "intra_vlc_format / alternate_scan / q_scale_type / intra_dc_precision are MPEG-2 only",
                 ));
             }
-            if o.skipped_macroblocks
-                || o.concealment_motion_vectors
+            if o.concealment_motion_vectors
                 || o.top_field_first
                 || o.repeat_first_field
                 || o.pulldown != PulldownOption::None
                 || o.dual_prime
             {
                 return Err(unsupported(
-                    "skipped_macroblocks / concealment_motion_vectors / top_field_first / repeat_first_field / pulldown / dual_prime are MPEG-2 only",
+                    "concealment_motion_vectors / top_field_first / repeat_first_field / pulldown / dual_prime are MPEG-2 only",
                 ));
             }
             if o.data_partitioning != 0 {
@@ -724,14 +753,13 @@ impl EncoderConfig {
             if o.mpeg1_d_pictures {
                 return Err(unsupported("mpeg1_d_pictures is ISO/IEC 11172-2 only"));
             }
-            let frame_only = o.skipped_macroblocks
-                || o.concealment_motion_vectors
+            let frame_only = o.concealment_motion_vectors
                 || o.top_field_first
                 || o.repeat_first_field
                 || o.pulldown != PulldownOption::None;
             if frame_only && o.picture_structure != PictureStructureOption::Frame {
                 return Err(unsupported(
-                    "skipped_macroblocks / concealment_motion_vectors / top_field_first / repeat_first_field / pulldown apply to picture_structure = frame",
+                    "concealment_motion_vectors / top_field_first / repeat_first_field / pulldown apply to picture_structure = frame",
                 ));
             }
             if frame_only && o.rate_control == RateControlOption::Cbr {
@@ -787,10 +815,18 @@ impl EncoderConfig {
         // Default VBV size: the CbrConfig default (20 × 16 kbit), shrunk
         // at low rates so a full buffer's §6.3.9 vbv_delay =
         // 90 000 · B / R still fits the 16-bit field.
+        // It also has to hold several pictures' worth of the rate, or
+        // no picture sequence can keep it from overflowing: at least
+        // four picture periods, within the same vbv_delay limit.
         let default_vbv = {
             let rate = u64::from(bit_rate_value) * 400;
             let fits = rate * 65_535 / (90_000 * 16 * 1024);
-            fits.clamp(1, u64::from(CbrConfig::default().vbv_buffer_size_value)) as u16
+            let (n, d) = crate::vbv::frame_rate_value(frame_rate_code).map_err(map_err)?;
+            let four_pictures = (4 * rate * u64::from(d) / u64::from(n)).div_ceil(16 * 1024);
+            u64::from(CbrConfig::default().vbv_buffer_size_value)
+                .max(four_pictures)
+                .min(fits)
+                .clamp(1, 0x3FF) as u16
         };
         let cbr = CbrConfig {
             bit_rate_value,
@@ -842,9 +878,17 @@ impl EncoderConfig {
     }
 
     /// The per-display-frame [`FrameEncodeOptions`].
-    fn frame_options(&self, display_index: usize) -> FrameEncodeOptions {
+    ///
+    /// `total` is the number of frames in the sequence: its last frame
+    /// is always an anchor.
+    fn frame_options(&self, display_index: usize, total: usize) -> FrameEncodeOptions {
         let o = &self.options;
-        match o.pulldown {
+        let step = o.b_between as usize + 1;
+        let in_gop = display_index % (1 + o.anchors_per_gop as usize * step);
+        let is_b = !in_gop.is_multiple_of(step) && display_index + 1 != total;
+        let quantiser_scale_code =
+            (is_b && o.b_quantiser_scale_code != 0).then_some(o.b_quantiser_scale_code as u8);
+        let options = match o.pulldown {
             PulldownOption::ThreeTwo => FrameEncodeOptions {
                 skipped_macroblocks: o.skipped_macroblocks,
                 concealment_motion_vectors: o.concealment_motion_vectors,
@@ -855,9 +899,13 @@ impl EncoderConfig {
                 concealment_motion_vectors: o.concealment_motion_vectors,
                 top_field_first: o.top_field_first,
                 repeat_first_field: o.repeat_first_field,
-                progressive_frame: None,
+                // §6.3.10: a repeated field needs progressive_frame = 1
+                // (in an interlaced sequence the default would be 0).
+                progressive_frame: o.repeat_first_field.then_some(true),
+                ..FrameEncodeOptions::default()
             },
-        }
+        };
+        options.with_quantiser_scale_code(quantiser_scale_code)
     }
 
     fn mpeg1_sequence(&self, width: usize, height: usize) -> Mpeg1SequenceParams {
@@ -1039,7 +1087,7 @@ impl Mpeg12Encoder {
                     fwd,
                     bwd,
                     &QuantMatrixExtension::default(),
-                    &|display_index| c.frame_options(display_index),
+                    &|display_index| c.frame_options(display_index, frames.len()),
                 )
                 .map(|(stream, _stats)| stream)
             }

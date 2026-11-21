@@ -491,8 +491,8 @@ pub use data_partitioning::{
     decode_data_partitioned, merge_data_partitions, split_data_partitions,
 };
 pub use decoder::{
-    MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR, Mpeg12Decoder, frame_buffer_to_video_frame,
-    make_decoder,
+    MPEG1_CODEC_ID_STR, MPEG2_CODEC_ID_STR, Mpeg12Decoder, Mpeg12DecoderOptions,
+    frame_buffer_to_video_frame, make_decoder,
 };
 pub use encode_options::{FrameEncodeOptions, FrameEncodeStats};
 pub use encoder::{
@@ -526,7 +526,7 @@ pub use mpeg1_encoder::{
     encode_mpeg1_b_picture, encode_mpeg1_d_picture, encode_mpeg1_d_sequence,
     encode_mpeg1_display_order_sequence, encode_mpeg1_intra_picture,
     encode_mpeg1_intra_picture_with_slice_length, encode_mpeg1_intra_stream,
-    encode_mpeg1_p_picture,
+    encode_mpeg1_p_picture, encode_mpeg1_repeat_b_picture, encode_mpeg1_repeat_p_picture,
 };
 pub use mpeg1_picture::Mpeg1PictureParams;
 pub use mpeg1_stream_writer::{
@@ -535,7 +535,7 @@ pub use mpeg1_stream_writer::{
 };
 pub use p_picture_encoder::{
     encode_p_picture, encode_p_picture_with_matrices, encode_p_picture_with_options,
-    encode_p_picture_with_stats,
+    encode_p_picture_with_stats, encode_repeat_b_picture, encode_repeat_p_picture,
 };
 pub use picture_header::PictureCodingType;
 pub use rate_control::{

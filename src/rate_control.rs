@@ -196,6 +196,10 @@ fn type_target_bits(
     ]
 }
 
+/// Produces a picture that repeats its forward reference (the picture
+/// layer and, for an anchor, its reconstruction).
+type RepeatPicture<'a> = dyn Fn() -> Result<(Vec<u8>, Option<FrameBuffer>)> + 'a;
+
 /// The CBR writer state threaded through the coded-order emission.
 struct CbrWriter {
     out: Vec<u8>,
@@ -214,6 +218,8 @@ struct CbrWriter {
     buffer_bits: u64,
     /// `R` in bits/s.
     bit_rate: u64,
+    /// Size of the most recent I-picture (0 before the first).
+    last_i_bits: u64,
 }
 
 impl CbrWriter {
@@ -234,7 +240,26 @@ impl CbrWriter {
         kind: PictureKind,
         interval: RemovalInterval,
         is_last: bool,
+        enc: F,
+    ) -> Result<Option<FrameBuffer>>
+    where
+        F: FnMut(u8) -> Result<(Vec<u8>, Option<FrameBuffer>)>,
+    {
+        self.emit_with_fallback(headers, kind, interval, is_last, enc, None)
+    }
+
+    /// [`Self::emit`] with a last resort: when the picture exceeds the
+    /// C.6 bound even at `quantiser_scale_code` 31, `repeat` (a
+    /// picture that repeats its forward reference, a few bytes per
+    /// macroblock row) is emitted in its place.
+    fn emit_with_fallback<F>(
+        &mut self,
+        headers: &[u8],
+        kind: PictureKind,
+        interval: RemovalInterval,
+        is_last: bool,
         mut enc: F,
+        repeat: Option<&RepeatPicture<'_>>,
     ) -> Result<Option<FrameBuffer>>
     where
         F: FnMut(u8) -> Result<(Vec<u8>, Option<FrameBuffer>)>,
@@ -263,13 +288,32 @@ impl CbrWriter {
         let (mut layer, mut recon) = enc(q)?;
         // C.6 hard bound: coarsen until the picture fits the buffer's
         // available data at its removal time.
+        //
+        // Predicted pictures additionally leave a reserve in the
+        // buffer — half of it, or what the last I-picture needed —
+        // so the next I-picture is not starved by its GOP's tail; an
+        // I-picture leaves an eighth for the pictures that follow it.
+        let reserve = match kind {
+            PictureKind::I => self.buffer_bits / 8,
+            PictureKind::P | PictureKind::B => {
+                (self.buffer_bits / 2).max((self.last_i_bits * 5 / 4).min(self.buffer_bits * 3 / 4))
+            }
+        };
+        let soft_max_end = max_end.saturating_sub(reserve);
         let mut guard = 0u32;
-        while end_bits_with(self.out.len(), layer.len()) > max_end && q < 31 && guard < 16 {
+        while end_bits_with(self.out.len(), layer.len()) > soft_max_end && q < 31 && guard < 16 {
             q = (q + 1 + q / 4).min(31);
             let (l, r) = enc(q)?;
             layer = l;
             recon = r;
             guard += 1;
+        }
+        if end_bits_with(self.out.len(), layer.len()) > max_end
+            && let Some(repeat) = repeat
+        {
+            let (l, r) = repeat()?;
+            layer = l;
+            recon = r;
         }
         if end_bits_with(self.out.len(), layer.len()) > max_end {
             return Err(Error::InvalidBitstream(
@@ -280,6 +324,9 @@ impl CbrWriter {
 
         patch_vbv_delay(&mut layer, delay)?;
         let actual_bits = (layer.len() as u64) * 8;
+        if kind == PictureKind::I {
+            self.last_i_bits = actual_bits;
+        }
         self.out.extend_from_slice(&layer);
         if is_last {
             self.out.extend_from_slice(&SEQUENCE_END_CODE.to_be_bytes());
@@ -422,6 +469,7 @@ pub fn encode_cbr_gop_sequence(
         started: false,
         buffer_bits,
         bit_rate,
+        last_i_bits: 0,
     };
 
     // The coded-order GOP walk mirrors
@@ -482,20 +530,37 @@ pub fn encode_cbr_gop_sequence(
             let is_last = coded == total;
             let p_frame = &frames[next_anchor];
             let fwd = forward_ref.clone();
+            let repeat_p = || {
+                let mut bw = BitWriter::new();
+                crate::p_picture_encoder::encode_repeat_p_picture(
+                    &mut bw,
+                    params,
+                    (next_anchor - gop_start) as u16,
+                    forward_f_code,
+                )?;
+                Ok((bw.finish(), Some(fwd.clone())))
+            };
             let backward_ref = w
-                .emit(&[], PictureKind::P, RemovalInterval::Frame, is_last, |q| {
-                    let mut bw = BitWriter::new();
-                    let recon = crate::p_picture_encoder::encode_p_picture(
-                        &mut bw,
-                        p_frame,
-                        &fwd,
-                        params,
-                        (next_anchor - gop_start) as u16,
-                        q,
-                        forward_f_code,
-                    )?;
-                    Ok((bw.finish(), Some(recon)))
-                })?
+                .emit_with_fallback(
+                    &[],
+                    PictureKind::P,
+                    RemovalInterval::Frame,
+                    is_last,
+                    |q| {
+                        let mut bw = BitWriter::new();
+                        let recon = crate::p_picture_encoder::encode_p_picture(
+                            &mut bw,
+                            p_frame,
+                            &fwd,
+                            params,
+                            (next_anchor - gop_start) as u16,
+                            q,
+                            forward_f_code,
+                        )?;
+                        Ok((bw.finish(), Some(recon)))
+                    },
+                    Some(&repeat_p),
+                )?
                 .expect("P emission returns a reconstruction");
 
             for b in (prev_anchor + 1)..next_anchor {
@@ -504,21 +569,39 @@ pub fn encode_cbr_gop_sequence(
                 let b_frame = &frames[b];
                 let fwd = &forward_ref;
                 let bwd = &backward_ref;
-                w.emit(&[], PictureKind::B, RemovalInterval::Frame, is_last, |q| {
+                let repeat_b = || {
                     let mut bw = BitWriter::new();
-                    crate::b_picture_encoder::encode_b_picture(
+                    crate::p_picture_encoder::encode_repeat_b_picture(
                         &mut bw,
-                        b_frame,
-                        fwd,
-                        bwd,
                         params,
                         (b - gop_start) as u16,
-                        q,
                         forward_f_code,
                         backward_f_code,
                     )?;
                     Ok((bw.finish(), None))
-                })?;
+                };
+                w.emit_with_fallback(
+                    &[],
+                    PictureKind::B,
+                    RemovalInterval::Frame,
+                    is_last,
+                    |q| {
+                        let mut bw = BitWriter::new();
+                        crate::b_picture_encoder::encode_b_picture(
+                            &mut bw,
+                            b_frame,
+                            fwd,
+                            bwd,
+                            params,
+                            (b - gop_start) as u16,
+                            q,
+                            forward_f_code,
+                            backward_f_code,
+                        )?;
+                        Ok((bw.finish(), None))
+                    },
+                    Some(&repeat_b),
+                )?;
             }
 
             forward_ref = backward_ref;
@@ -652,6 +735,7 @@ pub fn encode_mpeg1_cbr_sequence(
         started: false,
         buffer_bits,
         bit_rate,
+        last_i_bits: 0,
     };
 
     // The coded-order GOP walk mirrors
@@ -701,21 +785,38 @@ pub fn encode_mpeg1_cbr_sequence(
             let is_last = coded == total;
             let p_frame = &frames[next_anchor];
             let fwd = forward_ref.clone();
+            let repeat_p = || {
+                let mut bw = BitWriter::new();
+                crate::mpeg1_encoder::encode_mpeg1_repeat_p_picture(
+                    &mut bw,
+                    &params,
+                    (next_anchor - gop_start) as u16,
+                    forward_f_code,
+                )?;
+                Ok((bw.finish(), Some(fwd.clone())))
+            };
             let backward_ref = w
-                .emit(&[], PictureKind::P, RemovalInterval::Frame, is_last, |q| {
-                    let mut bw = BitWriter::new();
-                    let recon = encode_mpeg1_p_picture(
-                        &mut bw,
-                        p_frame,
-                        &fwd,
-                        &params,
-                        (next_anchor - gop_start) as u16,
-                        q,
-                        forward_f_code,
-                        false,
-                    )?;
-                    Ok((bw.finish(), Some(recon)))
-                })?
+                .emit_with_fallback(
+                    &[],
+                    PictureKind::P,
+                    RemovalInterval::Frame,
+                    is_last,
+                    |q| {
+                        let mut bw = BitWriter::new();
+                        let recon = encode_mpeg1_p_picture(
+                            &mut bw,
+                            p_frame,
+                            &fwd,
+                            &params,
+                            (next_anchor - gop_start) as u16,
+                            q,
+                            forward_f_code,
+                            false,
+                        )?;
+                        Ok((bw.finish(), Some(recon)))
+                    },
+                    Some(&repeat_p),
+                )?
                 .expect("P emission returns a reconstruction");
 
             for b in (prev_anchor + 1)..next_anchor {
@@ -724,23 +825,41 @@ pub fn encode_mpeg1_cbr_sequence(
                 let b_frame = &frames[b];
                 let fwd = &forward_ref;
                 let bwd = &backward_ref;
-                w.emit(&[], PictureKind::B, RemovalInterval::Frame, is_last, |q| {
+                let repeat_b = || {
                     let mut bw = BitWriter::new();
-                    encode_mpeg1_b_picture(
+                    crate::mpeg1_encoder::encode_mpeg1_repeat_b_picture(
                         &mut bw,
-                        b_frame,
-                        fwd,
-                        bwd,
                         &params,
                         (b - gop_start) as u16,
-                        q,
                         forward_f_code,
                         backward_f_code,
-                        false,
-                        false,
                     )?;
                     Ok((bw.finish(), None))
-                })?;
+                };
+                w.emit_with_fallback(
+                    &[],
+                    PictureKind::B,
+                    RemovalInterval::Frame,
+                    is_last,
+                    |q| {
+                        let mut bw = BitWriter::new();
+                        encode_mpeg1_b_picture(
+                            &mut bw,
+                            b_frame,
+                            fwd,
+                            bwd,
+                            &params,
+                            (b - gop_start) as u16,
+                            q,
+                            forward_f_code,
+                            backward_f_code,
+                            false,
+                            false,
+                        )?;
+                        Ok((bw.finish(), None))
+                    },
+                    Some(&repeat_b),
+                )?;
             }
 
             forward_ref = backward_ref;
@@ -883,6 +1002,7 @@ pub fn encode_field_cbr_gop_sequence(
         started: false,
         buffer_bits,
         bit_rate,
+        last_i_bits: 0,
     };
 
     // Two VBV pictures (fields) per coded frame; is_last on the very

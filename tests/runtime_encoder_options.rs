@@ -394,7 +394,7 @@ fn frame_encode_options_skips_concealment_and_cadence() {
             &base,
             &[
                 ("picture_structure", "field"),
-                ("skipped_macroblocks", "true")
+                ("concealment_motion_vectors", "true")
             ]
         ))
         .is_err()
@@ -530,7 +530,7 @@ fn mpeg1_options_d_pictures_and_rejections() {
         ("picture_structure", "field"),
         ("interlaced", "true"),
         ("intra_vlc_format", "true"),
-        ("skipped_macroblocks", "true"),
+        ("concealment_motion_vectors", "true"),
         ("dual_prime", "true"),
         ("f_code", "8"),
     ] {
@@ -575,4 +575,65 @@ fn registry_path_honours_the_options() {
         ChromaFormat::Yuv422
     );
     assert_eq!(decode_video_sequence(stream).unwrap().len(), 3);
+}
+
+/// Found by the black-box matrix: `repeat_first_field` in an
+/// interlaced sequence was rejected (§6.3.10 requires
+/// `progressive_frame = 1` for a repeated field, and the adapter left
+/// it at the interlaced default); the adapter now sets it.
+#[test]
+fn repeat_first_field_in_an_interlaced_sequence_sets_progressive_frame() {
+    let p = params(MPEG2_CODEC_ID_STR, 48, 32, PixelFormat::Yuv420P);
+    let stream = encode_one(
+        &with(
+            &p,
+            &[
+                ("interlaced", "true"),
+                ("top_field_first", "true"),
+                ("repeat_first_field", "true"),
+            ],
+        ),
+        4,
+    );
+    let (_, ext) = first_picture(&stream);
+    assert!(ext.repeat_first_field && ext.top_field_first && ext.progressive_frame);
+    assert_eq!(decode_video_sequence(&stream).expect("decode").len(), 4);
+}
+
+/// Found by the black-box matrix: at 15 Mbit/s the default VBV size
+/// (20 × 16 kbit) held less than one picture period of the rate, so no
+/// stream could satisfy it and the controller failed. The default now
+/// holds at least four picture periods.
+#[test]
+fn cbr_default_buffer_holds_several_pictures_at_high_rates() {
+    for (id, standard) in [
+        (MPEG2_CODEC_ID_STR, VbvStandard::Mpeg2),
+        (MPEG1_CODEC_ID_STR, VbvStandard::Mpeg1),
+    ] {
+        let mut p = params(id, 48, 32, PixelFormat::Yuv420P);
+        p.bit_rate = Some(15_000_000);
+        let stream = encode_one(&with(&p, &[("rate_control", "cbr")]), 6);
+        let report = verify_cbr_stream(&stream, standard).expect("VBV conformant");
+        assert!(report.buffer_size_bits >= 4 * 15_000_000 / 25);
+    }
+}
+
+/// ISO/IEC 11172-2 §2.4.3.5 has 175 slice rows; the encoder starts a
+/// slice per macroblock row, so taller pictures are refused instead of
+/// producing a stream no decoder accepts (found by the black-box
+/// matrix at 34×4095).
+#[test]
+fn mpeg1_pictures_taller_than_175_slice_rows_are_refused() {
+    let p = params(MPEG1_CODEC_ID_STR, 16, 2816, PixelFormat::Yuv420P);
+    let mut enc = make_encoder(&p).expect("make_encoder");
+    enc.send_frame(&Frame::Video(video_frame(
+        16,
+        2816,
+        0,
+        PixelFormat::Yuv420P,
+    )))
+    .expect("send_frame");
+    assert!(enc.flush().is_err());
+    let p = params(MPEG1_CODEC_ID_STR, 16, 2800, PixelFormat::Yuv420P);
+    assert_eq!(decode_video_sequence(&encode_one(&p, 1)).unwrap().len(), 1);
 }
