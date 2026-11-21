@@ -337,6 +337,255 @@ pub fn estimate_forward_mv(
     }
 }
 
+/// Block sums of a reference luminance plane (a summed-area table),
+/// built once per reference picture, that give the exhaustive search a
+/// cheap lower bound on a candidate's SAD.
+///
+/// For any two blocks, `|Σ a − Σ b| ≤ Σ |a − b|` (the triangle
+/// inequality), and the same holds per 8×8 quadrant, so the sum over
+/// the four quadrants of `|Σ current − Σ candidate|` never exceeds the
+/// 16×16 SAD. A candidate whose bound already exceeds the best score
+/// known cannot win and is skipped without touching its samples.
+#[derive(Debug, Clone)]
+pub struct ReferenceSums {
+    width: usize,
+    height: usize,
+    /// `(width + 1) × (height + 1)` entries; entry `(x, y)` is the sum
+    /// of the samples above and to the left of `(x, y)`.
+    table: Vec<u32>,
+}
+
+impl ReferenceSums {
+    /// Build the table for `reference`'s luminance plane.
+    pub fn new(reference: &FrameBuffer) -> Self {
+        let (width, height) = (reference.y.width(), reference.y.height());
+        let stride = width + 1;
+        let mut table = vec![0u32; stride * (height + 1)];
+        for (y, row) in reference.y.samples().chunks_exact(width.max(1)).enumerate() {
+            let mut running = 0u32;
+            let (above, below) = table.split_at_mut((y + 1) * stride);
+            let above = &above[y * stride..];
+            for (x, &sample) in row.iter().enumerate() {
+                running += u32::from(sample);
+                below[x + 1] = above[x + 1].wrapping_add(running);
+            }
+        }
+        Self {
+            width,
+            height,
+            table,
+        }
+    }
+
+    /// Whether the table describes a plane of `reference`'s size.
+    fn matches(&self, reference: &FrameBuffer) -> bool {
+        self.width == reference.y.width() && self.height == reference.y.height()
+    }
+
+    /// Sums of the four 8×8 quadrants of the 16×16 block at `(x, y)`
+    /// (which must lie inside the plane).
+    fn quadrants(&self, x: usize, y: usize) -> [u32; 4] {
+        let stride = self.width + 1;
+        let at = |cx: usize, cy: usize| self.table[cy * stride + cx];
+        let p = [
+            [at(x, y), at(x + 8, y), at(x + 16, y)],
+            [at(x, y + 8), at(x + 8, y + 8), at(x + 16, y + 8)],
+            [at(x, y + 16), at(x + 8, y + 16), at(x + 16, y + 16)],
+        ];
+        let rect = |r: usize, c: usize| {
+            p[r + 1][c + 1]
+                .wrapping_sub(p[r][c + 1])
+                .wrapping_sub(p[r + 1][c])
+                .wrapping_add(p[r][c])
+        };
+        [rect(0, 0), rect(0, 1), rect(1, 0), rect(1, 1)]
+    }
+}
+
+/// [`estimate_forward_mv`] with the same result, found faster: block
+/// sums of the reference (`sums`, from [`ReferenceSums::new`] on the
+/// same `reference`) bound each candidate's SAD from below, and a
+/// coarse probe of the window gives the bound something to beat, so
+/// most candidates are rejected without reading their samples.
+///
+/// The exhaustive search returns the first candidate, in its raster
+/// order, that reaches the lowest score. A candidate is only skipped
+/// here when its lower bound is *strictly above* the score of some
+/// candidate already measured, so every candidate that could be that
+/// first minimum is still visited in the same order with the same
+/// comparison — the chosen vector and its SAD are identical.
+pub fn estimate_forward_mv_with_sums(
+    current: &FrameBuffer,
+    reference: &FrameBuffer,
+    sums: &ReferenceSums,
+    mb_col: usize,
+    mb_row: usize,
+    search_range: i32,
+) -> MotionSearchResult {
+    let (base_x, base_y) = (mb_col * 16, mb_row * 16);
+    let cur_w = current.y.width();
+    if !sums.matches(reference)
+        || cur_w != reference.y.width()
+        || current.y.height() != reference.y.height()
+        || base_x + 16 > cur_w
+        || base_y + 16 > current.y.height()
+    {
+        return estimate_forward_mv(current, reference, mb_col, mb_row, search_range);
+    }
+    let data = reference.y.samples();
+    let plane = ReferencePlane::new(data, reference.y.width(), reference.y.height())
+        .expect("reference luma plane is width*height");
+    let legal = |hx: i32, hy: i32| -> bool {
+        frame_vector_legal(
+            reference.y.width(),
+            reference.y.height(),
+            mb_col,
+            mb_row,
+            hx,
+            hy,
+        )
+    };
+    let vec_cost = |hx: i32, hy: i32| -> u32 { hx.unsigned_abs() + hy.unsigned_abs() };
+
+    // Quadrant sums of the current macroblock.
+    let mut cur_sums = [0u32; 4];
+    for (r, row) in current.y.samples()[base_y * cur_w..]
+        .chunks(cur_w)
+        .take(16)
+        .enumerate()
+    {
+        let row = &row[base_x..base_x + 16];
+        cur_sums[(r / 8) * 2] += row[..8].iter().map(|&v| u32::from(v)).sum::<u32>();
+        cur_sums[(r / 8) * 2 + 1] += row[8..].iter().map(|&v| u32::from(v)).sum::<u32>();
+    }
+    // Lower bound on the SAD of the integer candidate `(dx, dy)`
+    // (legal, so its block lies inside the plane).
+    let bound = |dx: i32, dy: i32| -> u32 {
+        let q = sums.quadrants((base_x as i32 + dx) as usize, (base_y as i32 + dy) as usize);
+        q.iter().zip(&cur_sums).map(|(&a, &b)| a.abs_diff(b)).sum()
+    };
+
+    let zero_sad = luma_sad(current, plane, mb_col, mb_row, 0, 0, u32::MAX);
+
+    // Probe: a coarse grid over the window, then a walk downhill from
+    // the best grid point. Only the lowest score found matters — it is
+    // the score of a real candidate, hence an upper limit on the
+    // minimum.
+    let mut limit = zero_sad;
+    let mut probe_at = (0i32, 0i32);
+    let probe = |dx: i32, dy: i32, limit: &mut u32| -> bool {
+        let (hx, hy) = (dx * 2, dy * 2);
+        if !legal(hx, hy) {
+            return false;
+        }
+        let cost = vec_cost(hx, hy);
+        if bound(dx, dy).saturating_add(cost) >= *limit {
+            return false;
+        }
+        let sad = luma_sad(current, plane, mb_col, mb_row, hx, hy, *limit);
+        let score = sad.saturating_add(cost);
+        if score < *limit {
+            *limit = score;
+            true
+        } else {
+            false
+        }
+    };
+    let mut dy = -search_range;
+    while dy <= search_range {
+        let mut dx = -search_range;
+        while dx <= search_range {
+            if (dx, dy) != (0, 0) && probe(dx, dy, &mut limit) {
+                probe_at = (dx, dy);
+            }
+            dx += 4;
+        }
+        dy += 4;
+    }
+    for _ in 0..4 * search_range.max(1) {
+        let mut moved = false;
+        for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let (dx, dy) = (probe_at.0 + ox, probe_at.1 + oy);
+            if dx.abs() <= search_range
+                && dy.abs() <= search_range
+                && (dx, dy) != (0, 0)
+                && probe(dx, dy, &mut limit)
+            {
+                probe_at = (dx, dy);
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+
+    // The exhaustive pass, in the order and with the comparisons of
+    // `estimate_forward_mv`, minus the candidates that cannot win.
+    let mut best_hx = 0i32;
+    let mut best_hy = 0i32;
+    let mut best_sad = zero_sad;
+    let mut best_score = zero_sad;
+    for dy in -search_range..=search_range {
+        for dx in -search_range..=search_range {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let (hx, hy) = (dx * 2, dy * 2);
+            if !legal(hx, hy) {
+                continue;
+            }
+            let cost = vec_cost(hx, hy);
+            if bound(dx, dy).saturating_add(cost) > limit {
+                continue;
+            }
+            let sad = luma_sad(current, plane, mb_col, mb_row, hx, hy, best_score);
+            let score = sad.saturating_add(cost);
+            if score < best_score {
+                best_score = score;
+                best_sad = sad;
+                best_hx = hx;
+                best_hy = hy;
+            }
+        }
+    }
+
+    // Half-pel refinement of the integer-pel winner.
+    let (int_hx, int_hy) = (best_hx, best_hy);
+    for (ox, oy) in HALF_PEL_NEIGHBOURS {
+        let (hx, hy) = (int_hx + ox, int_hy + oy);
+        if !legal(hx, hy) {
+            continue;
+        }
+        let sad = luma_sad(current, plane, mb_col, mb_row, hx, hy, best_score);
+        let score = sad.saturating_add(vec_cost(hx, hy));
+        if score < best_score {
+            best_score = score;
+            best_sad = sad;
+            best_hx = hx;
+            best_hy = hy;
+        }
+    }
+
+    MotionSearchResult {
+        vector: MotionVectorPel::new(best_hx, best_hy),
+        sad: best_sad,
+    }
+}
+
+/// The eight half-sample positions around an integer-pel vector, in
+/// the order the refinement visits them.
+const HALF_PEL_NEIGHBOURS: [(i32, i32); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+
 /// §7.6.3.8 legality of a frame-format half-sample vector `(hx, hy)`
 /// for the 16×16 luminance macroblock at `(mb_col, mb_row)` against a
 /// `ref_width × ref_height` reference plane: the whole §7.6.4 read
@@ -441,6 +690,55 @@ mod tests {
         // The best vector is +1 half-sample horizontally (half-pel right).
         assert_eq!(r.vector, MotionVectorPel::new(1, 0));
         assert_eq!(r.sad, 0);
+    }
+
+    /// The bounded search returns exactly what the exhaustive one
+    /// does — vector and SAD — on noise, on translated content, on
+    /// flat pictures (where every candidate ties) and at the picture
+    /// edges.
+    #[test]
+    fn bounded_search_equals_the_exhaustive_search() {
+        let mut state = 0x2545_F491u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        for case in 0..12u32 {
+            let (w, h) = (80usize, 64usize);
+            let texture: Vec<u8> = (0..(w + 40) * (h + 40))
+                .map(|_| (next() >> 24) as u8)
+                .collect();
+            let (sx, sy) = ((next() % 21) as usize, (next() % 21) as usize);
+            let sample = |x: usize, y: usize, ox: usize, oy: usize| -> u8 {
+                match case % 4 {
+                    0 => texture[(y + oy) * (w + 40) + x + ox],
+                    1 => (texture[(y + oy) * (w + 40) + x + ox] >> 5) * 32,
+                    2 => 90,
+                    _ => ((x + ox) * 3 + (y + oy) * 2) as u8,
+                }
+            };
+            let reference = frame_from(w, h, |x, y| sample(x, y, 10, 10));
+            let noise: Vec<u8> = (0..w * h).map(|_| (next() % 7) as u8).collect();
+            let current = frame_from(w, h, |x, y| {
+                sample(x, y, sx, sy).saturating_add(if case >= 8 { noise[y * w + x] } else { 0 })
+            });
+            let sums = ReferenceSums::new(&reference);
+            for mb_row in 0..h / 16 {
+                for mb_col in 0..w / 16 {
+                    for range in [1, 7, 16] {
+                        assert_eq!(
+                            estimate_forward_mv_with_sums(
+                                &current, &reference, &sums, mb_col, mb_row, range
+                            ),
+                            estimate_forward_mv(&current, &reference, mb_col, mb_row, range),
+                            "case {case} macroblock ({mb_col}, {mb_row}) range {range}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

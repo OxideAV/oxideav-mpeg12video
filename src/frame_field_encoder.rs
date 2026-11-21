@@ -90,7 +90,7 @@ use crate::inter_reconstruction::{
     reconstruct_field_based_macroblock, reconstruct_frame_dual_prime_macroblock,
     reconstruct_inter_macroblock,
 };
-use crate::motion_estimation::{estimate_forward_mv, max_search_range};
+use crate::motion_estimation::max_search_range;
 use crate::motion_vector::{encode_dmvector, encode_motion_component};
 use crate::mpeg2_block_dc::{ColourComponent, DcComponent, encode_intra_dc};
 use crate::mpeg2_dct_coeff::{
@@ -1109,6 +1109,8 @@ pub fn encode_ff_p_picture(
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let dc_mult = intra_dc_mult(params.intra_dc_precision)?;
     let search_range = max_search_range(forward_f_code).min(16);
+    // Block sums of the reference, for the search's lower bound.
+    let reference_sums = crate::motion_estimation::ReferenceSums::new(reference);
 
     write_ff_picture_headers(
         bw,
@@ -1141,8 +1143,14 @@ pub fn encode_ff_p_picture(
             let mb_address = slice_first_addr + mb_col as i32;
 
             // ---- Mode search ----
-            let frame_search =
-                estimate_forward_mv(current, reference, mb_col, mb_row, search_range);
+            let frame_search = crate::motion_estimation::estimate_forward_mv_with_sums(
+                current,
+                reference,
+                &reference_sums,
+                mb_col,
+                mb_row,
+                search_range,
+            );
             let top_search = estimate_field_in_frame_mv(
                 current,
                 reference,
@@ -1476,6 +1484,9 @@ pub fn encode_ff_b_picture(
     }
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let fwd_range = max_search_range(forward_f_code).min(16);
+    // Block sums of both references, for the search's lower bound.
+    let forward_sums = crate::motion_estimation::ReferenceSums::new(forward);
+    let backward_sums = crate::motion_estimation::ReferenceSums::new(backward);
     let bwd_range = max_search_range(backward_f_code).min(16);
 
     write_ff_picture_headers(
@@ -1503,8 +1514,22 @@ pub fn encode_ff_b_picture(
 
         for mb_col in 0..mb_width {
             // ---- Per-direction searches (frame + field forms) ----
-            let f_frame = estimate_forward_mv(current, forward, mb_col, mb_row, fwd_range);
-            let b_frame = estimate_forward_mv(current, backward, mb_col, mb_row, bwd_range);
+            let f_frame = crate::motion_estimation::estimate_forward_mv_with_sums(
+                current,
+                forward,
+                &forward_sums,
+                mb_col,
+                mb_row,
+                fwd_range,
+            );
+            let b_frame = crate::motion_estimation::estimate_forward_mv_with_sums(
+                current,
+                backward,
+                &backward_sums,
+                mb_col,
+                mb_row,
+                bwd_range,
+            );
             let f_top = estimate_field_in_frame_mv(
                 current,
                 forward,

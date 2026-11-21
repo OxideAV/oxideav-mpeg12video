@@ -63,7 +63,7 @@ use crate::frame_assembly::{FrameBuffer, block_placement, place_intra_block};
 use crate::gop_header::{Mpeg2Gop, TimeCode, write_gop_header};
 use crate::idct::idct_8x8_from_i32;
 use crate::inter_reconstruction::{FrameMotion, ReferenceFrames, predict_frame_macroblock_planes};
-use crate::motion_estimation::{estimate_forward_mv, max_search_range};
+use crate::motion_estimation::max_search_range;
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg1_block_decoder::intra_block_kind;
 use crate::mpeg1_picture::Mpeg1PictureParams;
@@ -695,6 +695,8 @@ pub fn encode_mpeg1_p_picture(
     check_quantizer_scale(quantizer_scale_code)?;
     check_f_code(forward_f_code)?;
     let search_range = max_search_range(forward_f_code).min(16);
+    // Block sums of the reference, for the search's lower bound.
+    let reference_sums = crate::motion_estimation::ReferenceSums::new(reference);
 
     write_mpeg1_picture_header(
         bw,
@@ -717,7 +719,14 @@ pub fn encode_mpeg1_p_picture(
 
         for mb_col in 0..mb_w {
             let address = (mb_row * mb_w + mb_col) as i32;
-            let search = estimate_forward_mv(current, reference, mb_col, mb_row, search_range);
+            let search = crate::motion_estimation::estimate_forward_mv_with_sums(
+                current,
+                reference,
+                &reference_sums,
+                mb_col,
+                mb_row,
+                search_range,
+            );
             // full_pel: confine to integer-pel positions (truncate the
             // half-pel refinement toward zero, keeping the §7.6.4-
             // equivalent read span inside the picture).
@@ -955,6 +964,9 @@ pub fn encode_mpeg1_b_picture(
     check_f_code(forward_f_code)?;
     check_f_code(backward_f_code)?;
     let fwd_range = max_search_range(forward_f_code).min(16);
+    // Block sums of both references, for the search's lower bound.
+    let forward_sums = crate::motion_estimation::ReferenceSums::new(forward);
+    let backward_sums = crate::motion_estimation::ReferenceSums::new(backward);
     let bwd_range = max_search_range(backward_f_code).min(16);
 
     write_mpeg1_picture_header(
@@ -990,11 +1002,27 @@ pub fn encode_mpeg1_b_picture(
                 }
             };
             let fwd = full_pel_confine(
-                estimate_forward_mv(current, forward, mb_col, mb_row, fwd_range).vector,
+                crate::motion_estimation::estimate_forward_mv_with_sums(
+                    current,
+                    forward,
+                    &forward_sums,
+                    mb_col,
+                    mb_row,
+                    fwd_range,
+                )
+                .vector,
                 full_pel_forward,
             );
             let bwd = full_pel_confine(
-                estimate_forward_mv(current, backward, mb_col, mb_row, bwd_range).vector,
+                crate::motion_estimation::estimate_forward_mv_with_sums(
+                    current,
+                    backward,
+                    &backward_sums,
+                    mb_col,
+                    mb_row,
+                    bwd_range,
+                )
+                .vector,
                 full_pel_backward,
             );
 

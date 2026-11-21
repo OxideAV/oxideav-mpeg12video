@@ -588,6 +588,8 @@ pub fn encode_p_picture_with_stats(
     let f_horiz = forward_f_code;
     let f_vert = forward_f_code;
     let search_range = max_search_range(forward_f_code).min(16);
+    // Block sums of the reference, for the search's lower bound.
+    let reference_sums = crate::motion_estimation::ReferenceSums::new(reference);
     let mut stats = FrameEncodeStats::default();
 
     // §6.3.10: the MPEG-1 legacy forward_f_code in the picture header
@@ -722,7 +724,14 @@ pub fn encode_p_picture_with_stats(
             }
 
             // 1. Motion search against the reconstructed reference.
-            let search = estimate_forward_mv(current, reference, mb_col, mb_row, search_range);
+            let search = crate::motion_estimation::estimate_forward_mv_with_sums(
+                current,
+                reference,
+                &reference_sums,
+                mb_col,
+                mb_row,
+                search_range,
+            );
             let mv = search.vector;
 
             // Intra decision: if the best inter prediction is much worse

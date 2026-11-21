@@ -46,7 +46,7 @@ use crate::inter_reconstruction::{
     predict_frame_macroblock_planes,
 };
 use crate::mb_address_increment::encode_mb_address_increment;
-use crate::motion_estimation::{estimate_forward_mv, frame_vector_legal, max_search_range};
+use crate::motion_estimation::{frame_vector_legal, max_search_range};
 use crate::motion_vector::encode_motion_component;
 use crate::mpeg2_block_dc::ColourComponent;
 use crate::mpeg2_dequantize::quantiser_scale;
@@ -218,6 +218,9 @@ pub fn encode_b_picture_with_stats(
     let quantiser_scale_code = options.quantiser_scale_code.unwrap_or(quantiser_scale_code);
     let qscale = quantiser_scale(quantiser_scale_code, params.q_scale_type)?;
     let fwd_range = max_search_range(forward_f_code).min(16);
+    // Block sums of both references, for the search's lower bound.
+    let forward_sums = crate::motion_estimation::ReferenceSums::new(forward);
+    let backward_sums = crate::motion_estimation::ReferenceSums::new(backward);
     let bwd_range = max_search_range(backward_f_code).min(16);
     let mut stats = FrameEncodeStats::default();
 
@@ -401,8 +404,24 @@ pub fn encode_b_picture_with_stats(
             }
 
             // 1. Motion search in both directions.
-            let fwd = estimate_forward_mv(current, forward, mb_col, mb_row, fwd_range).vector;
-            let bwd = estimate_forward_mv(current, backward, mb_col, mb_row, bwd_range).vector;
+            let fwd = crate::motion_estimation::estimate_forward_mv_with_sums(
+                current,
+                forward,
+                &forward_sums,
+                mb_col,
+                mb_row,
+                fwd_range,
+            )
+            .vector;
+            let bwd = crate::motion_estimation::estimate_forward_mv_with_sums(
+                current,
+                backward,
+                &backward_sums,
+                mb_col,
+                mb_row,
+                bwd_range,
+            )
+            .vector;
 
             // 2. Score the three candidate predictions.
             let pred_fwd = predict(mb_col, mb_row, BDirection::Forward, fwd, bwd);
