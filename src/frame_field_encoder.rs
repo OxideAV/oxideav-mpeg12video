@@ -277,6 +277,28 @@ fn field_in_frame_luma_sad(
     let Some(field) = FieldReference::new(plane, ref_parity.index()) else {
         return u32::MAX;
     };
+    let w = current.y.width();
+    let h = current.y.height();
+    let base_x = mb_col * 16;
+    let base_y = mb_row * 16 + dest_parity.index();
+    // The destination field's eight lines are every other frame row.
+    if base_x + 16 <= w
+        && let Some(sad) = crate::motion_estimation::field_block_sad(
+            current.y.samples(),
+            base_y * w + base_x,
+            2 * w,
+            &reference.y,
+            ref_parity.index(),
+            base_x as i32,
+            (mb_row * 8) as i32,
+            16,
+            8,
+            hx,
+            hy,
+        )
+    {
+        return sad;
+    }
     let size = BlockSize::new(16, 8).expect("16x8 is a valid block size");
     // The macroblock's first top-field frame row is mb_row*16; its
     // co-located field line is mb_row*8 in either reference field.
@@ -288,10 +310,6 @@ fn field_in_frame_luma_sad(
         hx,
         hy,
     );
-    let w = current.y.width();
-    let h = current.y.height();
-    let base_x = mb_col * 16;
-    let base_y = mb_row * 16 + dest_parity.index();
     let mut sad = 0u32;
     for r in 0..8 {
         let sy = (base_y + 2 * r).min(h.saturating_sub(1));

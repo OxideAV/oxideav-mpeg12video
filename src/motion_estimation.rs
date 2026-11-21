@@ -36,13 +36,90 @@ use crate::forming_predictions::{BlockSize, ReferencePlane, predict_block};
 use crate::frame_assembly::FrameBuffer;
 use crate::inter_reconstruction::MotionVectorPel;
 
+/// Sum of absolute differences between a `w × h` block of `cur` and
+/// the §7.6.4 half-sample prediction read from `refd`.
+///
+/// `cur_off` / `ref_off` index the top-left sample of the block and of
+/// the prediction's integer-position read area; rows are `cur_stride` /
+/// `ref_stride` samples apart (twice the plane width for a field
+/// view). `half_x` / `half_y` select the §7.6.4 averages
+/// (`(a + b + 1) >> 1`, `(a + b + c + d + 2) >> 2`). Returns `None`
+/// when either read area leaves its slice, so the caller can fall back
+/// to the clamped per-sample form. Rows stop once the partial sum
+/// reaches `limit` (the result is then only known to be `>= limit`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn block_sad(
+    cur: &[u8],
+    cur_off: usize,
+    cur_stride: usize,
+    refd: &[u8],
+    ref_off: usize,
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+    half_x: bool,
+    half_y: bool,
+    limit: u32,
+) -> Option<u32> {
+    if w == 0 || h == 0 {
+        return Some(0);
+    }
+    let ex = usize::from(half_x);
+    let ey = usize::from(half_y);
+    if cur_off + (h - 1) * cur_stride + w > cur.len()
+        || ref_off + (h - 1 + ey) * ref_stride + w + ex > refd.len()
+    {
+        return None;
+    }
+    let diff = |c: u8, p: u32| (u32::from(c)).abs_diff(p);
+    let mut sad = 0u32;
+    for r in 0..h {
+        let c = &cur[cur_off + r * cur_stride..][..w];
+        let a = &refd[ref_off + r * ref_stride..][..w + ex];
+        let row: u32 = match (half_x, half_y) {
+            (false, false) => c.iter().zip(a).map(|(&c, &p)| diff(c, u32::from(p))).sum(),
+            (true, false) => c
+                .iter()
+                .zip(a.iter().zip(&a[1..]))
+                .map(|(&c, (&p, &q))| diff(c, (u32::from(p) + u32::from(q) + 1) >> 1))
+                .sum(),
+            (false, true) => {
+                let b = &refd[ref_off + (r + 1) * ref_stride..][..w];
+                c.iter()
+                    .zip(a.iter().zip(b))
+                    .map(|(&c, (&p, &q))| diff(c, (u32::from(p) + u32::from(q) + 1) >> 1))
+                    .sum()
+            }
+            (true, true) => {
+                let b = &refd[ref_off + (r + 1) * ref_stride..][..w + 1];
+                c.iter()
+                    .zip(a.iter().zip(&a[1..]).zip(b.iter().zip(&b[1..])))
+                    .map(|(&c, ((&p, &q), (&s, &t)))| {
+                        diff(
+                            c,
+                            (u32::from(p) + u32::from(q) + u32::from(s) + u32::from(t) + 2) >> 2,
+                        )
+                    })
+                    .sum()
+            }
+        };
+        sad += row;
+        if sad >= limit {
+            return Some(sad);
+        }
+    }
+    Some(sad)
+}
+
 /// Sum of absolute differences between a 16×16 `current` luma block at
 /// macroblock `(mb_col, mb_row)` and the prediction formed from
 /// `reference` at the half-sample vector `(hx, hy)`.
 ///
 /// `(hx, hy)` are in half-sample units (the §7.6.4 prediction units).
-/// The prediction is formed by [`predict_block`] exactly as the decoder
-/// would, so the returned SAD is the true luma prediction error.
+/// The score is the SAD against exactly the prediction
+/// [`predict_block`] forms: read straight from the two planes when
+/// the read area lies inside them ([`block_sad`]), through the clamped
+/// predictor otherwise.
 fn luma_sad(
     current: &FrameBuffer,
     reference: ReferencePlane<'_>,
@@ -54,11 +131,32 @@ fn luma_sad(
 ) -> u32 {
     let base_x = (mb_col * 16) as i32;
     let base_y = (mb_row * 16) as i32;
-    let size = BlockSize::new(16, 16).expect("16x16 is non-empty");
-    let pred = predict_block(reference, base_x, base_y, size, hx, hy);
     let plane = &current.y;
     let w = plane.width();
     let h = plane.height();
+    let (rx, ry) = (base_x + hx.div_euclid(2), base_y + hy.div_euclid(2));
+    if rx >= 0
+        && ry >= 0
+        && rx as usize + 16 + usize::from(hx & 1 != 0) <= reference.width
+        && base_x as usize + 16 <= w
+        && let Some(sad) = block_sad(
+            plane.samples(),
+            base_y as usize * w + base_x as usize,
+            w,
+            reference.data,
+            ry as usize * reference.width + rx as usize,
+            reference.width,
+            16,
+            16,
+            hx & 1 != 0,
+            hy & 1 != 0,
+            best_so_far,
+        )
+    {
+        return sad;
+    }
+    let size = BlockSize::new(16, 16).expect("16x16 is non-empty");
+    let pred = predict_block(reference, base_x, base_y, size, hx, hy);
     let mut sad = 0u32;
     for row in 0..16usize {
         let sy = (base_y as usize + row).min(h.saturating_sub(1));
@@ -74,6 +172,47 @@ fn luma_sad(
         }
     }
     sad
+}
+
+/// [`block_sad`] for a field prediction (§7.6.4, field line `k` of
+/// the `parity` field is frame row `2k + parity` of `reference`): the
+/// `w × h` block of `cur` at `cur_off` (rows `cur_stride` apart)
+/// against the prediction whose top-left field position is
+/// `(x, field_y)` displaced by the half-sample vector `(hx, hy)`.
+/// `None` when the read area leaves the field view.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn field_block_sad(
+    cur: &[u8],
+    cur_off: usize,
+    cur_stride: usize,
+    reference: &crate::frame_assembly::Plane,
+    parity: usize,
+    x: i32,
+    field_y: i32,
+    w: usize,
+    h: usize,
+    hx: i32,
+    hy: i32,
+) -> Option<u32> {
+    let rw = reference.width();
+    let (rx, ry) = (x + hx.div_euclid(2), field_y + hy.div_euclid(2));
+    let (half_x, half_y) = (hx & 1 != 0, hy & 1 != 0);
+    if rx < 0 || ry < 0 || rx as usize + w + usize::from(half_x) > rw {
+        return None;
+    }
+    block_sad(
+        cur,
+        cur_off,
+        cur_stride,
+        reference.samples(),
+        (2 * ry as usize + parity) * rw + rx as usize,
+        2 * rw,
+        w,
+        h,
+        half_x,
+        half_y,
+        u32::MAX,
+    )
 }
 
 /// The result of a motion search: the chosen half-sample motion vector

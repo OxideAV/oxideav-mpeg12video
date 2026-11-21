@@ -171,6 +171,27 @@ fn field_luma_sad(
     let Some(field) = FieldReference::new(plane, parity.index()) else {
         return u32::MAX;
     };
+    let w = current.y.width();
+    let h = current.y.height();
+    let base_x = mb_col * 16;
+    let base_y = mb_row * 16;
+    if base_x + 16 <= w
+        && let Some(sad) = crate::motion_estimation::field_block_sad(
+            current.y.samples(),
+            base_y * w + base_x,
+            w,
+            &reference.y,
+            parity.index(),
+            base_x as i32,
+            base_y as i32,
+            16,
+            16,
+            hx,
+            hy,
+        )
+    {
+        return sad;
+    }
     let size = BlockSize::new(16, 16).expect("16x16 is a valid block size");
     let pred = predict_field_block(
         field,
@@ -180,10 +201,6 @@ fn field_luma_sad(
         hx,
         hy,
     );
-    let w = current.y.width();
-    let h = current.y.height();
-    let base_x = mb_col * 16;
-    let base_y = mb_row * 16;
     let mut sad = 0u32;
     for r in 0..16 {
         let sy = (base_y + r).min(h.saturating_sub(1));
@@ -1178,12 +1195,29 @@ fn field_region_luma_sad(
     let Some(field) = FieldReference::new(plane, parity.index()) else {
         return u32::MAX;
     };
-    let size = BlockSize::new(16, 8).expect("16x8 is a valid block size");
     let base_y = mb_row * 16 + region_offset;
-    let pred = predict_field_block(field, (mb_col * 16) as i32, base_y as i32, size, hx, hy);
     let w = current.y.width();
     let h = current.y.height();
     let base_x = mb_col * 16;
+    if base_x + 16 <= w
+        && let Some(sad) = crate::motion_estimation::field_block_sad(
+            current.y.samples(),
+            base_y * w + base_x,
+            w,
+            &reference.y,
+            parity.index(),
+            base_x as i32,
+            base_y as i32,
+            16,
+            8,
+            hx,
+            hy,
+        )
+    {
+        return sad;
+    }
+    let size = BlockSize::new(16, 8).expect("16x8 is a valid block size");
+    let pred = predict_field_block(field, (mb_col * 16) as i32, base_y as i32, size, hx, hy);
     let mut sad = 0u32;
     for r in 0..8 {
         let sy = (base_y + r).min(h.saturating_sub(1));
