@@ -659,7 +659,8 @@ pub use mb_address_increment::{
 };
 #[doc(hidden)] // internal: encoder motion-search re-exports
 pub use motion_estimation::{
-    MotionSearchResult, estimate_forward_mv, frame_vector_legal, max_search_range,
+    MotionSearchResult, ReferenceSums, estimate_forward_mv, estimate_forward_mv_with_sums,
+    frame_vector_legal, max_search_range,
 };
 #[doc(hidden)] // internal: §6.2.5.2 motion-vector re-exports
 pub use motion_vector::{
@@ -735,7 +736,7 @@ pub use picture_header::{
 #[doc(hidden)] // internal: picture-level reconstruction re-exports
 pub use picture_reconstruction::{
     PicturePredictionParams, decode_field_picture, decode_field_picture_with_matrices,
-    decode_inter_picture, decode_inter_picture_with_matrices,
+    decode_inter_picture, decode_inter_picture_with_matrices, decode_inter_picture_with_threads,
 };
 #[doc(hidden)] // internal: §6.2.3.5 extension re-exports
 pub use picture_spatial_scalable_extension::{

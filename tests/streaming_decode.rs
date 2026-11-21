@@ -136,3 +136,72 @@ fn frames_report_their_picture_start_code_offset() {
         assert_eq!(offsets(&pieces), offsets(&whole), "{name}");
     }
 }
+
+/// A thread budget decodes the slices of P- and B-frame pictures in
+/// row bands on several threads; the frames are the serial ones.
+#[test]
+fn a_thread_budget_decodes_the_same_frames() {
+    for (name, stream) in corpus() {
+        let whole = decode_video_sequence(&stream).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        for threads in [2, 3, 5, 64] {
+            let mut decoder = SequenceDecoder::new().with_threads(threads);
+            decoder.push(&stream);
+            decoder.finish();
+            let mut frames = Vec::new();
+            while let Some(frame) = decoder.next_frame().expect("decode") {
+                frames.push(frame);
+            }
+            assert_eq!(frames.len(), whole.len(), "{name} x{threads}");
+            for (n, (got, want)) in frames.iter().zip(&whole).enumerate() {
+                assert!(
+                    same_frame(got, want),
+                    "{name} x{threads}: frame {n} differs"
+                );
+            }
+        }
+    }
+}
+
+/// Damage decodes — or fails — identically under a thread budget: a
+/// picture with a corrupt slice is handed to the serial path, so the
+/// error (and, with concealment, the output) does not depend on the
+/// budget.
+#[test]
+fn damaged_streams_behave_the_same_under_a_thread_budget() {
+    let (_, stream) = corpus()
+        .into_iter()
+        .find(|(name, _)| name == "selfenc-ibbp-64x48.m2v")
+        .expect("fixture");
+    let mut state = 0x9E37_79B9u32;
+    for _ in 0..200 {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let at = 64 + (state >> 8) as usize % (stream.len() - 64);
+        let mut damaged = stream.clone();
+        damaged[at] ^= 1 << (state & 7);
+        let run = |threads: usize, conceal: bool| {
+            let mut decoder = if conceal {
+                SequenceDecoder::with_concealment()
+            } else {
+                SequenceDecoder::new()
+            }
+            .with_threads(threads);
+            decoder.push(&damaged);
+            decoder.finish();
+            let mut frames = Vec::new();
+            loop {
+                match decoder.next_frame() {
+                    Ok(Some(frame)) => frames.push(Ok(frame.frame)),
+                    Ok(None) => break,
+                    Err(e) => {
+                        frames.push(Err(format!("{e:?}")));
+                        break;
+                    }
+                }
+            }
+            frames
+        };
+        for conceal in [false, true] {
+            assert_eq!(run(1, conceal), run(3, conceal), "flip at byte {at}");
+        }
+    }
+}

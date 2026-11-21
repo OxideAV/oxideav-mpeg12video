@@ -868,23 +868,54 @@ yet.
   content whose I-pictures exceed the buffer at the coarsest quantiser
   (reported as an error; predicted pictures fall back to a picture
   that repeats its reference, frame pictures and MPEG-1 only), motion
-  search beyond ±16 samples.
+  search beyond ±16 samples; open GOPs (every GOP is closed).
 
 ## Performance
 
-Single thread, release build, Apple M-series, medians of three runs on
-`testsrc2` with light temporal noise (`examples/encode_yuv`,
-`examples/decode_to_yuv`, file I/O included):
+Release build, Apple M-series, `testsrc2` with light temporal noise,
+`examples/encode_yuv` / `examples/decode_to_yuv` with file I/O
+included. The machine was shared with other builds while these were
+taken, so the figures are medians of three runs and the encode
+columns are also given as CPU seconds, which the load does not move.
+
+**Encode** (MPEG-2 frame pictures, default options, I B B P):
 
 | | 720×480 | 1920×1080 |
 |---|---|---|
-| MPEG-2 decode (4 / 12 Mbit/s, I B B P) | 310–380 fps | 63–85 fps |
-| MPEG-2 encode, frame pictures, default options | 16.9 fps (was 1.37) | 2.83 fps (was 0.18) |
+| start of the round, CPU s per frame | 0.540 | 4.53 |
+| candidates read from the reference plane | 0.057 | 0.31 |
+| + lower-bound rejection of candidates | 0.034 | 0.19 |
+| one thread, wall | 19.2 fps | 3.6 fps |
+| 4 threads, wall | 76.7 fps | 12.5 fps |
+| 8 threads, wall | 112.5 fps | — (four GOPs in the clip) |
 
-The encode gain is the motion search reading its candidates straight
-from the reference plane (`motion_estimation::block_sad`) instead of
-forming a prediction block per candidate; the vectors chosen, and so
-every stream, are unchanged.
+Two changes, both leaving every vector and so every stream byte for
+byte the same: the motion search reads each candidate's prediction
+straight from the reference plane (`motion_estimation::block_sad`)
+instead of forming a prediction block per candidate, and the
+frame-picture search rejects candidates through a lower bound on
+their SAD from block sums of the reference
+(`ReferenceSums` / `estimate_forward_mv_with_sums`: per 8×8 quadrant,
+`|Σ current − Σ candidate| ≤ SAD`), after a coarse probe of the
+window gives the bound something to beat. A thread budget
+(`Encoder::set_execution_context`) codes that many closed GOPs side
+by side.
+
+**Decode** (MPEG-2, 4 / 12 Mbit/s, I B B P, 15-picture GOPs):
+
+| threads | 720×480 | 1920×1080 |
+|---|---|---|
+| 1 | 496 fps | 123 fps |
+| 2 | 603 fps | 160 fps |
+| 4 | 889 fps | 233 fps |
+| 8 | 1090 fps | 269 fps |
+
+A thread budget (`Decoder::set_execution_context`,
+`SequenceDecoder::with_threads`) decodes the slices of P- and B-frame
+pictures in row bands on that many threads
+(`decode_inter_picture_with_threads`); I-pictures, field pictures and
+ISO/IEC 11172-2 streams stay serial. Both codecs default to serial
+and give the same output at every budget.
 
 ## Clean-room provenance
 

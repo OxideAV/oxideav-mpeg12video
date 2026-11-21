@@ -21,10 +21,11 @@
 //!
 //! This decoder therefore feeds the payload of every [`Packet`] into one
 //! [`SequenceDecoder`], which treats the packets as one contiguous
-//! elementary stream. A picture is reconstructed once the start code that
-//! ends it has arrived, and [`Decoder::receive_frame`] returns each frame
-//! as soon as the reorder commits it; until then it returns
-//! [`Error::NeedMore`]. Memory stays bounded by one coded picture plus the
+//! elementary stream. A picture can be reconstructed once the start code
+//! that ends it has arrived; [`Decoder::receive_frame`] decodes on demand
+//! and returns each frame as soon as the reorder commits it (bitstream
+//! errors surface there too), [`Error::NeedMore`] when the input so far
+//! commits none. Memory stays bounded by one coded picture plus the
 //! reference anchors, however long the stream. [`Decoder::flush`] marks
 //! the end of the stream, releasing the last picture and the held-back
 //! anchor; once those drain the decoder returns [`Error::Eof`].
@@ -157,8 +158,8 @@ impl CodecOptionsStruct for Mpeg12DecoderOptions {
 /// # Errors
 ///
 /// [`Error::invalid`] for a malformed value of one of this decoder's
-/// options (other keys are ignored); the bitstream itself is
-/// validated as packets arrive.
+/// options (other keys are ignored). The bitstream is validated as it
+/// is decoded: its errors come from [`Decoder::receive_frame`].
 pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
     // The parameter set of a stream often carries its encoder's
     // options too: only this decoder's own keys are read.
@@ -286,12 +287,16 @@ impl Mpeg12Decoder {
         params
     }
 
-    /// Move every frame the driver can commit so far into `ready`.
-    fn drain_sequence(&mut self) -> Result<()> {
+    /// Decode until the driver commits a frame (or runs out of input)
+    /// and queue it. One frame at a time, on demand: the input may
+    /// hold any number of pictures — a damaged or hostile stream can
+    /// spend four bytes on each — and none is reconstructed before the
+    /// caller asks for it.
+    fn pull_frame(&mut self) -> Result<()> {
         if !self.received {
             return Ok(());
         }
-        while let Some(decoded) = self.sequence.next_frame().map_err(map_err)? {
+        if let Some(decoded) = self.sequence.next_frame().map_err(map_err)? {
             let shape = (
                 decoded.frame.width,
                 decoded.frame.height,
@@ -331,10 +336,13 @@ impl Decoder for Mpeg12Decoder {
         }
         self.pushed += packet.data.len() as u64;
         self.sequence.push(&packet.data);
-        self.drain_sequence()
+        Ok(())
     }
 
     fn receive_frame(&mut self) -> Result<Frame> {
+        if self.ready.is_empty() {
+            self.pull_frame()?;
+        }
         match self.ready.pop_front() {
             Some(frame) => Ok(frame),
             None if self.flushed => Err(Error::Eof),
@@ -348,7 +356,7 @@ impl Decoder for Mpeg12Decoder {
         }
         self.flushed = true;
         self.sequence.finish();
-        self.drain_sequence()
+        Ok(())
     }
 
     fn reset(&mut self) -> Result<()> {
@@ -362,6 +370,10 @@ impl Decoder for Mpeg12Decoder {
         self.flushed = false;
         self.next_pts = 0;
         Ok(())
+    }
+
+    fn set_execution_context(&mut self, ctx: &oxideav_core::ExecutionContext) {
+        self.sequence.set_threads(ctx.threads);
     }
 
     fn output_pixel_format(&self) -> Option<PixelFormat> {

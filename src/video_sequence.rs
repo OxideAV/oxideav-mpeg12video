@@ -102,7 +102,7 @@ use crate::picture_header::{
     PictureStructure,
 };
 use crate::picture_reconstruction::{
-    PicturePredictionParams, decode_field_picture_with_matrices, decode_inter_picture_with_matrices,
+    PicturePredictionParams, decode_field_picture_with_matrices, decode_inter_picture_with_threads,
 };
 use crate::quant_matrix_extension::{QuantMatrixExtension, QuantiserMatrixState};
 use crate::sequence_extension::Mpeg2Sequence;
@@ -301,6 +301,8 @@ pub struct SequenceDecoder {
     unit_end: Option<u64>,
     /// Frame rate of the most recent sequence header.
     frame_rate: Option<(u32, u32)>,
+    /// Thread budget (see [`with_threads`](Self::with_threads)).
+    threads: usize,
 }
 
 /// The running decode state of the §6.2.2 `video_sequence()` walk.
@@ -328,6 +330,9 @@ struct SequenceState {
     pending_field: Option<PendingField>,
     /// Stream offset of the held first field's picture start code.
     first_field_offset: Option<u64>,
+    /// Thread budget for slice-parallel picture decode (`<= 1` =
+    /// serial).
+    threads: usize,
 }
 
 impl SequenceDecoder {
@@ -371,6 +376,25 @@ impl SequenceDecoder {
     /// `None` before the first header, or for a reserved code.
     pub fn frame_rate(&self) -> Option<(u32, u32)> {
         self.frame_rate
+    }
+
+    /// Grant a thread budget: the slices of P- and B-frame pictures
+    /// are decoded on up to `threads` threads (see
+    /// [`crate::picture_reconstruction::decode_inter_picture_with_threads`]).
+    /// The default is serial, and the frames are the same at every
+    /// budget. Chains after [`new`](Self::new) or
+    /// [`with_concealment`](Self::with_concealment).
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.set_threads(threads);
+        self
+    }
+
+    /// [`with_threads`](Self::with_threads) on an existing decoder.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads;
+        if let Some(state) = self.state.as_mut() {
+            state.threads = threads;
+        }
     }
 
     /// Pictures replaced by a concealment copy so far.
@@ -500,6 +524,7 @@ impl SequenceDecoder {
             backward_anchor: None,
             pending_field: None,
             first_field_offset: None,
+            threads: self.threads,
         });
         Ok(true)
     }
@@ -790,9 +815,12 @@ fn decode_picture(
                     &header,
                     &ext,
                     mpeg2_geometry,
-                    state.forward_anchor.as_ref(),
-                    state.backward_anchor.as_ref(),
+                    (
+                        state.forward_anchor.as_ref(),
+                        state.backward_anchor.as_ref(),
+                    ),
                     &state.matrices,
+                    state.threads,
                 )?
             }
         }
@@ -1298,9 +1326,9 @@ fn reconstruct_picture(
     header: &Mpeg2PictureHeader,
     ext: &PictureCodingExtension,
     base_geometry: IntraPictureParams,
-    forward_anchor: Option<&FrameBuffer>,
-    backward_anchor: Option<&FrameBuffer>,
+    (forward_anchor, backward_anchor): (Option<&FrameBuffer>, Option<&FrameBuffer>),
     matrices: &QuantiserMatrixState,
+    threads: usize,
 ) -> Result<DecodedFrame> {
     // Overlay the per-picture §6.2.3.1 DCT-context flags onto the
     // sequence geometry.
@@ -1341,11 +1369,12 @@ fn reconstruct_picture(
                 "§6.1.1.11: P-picture before any I/P anchor exists (no forward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (frame, placed) = decode_inter_picture_with_matrices(
+            let (frame, placed) = decode_inter_picture_with_threads(
                 picture_region,
                 params,
                 ReferenceFrames::forward_only(forward),
                 matrices,
+                threads,
             )?;
             require_full_coverage(placed, geometry.mb_width(), geometry.mb_height())?;
             frame
@@ -1360,11 +1389,12 @@ fn reconstruct_picture(
                 "§6.1.1.11: B-picture before two I/P anchors exist (no backward reference)",
             ))?;
             let params = inter_params(header, ext, geometry);
-            let (frame, placed) = decode_inter_picture_with_matrices(
+            let (frame, placed) = decode_inter_picture_with_threads(
                 picture_region,
                 params,
                 ReferenceFrames::bidirectional(forward, backward),
                 matrices,
+                threads,
             )?;
             require_full_coverage(placed, geometry.mb_width(), geometry.mb_height())?;
             frame

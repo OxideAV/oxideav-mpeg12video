@@ -8,9 +8,10 @@
 //!
 //! The input holds whole frames in the "rawvideo" planar layout (Y,
 //! then Cb, then Cr). `frame_rate=<num>/<den>` and `bit_rate=<bit/s>`
-//! set the stream parameters; every other `key=value` is an encoder
-//! option (see `Mpeg12EncoderOptions`). Under `data_partitioning` the
-//! second partition is written to `<output.es>.p1`.
+//! set the stream parameters, `threads=<n>` grants a thread budget;
+//! every other `key=value` is an encoder option (see
+//! `Mpeg12EncoderOptions`). Under `data_partitioning` the second
+//! partition is written to `<output.es>.p1`.
 
 use oxideav_core::{
     CodecId, CodecParameters, Error, Frame, PixelFormat, Rational, VideoFrame, VideoPlane,
@@ -39,6 +40,7 @@ fn main() {
     };
     let input = std::fs::read(&args[4]).unwrap_or_else(|e| fail(&format!("read {}: {e}", args[4])));
 
+    let mut threads = 1usize;
     let mut params = CodecParameters::video(CodecId::new(args[0].as_str()));
     params.width = Some(width as u32);
     params.height = Some(height as u32);
@@ -58,6 +60,7 @@ fn main() {
             "bit_rate" => {
                 params.bit_rate = Some(v.parse().unwrap_or_else(|_| fail("bad bit_rate")));
             }
+            "threads" => threads = v.parse().unwrap_or_else(|_| fail("bad threads")),
             _ => {
                 params.options.insert(k, v);
             }
@@ -65,6 +68,7 @@ fn main() {
     }
 
     let mut encoder = make_encoder(&params).unwrap_or_else(|e| fail(&format!("encoder: {e:?}")));
+    encoder.set_execution_context(&oxideav_core::ExecutionContext::with_threads(threads));
     let frame_bytes = width * height + 2 * cw * ch;
     for (t, raw) in input.chunks_exact(frame_bytes).enumerate() {
         let (y, c) = raw.split_at(width * height);
@@ -84,21 +88,26 @@ fn main() {
     encoder
         .flush()
         .unwrap_or_else(|e| fail(&format!("flush: {e:?}")));
-    let mut index = 0usize;
+    let partitioned = params
+        .options
+        .get("data_partitioning")
+        .is_some_and(|v| v != "0");
+    let mut outputs: Vec<Vec<u8>> = Vec::new();
     loop {
         match encoder.receive_packet() {
-            Ok(packet) => {
-                let path = if index == 0 {
-                    args[5].clone()
-                } else {
-                    format!("{}.p{index}", args[5])
-                };
-                std::fs::write(&path, &packet.data)
-                    .unwrap_or_else(|e| fail(&format!("write {path}: {e}")));
-                index += 1;
-            }
+            // Two partition packets, or one packet per coded frame.
+            Ok(packet) if partitioned || outputs.is_empty() => outputs.push(packet.data),
+            Ok(packet) => outputs[0].extend_from_slice(&packet.data),
             Err(Error::Eof) => break,
             Err(e) => fail(&format!("receive_packet: {e:?}")),
         }
+    }
+    for (index, data) in outputs.iter().enumerate() {
+        let path = if index == 0 {
+            args[5].clone()
+        } else {
+            format!("{}.p{index}", args[5])
+        };
+        std::fs::write(&path, data).unwrap_or_else(|e| fail(&format!("write {path}: {e}")));
     }
 }

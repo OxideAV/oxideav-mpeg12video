@@ -764,3 +764,48 @@ fn gops_are_released_while_frames_arrive() {
         assert_eq!(x.frame.cr.samples(), y.frame.cr.samples());
     }
 }
+
+/// A thread budget makes the encoder code several GOPs side by side;
+/// the packets are the same as the serial ones, byte for byte.
+#[test]
+fn a_thread_budget_changes_nothing_but_the_speed() {
+    let (w, h, n) = (48usize, 32usize, 23usize);
+    for options in [
+        &[("b_between", "2"), ("anchors_per_gop", "1")][..],
+        &[("picture_structure", "frame_field"), ("b_between", "1")][..],
+        &[("rate_control", "cbr"), ("anchors_per_gop", "2")][..],
+    ] {
+        let p = with(
+            &params(MPEG2_CODEC_ID_STR, w as u32, h as u32, PixelFormat::Yuv420P),
+            options,
+        );
+        let run = |threads: usize| {
+            let mut enc = make_encoder(&p).expect("make_encoder");
+            enc.set_execution_context(&oxideav_core::ExecutionContext::with_threads(threads));
+            let mut out = Vec::new();
+            for t in 0..n {
+                enc.send_frame(&Frame::Video(video_frame(w, h, t, PixelFormat::Yuv420P)))
+                    .expect("send_frame");
+                while let Ok(packet) = enc.receive_packet() {
+                    out.push(packet);
+                }
+            }
+            enc.flush().expect("flush");
+            while let Ok(packet) = enc.receive_packet() {
+                out.push(packet);
+            }
+            out
+        };
+        let serial = run(1);
+        assert_eq!(serial.len(), n);
+        for threads in [2, 3, 8] {
+            let parallel = run(threads);
+            assert_eq!(parallel.len(), serial.len(), "{options:?} x{threads}");
+            for (a, b) in serial.iter().zip(&parallel) {
+                assert_eq!(a.data, b.data, "{options:?} x{threads}");
+                assert_eq!((a.pts, a.dts), (b.pts, b.dts), "{options:?} x{threads}");
+                assert_eq!(a.flags.keyframe, b.flags.keyframe);
+            }
+        }
+    }
+}

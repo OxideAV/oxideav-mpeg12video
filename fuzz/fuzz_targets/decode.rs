@@ -20,8 +20,8 @@
 use libfuzzer_sys::fuzz_target;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    FrameBuffer, IntraPictureParams, Mpeg1SequenceParams, decode_video_sequence,
-    encode_intra_picture, encode_mpeg1_intra_stream,
+    FrameBuffer, IntraPictureParams, Mpeg1SequenceParams, SequenceDecoder, decode_video_sequence,
+    encode_i_then_p, encode_intra_picture, encode_mpeg1_intra_stream,
 };
 use std::sync::OnceLock;
 
@@ -92,4 +92,91 @@ fuzz_target!(|data: &[u8]| {
     spliced1.extend_from_slice(data);
     spliced1.extend_from_slice(&[0x00, 0x00, 0x01, 0xB7]);
     let _ = decode_video_sequence(&spliced1);
+
+    // 4. An intact I-picture, then a P-picture whose slices are the
+    //    attacker's: decoded serially and under a thread budget (the
+    //    slices of a P-picture are decoded in row bands), with and
+    //    without concealment. The outcome must not depend on the
+    //    budget.
+    let mut spliced_p = inter_prefix().clone();
+    spliced_p.extend_from_slice(data);
+    spliced_p.extend_from_slice(&[0x00, 0x00, 0x01, 0xB7]);
+    for conceal in [false, true] {
+        let run = |threads: usize| {
+            let mut decoder = if conceal {
+                SequenceDecoder::with_concealment()
+            } else {
+                SequenceDecoder::new()
+            }
+            .with_threads(threads);
+            decoder.push(&spliced_p);
+            decoder.finish();
+            let mut frames = Vec::new();
+            loop {
+                match decoder.next_frame() {
+                    Ok(Some(frame)) => frames.push(Ok(frame.frame)),
+                    Ok(None) => break,
+                    Err(e) => {
+                        frames.push(Err(format!("{e:?}")));
+                        break;
+                    }
+                }
+            }
+            frames
+        };
+        assert_eq!(run(1), run(4), "thread budget changed the decode");
+    }
 });
+
+/// A valid I-picture followed by a P-picture cut right after its first
+/// slice start code (the slice bodies are the fuzzer's).
+fn inter_prefix() -> &'static Vec<u8> {
+    static PREFIX: OnceLock<Vec<u8>> = OnceLock::new();
+    PREFIX.get_or_init(|| {
+        let frame = |shift: usize| {
+            let mut frame = FrameBuffer::new(48, 64, ChromaFormat::Yuv420);
+            for y in 0..64 {
+                for x in 0..48 {
+                    frame
+                        .y
+                        .put_sample(x, y, (((x + shift) * 5 + y * 3) % 200) as u8);
+                }
+            }
+            for y in 0..32 {
+                for x in 0..24 {
+                    frame.cb.put_sample(x, y, 128);
+                    frame.cr.put_sample(x, y, 128);
+                }
+            }
+            frame
+        };
+        let params = IntraPictureParams::new(
+            48,
+            64,
+            ChromaFormat::Yuv420,
+            true,
+            0,
+            false,
+            false,
+            false,
+            true,
+        );
+        let stream = encode_i_then_p(&frame(0), &frame(2), params, 6, 2).expect("valid I P stream");
+        // The P-picture's first slice start code is the first one
+        // after the second picture_start_code.
+        let second_picture = stream
+            .windows(4)
+            .enumerate()
+            .filter(|(_, w)| *w == [0, 0, 1, 0])
+            .map(|(i, _)| i)
+            .nth(1)
+            .expect("two pictures");
+        let slice = stream[second_picture + 4..]
+            .windows(4)
+            .position(|w| w[0] == 0 && w[1] == 0 && w[2] == 1 && (1..=0xAF).contains(&w[3]))
+            .expect("a slice")
+            + second_picture
+            + 4;
+        stream[..slice + 5].to_vec()
+    })
+}

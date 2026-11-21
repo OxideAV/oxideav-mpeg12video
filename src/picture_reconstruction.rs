@@ -164,14 +164,50 @@ pub fn decode_inter_picture_with_matrices(
     references: ReferenceFrames<'_>,
     matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
 ) -> Result<(FrameBuffer, usize)> {
-    use crate::slice_header::{SliceContext, SliceHeader};
+    decode_inter_picture_with_threads(picture, params, references, matrices, 1)
+}
 
+/// [`decode_inter_picture_with_matrices`] on up to `threads` threads.
+///
+/// §6.1.2 makes every slice of a frame picture decodable on its own
+/// (the predictors reset at each slice start) and confines it to one
+/// macroblock row, so the rows are split into `threads` bands and each
+/// band's slices are decoded on a thread of their own, in stream
+/// order. The result is the one the serial decode gives; a picture
+/// with an error or with a slice running past its row is decoded
+/// serially so that it is reported — or reconstructed — exactly as
+/// before.
+///
+/// # Errors
+/// As [`decode_inter_picture_with_matrices`].
+pub fn decode_inter_picture_with_threads(
+    picture: &[u8],
+    params: PicturePredictionParams,
+    references: ReferenceFrames<'_>,
+    matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
+    threads: usize,
+) -> Result<(FrameBuffer, usize)> {
     let geom = params.geometry;
+    let slices = slice_buffers(picture);
+    if threads > 1
+        && slices.len() > 1
+        && let Some(done) =
+            decode_inter_slices_in_bands(&slices, params, references, matrices, threads)
+    {
+        return Ok(done);
+    }
     let mut frame = geom.new_frame_buffer();
-    let mb_width = geom.mb_width() as u32;
-    let slice_ctx = SliceContext::non_scalable(geom.height as u32);
-
     let mut placed = 0usize;
+    for slice_buf in slices {
+        placed += decode_inter_slice(slice_buf, params, references, matrices, &mut frame)?.0;
+    }
+    Ok((frame, placed))
+}
+
+/// The slices of a picture, in stream order, each with the start code
+/// that terminates it.
+fn slice_buffers(picture: &[u8]) -> Vec<&[u8]> {
+    let mut slices = Vec::new();
     let mut offset = 0usize;
     while let Some(rel) = find_slice_start_code(&picture[offset..]) {
         let start = offset + rel;
@@ -183,11 +219,30 @@ pub fn decode_inter_picture_with_matrices(
         // buffer: the §6.2.4 walker peeks for the next start code's
         // 23-zero prefix to detect end-of-slice (§5.2.3), so the buffer
         // must carry that prefix or the walker stops one macroblock
-        // early. `next_slice_offset` (where the *next* iteration begins)
-        // still points at the start code itself.
-        let next_slice_offset = start + end;
-        let slice_buf = &picture[start..(start + end + 4).min(picture.len())];
+        // early.
+        slices.push(&picture[start..(start + end + 4).min(picture.len())]);
+        offset = start + end;
+    }
+    slices
+}
 
+/// Decode one slice of a P- or B-frame picture into `frame`. Returns
+/// the macroblocks placed and whether every one of them lies in the
+/// slice's own macroblock row.
+fn decode_inter_slice(
+    slice_buf: &[u8],
+    params: PicturePredictionParams,
+    references: ReferenceFrames<'_>,
+    matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
+    frame: &mut FrameBuffer,
+) -> Result<(usize, bool)> {
+    use crate::slice_header::{SliceContext, SliceHeader};
+
+    let geom = params.geometry;
+    let mb_width = geom.mb_width() as u32;
+    let slice_ctx = SliceContext::non_scalable(geom.height as u32);
+    let mut placed = 0usize;
+    {
         let header = SliceHeader::parse(slice_buf, slice_ctx)?;
         let mb_row = header.mb_row();
 
@@ -226,7 +281,7 @@ pub fn decode_inter_picture_with_matrices(
             for k in 0..skipped {
                 let skipped_address = record.macroblock_address - skipped + k;
                 placed += reconstruct_skipped_macroblock(
-                    &mut frame,
+                    frame,
                     references,
                     skipped_address as usize,
                     mb_width as usize,
@@ -237,7 +292,7 @@ pub fn decode_inter_picture_with_matrices(
             }
 
             placed += reconstruct_one_macroblock(
-                &mut frame,
+                frame,
                 references,
                 record,
                 &motion_record.reconstructed,
@@ -248,10 +303,101 @@ pub fn decode_inter_picture_with_matrices(
             )?;
         }
 
-        offset = next_slice_offset;
+        let in_row = walk
+            .macroblocks
+            .last()
+            .is_none_or(|record| record.macroblock_address / mb_width.max(1) == mb_row);
+        Ok((placed, in_row))
     }
+}
 
-    Ok((frame, placed))
+/// The band decode of [`decode_inter_picture_with_threads`]; `None`
+/// when the picture has to be decoded serially instead.
+fn decode_inter_slices_in_bands(
+    slices: &[&[u8]],
+    params: PicturePredictionParams,
+    references: ReferenceFrames<'_>,
+    matrices: &crate::quant_matrix_extension::QuantiserMatrixState,
+    threads: usize,
+) -> Option<(FrameBuffer, usize)> {
+    use crate::slice_header::{SliceContext, SliceHeader};
+
+    let geom = params.geometry;
+    let mb_height = geom.mb_height();
+    let bands = threads.min(mb_height);
+    if bands < 2 {
+        return None;
+    }
+    let slice_ctx = SliceContext::non_scalable(geom.height as u32);
+    // Every slice of a row goes to the band that owns the row.
+    let mut band_slices: Vec<Vec<&[u8]>> = vec![Vec::new(); bands];
+    for slice_buf in slices {
+        let row = SliceHeader::parse(slice_buf, slice_ctx).ok()?.mb_row() as usize;
+        if row >= mb_height {
+            return None;
+        }
+        band_slices[row * bands / mb_height].push(slice_buf);
+    }
+    let decode_band = |band: &Vec<&[u8]>| -> Option<(FrameBuffer, usize)> {
+        let mut frame = geom.new_frame_buffer();
+        let mut placed = 0usize;
+        for slice_buf in band {
+            let (n, in_row) =
+                decode_inter_slice(slice_buf, params, references, matrices, &mut frame).ok()?;
+            if !in_row {
+                return None;
+            }
+            placed += n;
+        }
+        Some((frame, placed))
+    };
+    let results: Vec<Option<(FrameBuffer, usize)>> = std::thread::scope(|scope| {
+        let decode_band = &decode_band;
+        let workers: Vec<_> = band_slices[1..]
+            .iter()
+            .map(|band| scope.spawn(move || decode_band(band)))
+            .collect();
+        let first = decode_band(&band_slices[0]);
+        std::iter::once(first)
+            .chain(
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("slice decode worker panicked")),
+            )
+            .collect()
+    });
+
+    // Band 0's frame receives the other bands' rows.
+    let mut results = results.into_iter();
+    let (mut frame, mut placed) = results.next()??;
+    for (band, result) in results.enumerate() {
+        let (part, n) = result?;
+        placed += n;
+        let band = band + 1;
+        // Macroblock rows [first, end) belong to this band.
+        let first = (band * mb_height).div_ceil(bands);
+        let end = ((band + 1) * mb_height).div_ceil(bands);
+        for (dst, src) in [
+            (&mut frame.y, &part.y),
+            (&mut frame.cb, &part.cb),
+            (&mut frame.cr, &part.cr),
+        ] {
+            let (width, height) = (dst.width(), dst.height());
+            // Plane rows per macroblock row (16 luminance rows; 8 or
+            // 16 chrominance rows by chroma format).
+            let per_row = height / mb_height.max(1);
+            let last_row = if band + 1 == bands {
+                height
+            } else {
+                (end * per_row).min(height)
+            };
+            for y in (first * per_row)..last_row {
+                dst.row_span_mut(0, y, width)
+                    .copy_from_slice(&src.samples()[y * width..(y + 1) * width]);
+            }
+        }
+    }
+    Some((frame, placed))
 }
 
 /// The §7.6.6 inherited prediction direction carried across skipped

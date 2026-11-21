@@ -15,7 +15,7 @@ use libfuzzer_sys::fuzz_target;
 use oxideav_mpeg12video::quant_matrix_extension::QuantMatrixExtension;
 use oxideav_mpeg12video::sequence_extension::ChromaFormat;
 use oxideav_mpeg12video::{
-    FrameBuffer, FrameEncodeOptions, IntraPictureParams, decode_video_sequence,
+    FrameBuffer, FrameEncodeOptions, IntraPictureParams, SequenceDecoder, decode_video_sequence,
     encode_display_order_gop_sequence_with_options, encode_ff_display_order_gop_sequence,
     encode_field_display_order_gop_sequence,
 };
@@ -152,4 +152,17 @@ fuzz_target!(|data: &[u8]| {
 
     let decoded = decode_video_sequence(&stream).expect("self-encoded stream must decode");
     assert_eq!(decoded.len(), n_frames, "display-order frame count");
+
+    // A thread budget (slices decoded in row bands) gives the same
+    // frames.
+    let mut threaded = SequenceDecoder::new().with_threads(3);
+    threaded.push(&stream);
+    threaded.finish();
+    for frame in &decoded {
+        let other = threaded
+            .next_frame()
+            .expect("threaded decode")
+            .expect("same frame count");
+        assert!(other.frame == frame.frame, "thread budget changed a frame");
+    }
 });

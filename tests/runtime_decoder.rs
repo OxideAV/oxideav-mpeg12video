@@ -352,10 +352,20 @@ fn damage_is_concealed_unless_strict() {
     let mut strict = params.clone();
     strict.options.insert("strict", "true");
     let mut dec = make_decoder(&strict).expect("make_decoder");
-    let result = dec
-        .send_packet(&Packet::new(0, tb(), damaged))
-        .and_then(|()| dec.flush());
-    assert!(result.is_err(), "strict mode reports the missing reference");
+    dec.send_packet(&Packet::new(0, tb(), damaged)).unwrap();
+    dec.flush().unwrap();
+    let mut failed = false;
+    loop {
+        match dec.receive_frame() {
+            Ok(_) => {}
+            Err(Error::Eof) => break,
+            Err(_) => {
+                failed = true;
+                break;
+            }
+        }
+    }
+    assert!(failed, "strict mode reports the missing reference");
 
     // Options that are not this decoder's (a stream's parameter set
     // may carry its encoder's) are ignored; a malformed value is not.

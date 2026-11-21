@@ -37,7 +37,10 @@
 //! The assemblers code **closed GOPs**, so the adapter runs them one
 //! GOP at a time: a GOP's packets become available when the first
 //! frame of the next GOP arrives (or at [`Encoder::flush`]), and the
-//! encoder holds at most one GOP of input. Two modes still code the
+//! encoder holds at most one GOP of input. With a thread budget from
+//! [`Encoder::set_execution_context`] it collects that many GOPs and
+//! codes them side by side (each GOP is independent), producing the
+//! same packets; the default is serial. Two modes still code the
 //! whole sequence at flush: `rate_control = cbr` (the Annex C buffer
 //! model runs across GOPs; its packets are per frame too) and
 //! `data_partitioning` (two packets — partition 0, then partition 1).
@@ -939,155 +942,18 @@ impl EncoderConfig {
     }
 }
 
-/// Build a boxed [`Encoder`] for the codec id named by `params`.
-///
-/// Registered under both `"mpeg1video"` and `"mpeg2video"`; the id
-/// selects the syntax (11172-2 vs 13818-2). `params` must be a video
-/// parameter set with `width` / `height` present, a planar 4:2:0 /
-/// 4:2:2 / 4:4:4 pixel format (or unset — 4:2:0 is assumed), and
-/// options conforming to [`Mpeg12EncoderOptions::SCHEMA`] (see the
-/// [module docs](self)).
-///
-/// # Errors
-///
-/// [`Error::invalid`] for a non-video parameter set, missing geometry,
-/// an unsupported pixel format, an unknown option, a malformed or
-/// out-of-range option value; [`Error::unsupported`] for a structure /
-/// option combination no assembler implements.
-pub fn make_encoder(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
-    let width = params.width.ok_or_else(|| invalid("width missing"))?;
-    let height = params.height.ok_or_else(|| invalid("height missing"))?;
-    if width == 0 || height == 0 || width > 4095 || height > 4095 {
-        return Err(invalid(
-            "width/height outside the 12-bit sequence-header range",
-        ));
-    }
-    let is_mpeg1 = params.codec_id.as_str() == crate::decoder::MPEG1_CODEC_ID_STR;
-    let config = EncoderConfig::resolve(params, is_mpeg1)?;
-    if matches!(
-        config.options.picture_structure,
-        PictureStructureOption::Field | PictureStructureOption::FieldAdaptive
-    ) && height % 32 != 0
-    {
-        return Err(unsupported(
-            "field pictures need a frame height that is a multiple of 32 (exact per-field §6.3.3 grid)",
-        ));
-    }
-
-    let mut output_params = CodecParameters::video(params.codec_id.clone());
-    output_params.width = Some(width);
-    output_params.height = Some(height);
-    output_params.pixel_format = Some(match config.chroma_format {
-        ChromaFormat::Yuv420 => PixelFormat::Yuv420P,
-        ChromaFormat::Yuv422 => PixelFormat::Yuv422P,
-        ChromaFormat::Yuv444 => PixelFormat::Yuv444P,
-    });
-    output_params.frame_rate = params.frame_rate;
-    if config.options.rate_control == RateControlOption::Cbr {
-        output_params.bit_rate = Some(u64::from(config.cbr.bit_rate_value) * 400);
-    }
-    output_params.options = params.options.clone();
-
-    Ok(Box::new(Mpeg12Encoder {
-        codec_id: params.codec_id.clone(),
-        output_params,
-        width: width as usize,
-        height: height as usize,
-        is_mpeg1,
-        config,
-        frames: Vec::new(),
-        display_base: 0,
-        times: VecDeque::new(),
-        times_base: 0,
-        coded: 0,
-        ready: VecDeque::new(),
-        flushed: false,
-    }))
-}
-
-/// A frame-to-packet MPEG-1 / MPEG-2 video encoder.
-///
-/// See the [module docs](self) for the framing model and the option
-/// schema.
-#[derive(Debug)]
-pub struct Mpeg12Encoder {
-    codec_id: CodecId,
-    output_params: CodecParameters,
-    width: usize,
-    height: usize,
-    is_mpeg1: bool,
-    config: EncoderConfig,
-    /// Display-order input frames not yet coded.
-    frames: Vec<FrameBuffer>,
-    /// Display index of `frames[0]`.
-    display_base: u64,
-    /// Presentation times of the display-order frames from
-    /// `times_base` on.
-    times: VecDeque<i64>,
-    times_base: u64,
-    /// Frames emitted so far (coded order).
-    coded: u64,
-    /// Packets ready to drain.
-    ready: VecDeque<Packet>,
-    flushed: bool,
-}
-
-/// Convert a planar [`VideoFrame`] into a [`FrameBuffer`] of
-/// `chroma_format`, honouring each plane's stride.
-fn video_frame_to_frame_buffer(
-    v: &VideoFrame,
-    width: usize,
-    height: usize,
-    chroma_format: ChromaFormat,
-) -> Result<FrameBuffer> {
-    if v.planes.len() < 3 {
-        return Err(invalid("expected 3 planar Y/Cb/Cr planes"));
-    }
-    let mut out = FrameBuffer::new(width, height, chroma_format);
-    let (cw, ch) = out.visible_chroma_dims();
-    let copy = |plane: &oxideav_core::VideoPlane,
-                dst: &mut crate::frame_assembly::Plane,
-                w: usize,
-                h: usize|
-     -> Result<()> {
-        if plane.stride < w || plane.data.len() < plane.stride * (h - 1) + w {
-            return Err(invalid("video plane smaller than the declared geometry"));
-        }
-        for y in 0..h {
-            let row = &plane.data[y * plane.stride..y * plane.stride + w];
-            for (x, &sample) in row.iter().enumerate() {
-                dst.put_sample(x, y, sample);
-            }
-        }
-        Ok(())
-    };
-    copy(&v.planes[0], &mut out.y, width, height)?;
-    copy(&v.planes[1], &mut out.cb, cw, ch)?;
-    copy(&v.planes[2], &mut out.cr, cw, ch)?;
-    Ok(out)
-}
-
-impl Mpeg12Encoder {
-    /// Frames per closed GOP — the unit coded at a time — or `None`
-    /// when the whole sequence is coded at flush (see the
-    /// [module docs](self)).
-    fn gop_frames(&self) -> Option<usize> {
-        let o = &self.config.options;
-        if o.rate_control == RateControlOption::Cbr || o.data_partitioning != 0 {
-            return None;
-        }
-        let anchors = o.anchors_per_gop as usize;
-        Some(if o.mpeg1_d_pictures {
-            anchors
-        } else {
-            1 + anchors * (o.b_between as usize + 1)
-        })
-    }
-
+impl EncoderConfig {
     /// The elementary stream (sequence header … `sequence_end_code`)
     /// for `frames`, whose first frame has display index `base`.
-    fn assemble(&self, frames: &[FrameBuffer], base: u64) -> Result<Vec<u8>> {
-        let c = &self.config;
+    fn assemble(
+        &self,
+        is_mpeg1: bool,
+        width: usize,
+        height: usize,
+        frames: &[FrameBuffer],
+        base: u64,
+    ) -> Result<Vec<u8>> {
+        let c = self;
         let o = &c.options;
         let b_between = o.b_between as usize;
         let anchors = o.anchors_per_gop as usize;
@@ -1095,8 +961,8 @@ impl Mpeg12Encoder {
         let fwd = o.f_code as u8;
         let bwd = c.backward_f_code();
 
-        if self.is_mpeg1 {
-            let seq = c.mpeg1_sequence(self.width, self.height);
+        if is_mpeg1 {
+            let seq = c.mpeg1_sequence(width, height);
             let stream = if o.mpeg1_d_pictures {
                 crate::mpeg1_encoder::encode_mpeg1_d_sequence(frames, &seq, q, anchors)
             } else if o.rate_control == RateControlOption::Cbr {
@@ -1112,7 +978,7 @@ impl Mpeg12Encoder {
             return stream.map_err(map_err);
         }
 
-        let params = c.picture_params(self.width, self.height);
+        let params = c.picture_params(width, height);
         let stream = match (o.picture_structure, o.rate_control) {
             (PictureStructureOption::Frame, RateControlOption::ConstantQuantiser) => {
                 crate::inter_encoder::encode_display_order_gop_sequence_with_options(
@@ -1174,6 +1040,156 @@ impl Mpeg12Encoder {
         };
         stream.map_err(map_err)
     }
+}
+
+/// Build a boxed [`Encoder`] for the codec id named by `params`.
+///
+/// Registered under both `"mpeg1video"` and `"mpeg2video"`; the id
+/// selects the syntax (11172-2 vs 13818-2). `params` must be a video
+/// parameter set with `width` / `height` present, a planar 4:2:0 /
+/// 4:2:2 / 4:4:4 pixel format (or unset — 4:2:0 is assumed), and
+/// options conforming to [`Mpeg12EncoderOptions::SCHEMA`] (see the
+/// [module docs](self)).
+///
+/// # Errors
+///
+/// [`Error::invalid`] for a non-video parameter set, missing geometry,
+/// an unsupported pixel format, an unknown option, a malformed or
+/// out-of-range option value; [`Error::unsupported`] for a structure /
+/// option combination no assembler implements.
+pub fn make_encoder(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
+    let width = params.width.ok_or_else(|| invalid("width missing"))?;
+    let height = params.height.ok_or_else(|| invalid("height missing"))?;
+    if width == 0 || height == 0 || width > 4095 || height > 4095 {
+        return Err(invalid(
+            "width/height outside the 12-bit sequence-header range",
+        ));
+    }
+    let is_mpeg1 = params.codec_id.as_str() == crate::decoder::MPEG1_CODEC_ID_STR;
+    let config = EncoderConfig::resolve(params, is_mpeg1)?;
+    if matches!(
+        config.options.picture_structure,
+        PictureStructureOption::Field | PictureStructureOption::FieldAdaptive
+    ) && height % 32 != 0
+    {
+        return Err(unsupported(
+            "field pictures need a frame height that is a multiple of 32 (exact per-field §6.3.3 grid)",
+        ));
+    }
+
+    let mut output_params = CodecParameters::video(params.codec_id.clone());
+    output_params.width = Some(width);
+    output_params.height = Some(height);
+    output_params.pixel_format = Some(match config.chroma_format {
+        ChromaFormat::Yuv420 => PixelFormat::Yuv420P,
+        ChromaFormat::Yuv422 => PixelFormat::Yuv422P,
+        ChromaFormat::Yuv444 => PixelFormat::Yuv444P,
+    });
+    output_params.frame_rate = params.frame_rate;
+    if config.options.rate_control == RateControlOption::Cbr {
+        output_params.bit_rate = Some(u64::from(config.cbr.bit_rate_value) * 400);
+    }
+    output_params.options = params.options.clone();
+
+    Ok(Box::new(Mpeg12Encoder {
+        codec_id: params.codec_id.clone(),
+        output_params,
+        width: width as usize,
+        height: height as usize,
+        is_mpeg1,
+        config,
+        frames: Vec::new(),
+        display_base: 0,
+        times: VecDeque::new(),
+        times_base: 0,
+        coded: 0,
+        threads: 1,
+        ready: VecDeque::new(),
+        flushed: false,
+    }))
+}
+
+/// A frame-to-packet MPEG-1 / MPEG-2 video encoder.
+///
+/// See the [module docs](self) for the framing model and the option
+/// schema.
+#[derive(Debug)]
+pub struct Mpeg12Encoder {
+    codec_id: CodecId,
+    output_params: CodecParameters,
+    width: usize,
+    height: usize,
+    is_mpeg1: bool,
+    config: EncoderConfig,
+    /// Display-order input frames not yet coded.
+    frames: Vec<FrameBuffer>,
+    /// Display index of `frames[0]`.
+    display_base: u64,
+    /// Presentation times of the display-order frames from
+    /// `times_base` on.
+    times: VecDeque<i64>,
+    times_base: u64,
+    /// Frames emitted so far (coded order).
+    coded: u64,
+    /// Thread budget granted through
+    /// [`Encoder::set_execution_context`]; `1` = serial.
+    threads: usize,
+    /// Packets ready to drain.
+    ready: VecDeque<Packet>,
+    flushed: bool,
+}
+
+/// Convert a planar [`VideoFrame`] into a [`FrameBuffer`] of
+/// `chroma_format`, honouring each plane's stride.
+fn video_frame_to_frame_buffer(
+    v: &VideoFrame,
+    width: usize,
+    height: usize,
+    chroma_format: ChromaFormat,
+) -> Result<FrameBuffer> {
+    if v.planes.len() < 3 {
+        return Err(invalid("expected 3 planar Y/Cb/Cr planes"));
+    }
+    let mut out = FrameBuffer::new(width, height, chroma_format);
+    let (cw, ch) = out.visible_chroma_dims();
+    let copy = |plane: &oxideav_core::VideoPlane,
+                dst: &mut crate::frame_assembly::Plane,
+                w: usize,
+                h: usize|
+     -> Result<()> {
+        if plane.stride < w || plane.data.len() < plane.stride * (h - 1) + w {
+            return Err(invalid("video plane smaller than the declared geometry"));
+        }
+        for y in 0..h {
+            let row = &plane.data[y * plane.stride..y * plane.stride + w];
+            for (x, &sample) in row.iter().enumerate() {
+                dst.put_sample(x, y, sample);
+            }
+        }
+        Ok(())
+    };
+    copy(&v.planes[0], &mut out.y, width, height)?;
+    copy(&v.planes[1], &mut out.cb, cw, ch)?;
+    copy(&v.planes[2], &mut out.cr, cw, ch)?;
+    Ok(out)
+}
+
+impl Mpeg12Encoder {
+    /// Frames per closed GOP — the unit coded at a time — or `None`
+    /// when the whole sequence is coded at flush (see the
+    /// [module docs](self)).
+    fn gop_frames(&self) -> Option<usize> {
+        let o = &self.config.options;
+        if o.rate_control == RateControlOption::Cbr || o.data_partitioning != 0 {
+            return None;
+        }
+        let anchors = o.anchors_per_gop as usize;
+        Some(if o.mpeg1_d_pictures {
+            anchors
+        } else {
+            1 + anchors * (o.b_between as usize + 1)
+        })
+    }
 
     /// Presentation time of the display-order frame `index`.
     fn time_of(&self, index: u64) -> i64 {
@@ -1183,15 +1199,70 @@ impl Mpeg12Encoder {
             .unwrap_or(index as i64)
     }
 
-    /// Code the first `count` buffered frames and queue their packets.
-    /// `last` keeps the `sequence_end_code` on the final packet.
-    fn encode_frames(&mut self, count: usize, last: bool) -> Result<()> {
+    /// Code the buffered frames in consecutive groups of `sizes`
+    /// frames — each a closed GOP (or, in the whole-sequence modes,
+    /// everything) — and queue their packets in order. Up to the
+    /// granted thread budget of groups are coded at once; `last` keeps
+    /// the `sequence_end_code` on the final packet.
+    fn encode_groups(&mut self, sizes: &[usize], last: bool) -> Result<()> {
         let base = self.display_base;
-        let frames: Vec<FrameBuffer> = self.frames.drain(..count).collect();
-        let mut stream = self.assemble(&frames, base)?;
-        self.display_base += count as u64;
-        drop(frames);
+        let total: usize = sizes.iter().sum();
+        let frames: Vec<FrameBuffer> = self.frames.drain(..total).collect();
+        let mut groups = Vec::with_capacity(sizes.len());
+        let mut offset = 0usize;
+        for &count in sizes {
+            groups.push((offset, count));
+            offset += count;
+        }
+        let (config, is_mpeg1, width, height) =
+            (&self.config, self.is_mpeg1, self.width, self.height);
+        let frames = &frames;
+        let run = |&(offset, count): &(usize, usize)| {
+            config.assemble(
+                is_mpeg1,
+                width,
+                height,
+                &frames[offset..offset + count],
+                base + offset as u64,
+            )
+        };
+        let streams: Vec<Result<Vec<u8>>> = if self.threads > 1 && groups.len() > 1 {
+            std::thread::scope(|scope| {
+                let run = &run;
+                let workers: Vec<_> = groups
+                    .iter()
+                    .map(|group| scope.spawn(move || run(group)))
+                    .collect();
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().expect("encoder worker panicked"))
+                    .collect()
+            })
+        } else {
+            groups.iter().map(run).collect()
+        };
+        self.display_base += total as u64;
+        let last_group = groups.len() - 1;
+        for (n, (stream, &(offset, count))) in streams.into_iter().zip(&groups).enumerate() {
+            self.packetize(
+                stream?,
+                base + offset as u64,
+                count,
+                last && n == last_group,
+            )?;
+        }
+        Ok(())
+    }
 
+    /// Queue the packets of one coded group: `stream` holds `count`
+    /// frames from display index `base`.
+    fn packetize(
+        &mut self,
+        mut stream: Vec<u8>,
+        base: u64,
+        count: usize,
+        last: bool,
+    ) -> Result<()> {
         let (n, d) = crate::vbv::frame_rate_value(self.config.frame_rate_code).map_err(map_err)?;
         let time_base = TimeBase::new(i64::from(d), i64::from(n));
 
@@ -1372,10 +1443,12 @@ impl Encoder for Mpeg12Encoder {
         self.times.push_back(v.pts.unwrap_or(index as i64));
         // A closed GOP is complete once the next GOP's first frame is
         // here: code it and keep that frame.
+        // (With a thread budget, that many GOPs are collected and
+        // coded side by side.)
         if let Some(gop) = self.gop_frames()
-            && self.frames.len() > gop
+            && self.frames.len() > gop * self.threads
         {
-            self.encode_frames(gop, false)?;
+            self.encode_groups(&vec![gop; self.threads], false)?;
         }
         Ok(())
     }
@@ -1395,9 +1468,21 @@ impl Encoder for Mpeg12Encoder {
             return Ok(());
         }
         self.flushed = true;
-        if self.frames.is_empty() {
-            return Ok(());
+        while !self.frames.is_empty() {
+            let left = self.frames.len();
+            let sizes: Vec<usize> = match self.gop_frames() {
+                Some(gop) => (0..left.div_ceil(gop).min(self.threads))
+                    .map(|n| gop.min(left - n * gop))
+                    .collect(),
+                None => vec![left],
+            };
+            let last = sizes.iter().sum::<usize>() == left;
+            self.encode_groups(&sizes, last)?;
         }
-        self.encode_frames(self.frames.len(), true)
+        Ok(())
+    }
+
+    fn set_execution_context(&mut self, ctx: &oxideav_core::ExecutionContext) {
+        self.threads = ctx.threads.max(1);
     }
 }
